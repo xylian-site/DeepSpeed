@@ -28,7 +28,7 @@ from .zero.offload_config import OffloadDeviceEnum
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
-from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
+from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload, ZeROOrderedDict
 from deepspeed.runtime.zero.empty_tensor import EmptyTensor
 from deepspeed.runtime.zero.stage3_backend import stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
@@ -3657,10 +3657,14 @@ class DeepSpeedEngine(Module):
                 for name, param in module.named_parameters(recurse=False):
                     if hasattr(param, 'ds_id'):
                         empty_param = _convert_to_empty_tensor(param)
-                        print(f"Converting {name} to empty tensor")
+                        print(f"Converting module {module.id} {name} to empty tensor")
                         setattr(module, name, empty_param)
 
             _set_empty_tensor_recursively(self.module)
+
+            for m in self.module.modules():
+                m._parameters = m._original_parameters
+            self.optimizer.parameter_offload._remove_module_hooks()
             backend = stage3_backend
 
         self.module.compile(backend=backend, **compile_kwargs)

@@ -29,6 +29,8 @@ from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
+from deepspeed.runtime.zero.empty_tensor import EmptyTensor
+from deepspeed.runtime.zero.stage3_backend import stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
 
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -3613,6 +3615,53 @@ class DeepSpeedEngine(Module):
 
         if self.is_compiled:
             return
+
+        if self.zero_optimization_stage() == ZeroStageEnum.weights:
+            def _convert_to_empty_tensor(param):
+                with deepspeed.zero.GatheredParameters([param]):
+                    empty_param = torch.nn.Parameter(EmptyTensor(param))
+
+                empty_param.ds_param_type = param.ds_param_type
+                empty_param.ds_status = param.ds_status
+                empty_param.ds_shape = param.ds_shape
+                empty_param.ds_numel = param.ds_numel
+                empty_param.ds_tensor = param.ds_tensor
+                empty_param.ds_active_sub_modules = param.ds_active_sub_modules
+                empty_param.ds_persist = param.ds_persist
+                empty_param.is_external_param = param.is_external_param
+                empty_param.ds_process_group = param.ds_process_group
+                empty_param.ds_zero_param_process_group = param.ds_zero_param_process_group
+                empty_param.ds_secondary_tensor = param.ds_secondary_tensor
+                empty_param.ds_secondary_tensor_group_size = param.ds_secondary_tensor_group_size
+                empty_param.ds_secondary_tensor_num_of_groups = param.ds_secondary_tensor_num_of_groups
+                empty_param.nvme_swapper = param.nvme_swapper
+                empty_param.ds_id = param.ds_id
+                empty_param.all_gather = param.all_gather
+                empty_param.all_gather_coalesced = param.all_gather_coalesced
+                empty_param.partition = param.partition
+                empty_param.reduce_gradients_at_owner = param.reduce_gradients_at_owner
+                empty_param.partition_gradients = param.partition_gradients
+                empty_param.aligned_size = param.aligned_size
+                empty_param.padding_size = param.padding_size
+                empty_param.partition_numel = param.partition_numel
+                empty_param.ds_summary = param.ds_summary
+                empty_param.item = param.item
+                empty_param.convert_to_zero_parameters = param.convert_to_zero_parameters
+
+                return empty_param
+
+            def _set_empty_tensor_recursively(module):
+                for name, child in module.named_children():
+                    _set_empty_tensor_recursively(child)
+
+                for name, param in module.named_parameters(recurse=False):
+                    if hasattr(param, 'ds_id'):
+                        empty_param = _convert_to_empty_tensor(param)
+                        print(f"Converting {name} to empty tensor")
+                        setattr(module, name, empty_param)
+
+            _set_empty_tensor_recursively(self.module)
+            backend = stage3_backend
 
         self.module.compile(backend=backend, **compile_kwargs)
         self._is_compiled = True

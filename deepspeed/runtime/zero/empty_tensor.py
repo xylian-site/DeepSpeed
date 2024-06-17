@@ -54,7 +54,7 @@ class EmptyTensor(torch.Tensor):
             requires_grad=elem.requires_grad,
             device=elem.device,
         )
-        obj.mode = False
+        obj.mode = True
         obj.elem = elem
 
         return obj
@@ -64,16 +64,10 @@ class EmptyTensor(torch.Tensor):
         def inflate(t):
             if isinstance(t, cls):
                 with no_dispatch():
-                    if t.mode == True:
+                    if t.mode:
                         return torch.ones_like(t, device=t.device)
                     else:
                         return t.elem
-            else:
-                return t
-
-        def deflate(t):
-            if isinstance(t, torch.Tensor) and not isinstance(t, cls):
-                return EmptyTensor(t)
             else:
                 return t
             

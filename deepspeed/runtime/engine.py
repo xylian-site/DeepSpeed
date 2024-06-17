@@ -3660,11 +3660,12 @@ class DeepSpeedEngine(Module):
                         print(f"Converting module {module.id} {name} to empty tensor")
                         setattr(module, name, empty_param)
 
-            _set_empty_tensor_recursively(self.module)
-
             for m in self.module.modules():
                 m._parameters = m._original_parameters
             self.optimizer.parameter_offload._remove_module_hooks()
+
+            _set_empty_tensor_recursively(self.module)
+
             backend = stage3_backend
 
         self.module.compile(backend=backend, **compile_kwargs)

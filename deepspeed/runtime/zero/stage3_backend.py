@@ -22,11 +22,8 @@ def make_gather_func(name: str):
         torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
         def f(x):
-            if hasattr(x, "allgather"):
-                print(f"[r0] ds_compile::gather_param all-gathering name={name} id={id(x)} hasattr(param, 'ds_id')={hasattr(x, 'ds_id')}")
-                # x.all_gather(param_list=[x])
-            else:
-                print(f"[r0] ds_compile::gather_param NO all-gathering name={name} id={id(x)} hasattr(param, 'ds_id')={hasattr(x, 'ds_id')}")
+            if hasattr(x, "all_gather"):
+                x.all_gather(param_list=[x])
             return x
 
         torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], f)
@@ -96,7 +93,6 @@ def stage3_backend(gm, sample_inputs):
         with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
-        print(f"gm: {gm.__class__} {gm.forward.__class__} {gm.graph} #params={len(list(gm.parameters()))}")
         
         trans = Z3GraphTransformer(gm.graph)
         # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)

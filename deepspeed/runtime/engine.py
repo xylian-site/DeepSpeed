@@ -3657,7 +3657,6 @@ class DeepSpeedEngine(Module):
                 for name, param in module.named_parameters(recurse=False):
                     if hasattr(param, 'ds_id'):
                         empty_param = _convert_to_empty_tensor(param)
-                        print(f"Converting module {module.id} {name} to empty tensor")
                         setattr(module, name, empty_param)
 
             for m in self.module.modules():

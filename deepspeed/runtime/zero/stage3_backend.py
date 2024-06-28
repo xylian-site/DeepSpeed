@@ -16,12 +16,13 @@ from torch.fx import Node, Graph, symbolic_trace, GraphModule, Proxy
 import operator
 
 
-def make_gather_func(name: str):
+def make_allgather_func(name: str):
 
-    def gather_fn():
+    def allgather_fn():
         torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
         def f(x):
+            print(f"allgather_fn {name}")
             if hasattr(x, "all_gather"):
                 x.all_gather(param_list=[x])
             return x
@@ -29,7 +30,7 @@ def make_gather_func(name: str):
         torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], f)
         return f
     
-    return gather_fn()
+    return allgather_fn()
 
 
 
@@ -127,6 +128,10 @@ def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any]):
             u.replace_input_with(old_in, new_in)
 
 
+def add_allgather(graph: Graph, node: Node):
+    add_postprocess(graph, node, make_allgather_func)
+
+
 backend_count = 0
 fw_count = 0
 def make_stage3_backend(module: torch.nn.Module):
@@ -149,10 +154,10 @@ def make_stage3_backend(module: torch.nn.Module):
                 print(f"node: {n} {n.op} {n.target} {n.kwargs} {n.users}")
 
             param_nodes = get_param_nodes(gm.graph, n_params)
-            for pn in param_nodes:
-                add_postprocess(gm.graph, pn, make_preprocess_func)
-
             param_users = get_param_users(gm.graph, n_params)
+            for pn in param_nodes:
+                add_allgather(gm.graph, pn)
+
             for p, users in param_users.items():
                 for u in users:
                     add_postprocess(gm.graph, u, make_postprocess_func)

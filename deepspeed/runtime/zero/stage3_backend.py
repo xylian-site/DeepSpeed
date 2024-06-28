@@ -32,6 +32,29 @@ def make_gather_func(name: str):
     return gather_fn()
 
 
+
+def make_preprocess_func(name: str):
+
+    def preprocess_fn():
+        def f(x):
+            print(f"preprocess_fn {name}")
+            return x
+        return f
+    
+    return preprocess_fn()
+
+
+def make_postprocess_func(name: str):
+
+    def postprocess_fn():
+        def f(x):
+            print(f"postprocess_fn {name}")
+            return x
+        return f
+    
+    return postprocess_fn()
+
+
 class Z3GraphTransformer:
     def __init__(self, g: Graph) -> None:
         self.g = g
@@ -91,31 +114,17 @@ def get_param_users(graph: Graph, n_params: int):
     return {p: set(p.users.keys()) for p in param_nodes}
 
 
-def wrap_func_node(graph):
-    new_graph = Graph()
-    env = {}
-    tracer = torch.fx.proxy.GraphAppendingTracer(new_graph)
-    for node in graph.nodes:
-        if node.op == 'call_function' and node.target in decomposition_rules:
-            # By wrapping the arguments with proxies,
-            # we can dispatch to the appropriate
-            # decomposition rule and implicitly add it
-            # to the Graph by symbolically tracing it.
-            proxy_args = [
-                Proxy(env[x.name], tracer) if isinstance(x, Node) else x for x in node.args]
-            output_proxy = decomposition_rules[node.target](*proxy_args)
-
-            # Operations on `Proxy` always yield new `Proxy`s, and the
-            # return value of our decomposition rule is no exception.
-            # We need to extract the underlying `Node` from the `Proxy`
-            # to use it in subsequent iterations of this transform.
-            new_node = output_proxy.node
-            env[node.name] = new_node
-        else:
-            # Default case: we don't have a decomposition rule for this
-            # node, so just copy the node over into the new graph.
-            new_node = new_graph.node_copy(node, lambda x: env[x.name])
-            env[node.name] = new_node
+def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any]):
+    # https://github.com/pytorch/examples/blob/main/fx/wrap_output_dynamically.py
+    with graph.inserting_after(node):
+        node_users = node.users.keys()
+        new_node = graph.call_function(fn(node.target), (node,), {})
+        users = {}
+        for u in node_users:
+            if u != new_node:
+                users[u] = (node, new_node)
+        for u, (old_in, new_in) in users.items():
+            u.replace_input_with(old_in, new_in)
 
 
 backend_count = 0
@@ -137,21 +146,20 @@ def make_stage3_backend(module: torch.nn.Module):
                 file.write(g.get_dot_graph().create_svg())
 
             for n in gm.graph.nodes:
-                print(f"1 node: {n} {n.op} {n.target} {n.kwargs} {n.users}")
+                print(f"node: {n} {n.op} {n.target} {n.kwargs} {n.users}")
 
-            # param_nodes = get_param_nodes(gm.graph, n_params)
-            # for pn in param_nodes:
-            #     print(f"param: {pn}")
+            param_nodes = get_param_nodes(gm.graph, n_params)
+            for pn in param_nodes:
+                add_postprocess(gm.graph, pn, make_preprocess_func)
+
             param_users = get_param_users(gm.graph, n_params)
-            print(f"param_users: {param_users}")
-
-            # print(f"2 GraphModule: {gm.__class__} graph: {graph.__class__}")
-            # for n, p in gm.named_parameters():
-            #     print(f"2 param: {n} {p.shape} {p.device}")
+            for p, users in param_users.items():
+                for u in users:
+                    add_postprocess(gm.graph, u, make_postprocess_func)
 
             trans = Z3GraphTransformer(gm.graph)
             # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)
-            trans.insert_gather_with_name_after()
+            # trans.insert_gather_with_name_after()
             gm.recompile()
 
             g = FxGraphDrawer(gm, 'fn')

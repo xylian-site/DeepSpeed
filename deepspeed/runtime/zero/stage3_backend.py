@@ -12,7 +12,7 @@ from deepspeed.accelerator import get_accelerator
 
 from typing import Callable, Any
 import torch
-from torch.fx import Node, Graph, symbolic_trace
+from torch.fx import Node, Graph, symbolic_trace, GraphModule, Proxy
 import operator
 
 
@@ -81,38 +81,93 @@ class Z3GraphTransformer:
             u.replace_input_with(old_in, new_in)
 
 
+
+def get_param_nodes(graph: Graph, n_params: int):
+    return [n for n in graph.nodes if n.op == "placeholder"][:n_params]
+
+
+def get_param_users(graph: Graph, n_params: int):
+    param_nodes = get_param_nodes(graph, n_params)
+    return {p: set(p.users.keys()) for p in param_nodes}
+
+
+def wrap_func_node(graph):
+    new_graph = Graph()
+    env = {}
+    tracer = torch.fx.proxy.GraphAppendingTracer(new_graph)
+    for node in graph.nodes:
+        if node.op == 'call_function' and node.target in decomposition_rules:
+            # By wrapping the arguments with proxies,
+            # we can dispatch to the appropriate
+            # decomposition rule and implicitly add it
+            # to the Graph by symbolically tracing it.
+            proxy_args = [
+                Proxy(env[x.name], tracer) if isinstance(x, Node) else x for x in node.args]
+            output_proxy = decomposition_rules[node.target](*proxy_args)
+
+            # Operations on `Proxy` always yield new `Proxy`s, and the
+            # return value of our decomposition rule is no exception.
+            # We need to extract the underlying `Node` from the `Proxy`
+            # to use it in subsequent iterations of this transform.
+            new_node = output_proxy.node
+            env[node.name] = new_node
+        else:
+            # Default case: we don't have a decomposition rule for this
+            # node, so just copy the node over into the new graph.
+            new_node = new_graph.node_copy(node, lambda x: env[x.name])
+            env[node.name] = new_node
+
+
 backend_count = 0
 fw_count = 0
-def stage3_backend(gm, sample_inputs): 
-    global backend_count
+def make_stage3_backend(module: torch.nn.Module):
+    def stage3_backend(gm: GraphModule, sample_inputs): 
+        global backend_count
 
-    # # Forward compiler capture
-    def fw(gm, sample_inputs):
-        global fw_count
-        g = FxGraphDrawer(gm, 'fn')
-        with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
-            file.write(g.get_dot_graph().create_svg())
+        graph = gm.graph
+        n_params = len(list(gm.named_parameters()))
 
+        graph.process_inputs(sample_inputs)
+
+        # # Forward compiler capture
+        def fw(gm, sample_inputs):
+            global fw_count
+            g = FxGraphDrawer(gm, 'fn')
+            with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+                file.write(g.get_dot_graph().create_svg())
+
+            for n in gm.graph.nodes:
+                print(f"1 node: {n} {n.op} {n.target} {n.kwargs} {n.users}")
+
+            # param_nodes = get_param_nodes(gm.graph, n_params)
+            # for pn in param_nodes:
+            #     print(f"param: {pn}")
+            param_users = get_param_users(gm.graph, n_params)
+            print(f"param_users: {param_users}")
+
+            # print(f"2 GraphModule: {gm.__class__} graph: {graph.__class__}")
+            # for n, p in gm.named_parameters():
+            #     print(f"2 param: {n} {p.shape} {p.device}")
+
+            trans = Z3GraphTransformer(gm.graph)
+            # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)
+            trans.insert_gather_with_name_after()
+            gm.recompile()
+
+            g = FxGraphDrawer(gm, 'fn')
+            with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+                file.write(g.get_dot_graph().create_svg())
+
+            fw_count += 1
+
+            return make_boxed_func(gm.forward)
         
-        trans = Z3GraphTransformer(gm.graph)
-        # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)
-        trans.insert_gather_with_name_after()
-        gm.recompile()
+        # # # Call AOTAutograd
+        aot_mod = aot_module_simplified(gm, sample_inputs,
+                                        fw_compiler=fw)
 
-        g = FxGraphDrawer(gm, 'fn')
-        with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-            file.write(g.get_dot_graph().create_svg())
+        backend_count += 1
 
-        fw_count += 1
+        return aot_mod
 
-        return make_boxed_func(gm.forward)
-    
-    # # # Call AOTAutograd
-    aot_mod = aot_module_simplified(gm, sample_inputs,
-                                       fw_compiler=fw)
-
-    backend_count += 1
-
-    return aot_mod
-
-
+    return stage3_backend

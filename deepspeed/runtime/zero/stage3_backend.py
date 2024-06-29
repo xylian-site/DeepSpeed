@@ -10,6 +10,7 @@ from torch._functorch.aot_autograd import aot_module_simplified
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.compile.tracer import ParamLifetimeCheckTracer, add_dependency_on_params
+from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
 from typing import Callable, Any
 import torch
@@ -17,29 +18,31 @@ from torch.fx import Node, Graph, symbolic_trace, GraphModule, Proxy
 import operator
 
 
+import os
+pid = os.getpid()
+
 def make_allgather_func(name: str):
 
     def allgather_fn():
-        torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
+        # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
-        def f(x):
-            print(f"allgather_fn {name}")
+        def allgather_param(x):
+            print(f"[{pid}] allgather_fn {name}")
             if hasattr(x, "all_gather"):
                 x.all_gather(param_list=[x])
             return x
 
-        torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], f)
-        return f
+        # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
+        return allgather_param
     
     return allgather_fn()
-
 
 
 def make_preprocess_func(name: str):
 
     def preprocess_fn():
         def f(x):
-            print(f"preprocess_fn {name}")
+            print(f"[{pid}] preprocess_fn {name}")
             return x
         return f
     
@@ -50,7 +53,7 @@ def make_postprocess_func(name: str):
 
     def postprocess_fn():
         def f(x):
-            print(f"postprocess_fn {name}")
+            print(f"[{pid}] postprocess_fn {name}")
             return x
         return f
     
@@ -156,6 +159,11 @@ def make_stage3_backend(module: torch.nn.Module):
             for n in new_graph.nodes:
                 print(f"node: {n} {n.op} {n.target} {n.kwargs} users={n.users} required_inputs={n.required_inputs}")
 
+            nx_graph = fx_to_nx(new_graph)
+            for pn in param_nodes:
+                dependent_nodes = [n for n in new_graph.nodes if pn in n.required_inputs]
+                release_nodes = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+                print(f"release_nodes for {pn}: {release_nodes}")
 
             g = FxGraphDrawer(gm, 'fn')
             with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
@@ -165,9 +173,9 @@ def make_stage3_backend(module: torch.nn.Module):
             for pn in param_nodes:
                 add_allgather(gm.graph, pn)
 
-            for p, users in param_users.items():
-                for u in users:
-                    add_postprocess(gm.graph, u, make_postprocess_func)
+            # for p, users in param_users.items():
+            #     for u in users:
+            #         add_postprocess(gm.graph, u, make_postprocess_func)
 
             trans = Z3GraphTransformer(gm.graph)
             # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)

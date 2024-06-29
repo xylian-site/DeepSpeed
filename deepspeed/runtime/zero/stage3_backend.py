@@ -9,6 +9,7 @@ from torch._functorch.aot_autograd import aot_module_simplified
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
+from deepspeed.runtime.zero.compile.tracer import ParamLifetimeCheckTracer, retrace
 
 from typing import Callable, Any
 import torch
@@ -149,10 +150,16 @@ def make_stage3_backend(module: torch.nn.Module):
             g = FxGraphDrawer(gm, 'fn')
             with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
                 file.write(g.get_dot_graph().create_svg())
+            
+            new_graph = retrace(gm.graph)
+            for n in new_graph.nodes:
+                print(f"node: {n} {n.op} {n.target} {n.kwargs} users={n.users} required_inputs={n.required_inputs}")
 
-            for n in gm.graph.nodes:
-                print(f"node: {n} {n.op} {n.target} {n.kwargs} {n.users}")
 
+            g = FxGraphDrawer(gm, 'fn')
+            with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+                file.write(g.get_dot_graph().create_svg())
+                
             param_nodes = get_param_nodes(gm.graph, n_params)
             param_users = get_param_users(gm.graph, n_params)
             for pn in param_nodes:

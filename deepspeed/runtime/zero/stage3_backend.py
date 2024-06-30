@@ -23,19 +23,16 @@ pid = os.getpid()
 
 def make_allgather_func(name: str):
 
-    def allgather_fn():
-        # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
+    # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
-        def allgather_param(x):
-            print(f"[{pid}] allgather_fn {name}")
-            if hasattr(x, "all_gather"):
-                x.all_gather(param_list=[x])
-            return x
+    def allgather_param(x):
+        print(f"[{pid}] allgather_fn {name}")
+        if hasattr(x, "all_gather"):
+            x.all_gather(param_list=[x])
+        return x
 
-        # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
-        return allgather_param
-    
-    return allgather_fn()
+    # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
+    return allgather_param
 
 
 def make_preprocess_func(name: str):
@@ -160,22 +157,18 @@ def make_stage3_backend(module: torch.nn.Module):
                 print(f"node: {n} {n.op} {n.target} {n.kwargs} users={n.users} required_inputs={n.required_inputs}")
 
             nx_graph = fx_to_nx(new_graph)
+            release_nodes = {}
             for pn in param_nodes:
                 dependent_nodes = [n for n in new_graph.nodes if pn in n.required_inputs]
-                release_nodes = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
-                print(f"release_nodes for {pn}: {release_nodes}")
-
-            g = FxGraphDrawer(gm, 'fn')
-            with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-                file.write(g.get_dot_graph().create_svg())
+                release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+            print(f"release_nodes: {release_nodes}")
                 
             param_users = get_param_users(gm.graph, n_params)
             for pn in param_nodes:
                 add_allgather(gm.graph, pn)
 
-            # for p, users in param_users.items():
-            #     for u in users:
-            #         add_postprocess(gm.graph, u, make_postprocess_func)
+            # for v, node in release_nodes.items():
+            #     add_postprocess(gm.graph, node, make_postprocess_func)
 
             trans = Z3GraphTransformer(gm.graph)
             # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)

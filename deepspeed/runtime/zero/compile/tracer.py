@@ -11,41 +11,25 @@ ops_reuse_inputs = [
     aten.t.default
 ]
 
-def add_dependency_on_params(graph: Graph, param_nodes: List[Node]) -> Graph:
-    new_graph = Graph()
-    env = {}
+def add_dependency_on_params(graph: Graph, param_nodes: List[Node]) -> None:
     reuse_inputs = defaultdict(list)
 
-    tracer = GraphAppendingTracer(new_graph)
     for node in graph.nodes:
         if node.op == 'call_function':
-            proxy_args = [
-                Proxy(env[x.name], tracer) if isinstance(x, Node) else x for x in node.args]
-            output_proxy = node.target(*proxy_args)
-
-            new_node = output_proxy.node
-            env[node.name] = new_node
-
-            if new_node.target in ops_reuse_inputs:
-                for a in new_node.args:
+            if node.target in ops_reuse_inputs:
+                for a in node.args:
                     for param, users in reuse_inputs.items():
                         if a in users:
-                            users.append(new_node)
-
+                            users.append(node)
         else:
-            new_node = new_graph.node_copy(node, lambda x: env[x.name])
-            env[node.name] = new_node
-
             if node.op == 'placeholder' and node in param_nodes:
-                reuse_inputs[node].append(new_node)
+                reuse_inputs[node].append(node)
 
-        new_node.required_inputs = []
-        for a in new_node.args:
+        node.required_inputs = []
+        for a in node.args:
             for param, users in reuse_inputs.items():
                 if a in users:
-                    new_node.required_inputs.append(param)
-
-    return new_graph
+                    node.required_inputs.append(param)
 
 
 def fake_to_real(a):

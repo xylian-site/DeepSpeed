@@ -35,76 +35,15 @@ def make_allgather_func(name: str):
     return allgather_param
 
 
-def make_preprocess_func(name: str):
+def make_release_func(name: str):
 
-    def preprocess_fn():
-        def f(x):
-            print(f"[{pid}] preprocess_fn {name}")
-            return x
-        return f
-    
-    return preprocess_fn()
+    def release_param(*x):
+        print(f"[{pid}] release_fn {name}")
+        if len(x) == 1:
+            x = x[0]
+        return x
 
-
-def make_postprocess_func(name: str):
-
-    def postprocess_fn():
-        def f(x):
-            print(f"[{pid}] postprocess_fn {name}")
-            return x
-        return f
-    
-    return postprocess_fn()
-
-
-class Z3GraphTransformer:
-    def __init__(self, g: Graph) -> None:
-        self.g = g
-
-    def insert_fn_before(self,
-                         fn: Callable[..., Any],
-                         node_cond_fn: Callable[[Node], bool],
-                         in_cond_fn: Callable[[Node], bool]=lambda _: True) -> None:
-        for n in self.g.nodes:
-            if node_cond_fn(n):
-                for in_node in n.all_input_nodes:
-                    if in_cond_fn(in_node):
-                        with self.g.inserting_before(n):
-                            new_node = self.g.call_function(fn, (in_node,), {})
-                            n.replace_input_with(in_node, new_node)
-
-    def insert_fn_after(self, cond_fn: Callable[[Node], bool], fn: Callable[..., Any]) -> None:
-        print(f"insert_fn_after cond_fn={cond_fn}, fn={fn}")
-        users = {}
-        for n in self.g.nodes:
-            print(f"insert_fn_after n={n} class={n.__class__}")
-            if cond_fn(n):
-                with self.g.inserting_after(n):
-                    node_users = n.users.keys()
-                    print(n)
-                    new_node = self.g.call_function(fn, (n,), {})
-                    for u in node_users:
-                        if u != new_node:
-                            users[u] = (n, new_node)
-        for u, (old_in, new_in) in users.items():
-            u.replace_input_with(old_in, new_in)
-
-    def insert_gather_with_name_after(self) -> None:
-        cond_fn = lambda n: n.op == "placeholder"
-        # print(f"insert_gather_with_name_after cond_fn={cond_fn}")
-        users = {}
-        for n in self.g.nodes:
-            # print(f"insert_gather_with_name_after n={n} class={n.__class__}")
-            if cond_fn(n):
-                with self.g.inserting_after(n):
-                    node_users = n.users.keys()
-                    new_node = self.g.call_function(make_gather_func(n), (n,), {})
-                    for u in node_users:
-                        if u != new_node:
-                            users[u] = (n, new_node)
-        for u, (old_in, new_in) in users.items():
-            u.replace_input_with(old_in, new_in)
-
+    return release_param
 
 
 def get_param_nodes(graph: Graph, n_params: int):
@@ -120,7 +59,7 @@ def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any]):
     # https://github.com/pytorch/examples/blob/main/fx/wrap_output_dynamically.py
     with graph.inserting_after(node):
         node_users = node.users.keys()
-        new_node = graph.call_function(fn(node.target), (node,), {})
+        new_node = graph.call_function(fn, (node,), {})
         users = {}
         for u in node_users:
             if u != new_node:
@@ -130,7 +69,11 @@ def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any]):
 
 
 def add_allgather(graph: Graph, node: Node):
-    add_postprocess(graph, node, make_allgather_func)
+    add_postprocess(graph, node, make_allgather_func(node.target))
+
+
+def add_release(graph: Graph, node: Node, release_node: Node):
+    add_postprocess(graph, node, make_release_func(release_node.target))
 
 
 backend_count = 0
@@ -144,35 +87,30 @@ def make_stage3_backend(module: torch.nn.Module):
 
         graph.process_inputs(sample_inputs)
 
-        # # Forward compiler capture
+        # Forward compiler capture
         def fw(gm, sample_inputs):
             global fw_count
             g = FxGraphDrawer(gm, 'fn')
             with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
                 file.write(g.get_dot_graph().create_svg())
             
-            param_nodes = get_param_nodes(gm.graph, n_params)
-            new_graph = add_dependency_on_params(gm.graph, param_nodes)
-            for n in new_graph.nodes:
-                print(f"node: {n} {n.op} {n.target} {n.kwargs} users={n.users} required_inputs={n.required_inputs}")
+            graph = gm.graph
+            param_nodes = get_param_nodes(graph, n_params)
+            add_dependency_on_params(graph, param_nodes)
 
-            nx_graph = fx_to_nx(new_graph)
+            nx_graph = fx_to_nx(graph)
             release_nodes = {}
             for pn in param_nodes:
-                dependent_nodes = [n for n in new_graph.nodes if pn in n.required_inputs]
+                dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
                 release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
-            print(f"release_nodes: {release_nodes}")
                 
-            param_users = get_param_users(gm.graph, n_params)
             for pn in param_nodes:
-                add_allgather(gm.graph, pn)
+                add_allgather(graph, pn)
 
-            # for v, node in release_nodes.items():
-            #     add_postprocess(gm.graph, node, make_postprocess_func)
+            for v, nodes in release_nodes.items():
+                for node in nodes:
+                    add_release(graph, node, v)
 
-            trans = Z3GraphTransformer(gm.graph)
-            # trans.insert_fn_after(lambda n: n.op == "placeholder", torch.ops.ds_compile.gather_param)
-            # trans.insert_gather_with_name_after()
             gm.recompile()
 
             g = FxGraphDrawer(gm, 'fn')
@@ -183,7 +121,7 @@ def make_stage3_backend(module: torch.nn.Module):
 
             return make_boxed_func(gm.forward)
         
-        # # # Call AOTAutograd
+        # Call AOTAutograd
         aot_mod = aot_module_simplified(gm, sample_inputs,
                                         fw_compiler=fw)
 

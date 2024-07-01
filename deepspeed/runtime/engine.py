@@ -3626,6 +3626,10 @@ class DeepSpeedEngine(Module):
 
         if self.zero_optimization_stage() == ZeroStageEnum.weights:
             def _convert_to_empty_tensor(param):
+                if param.ds_persist:
+                    param.all_gather(param_list=[param])
+                    return param
+
                 with deepspeed.zero.GatheredParameters([param]):
                     empty_param = torch.nn.Parameter(EmptyTensor(param))
 

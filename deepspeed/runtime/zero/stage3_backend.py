@@ -42,7 +42,6 @@ def make_release_func(name: str):
         global gathered_params
         if name in gathered_params:
             param = gathered_params.pop(name)
-            print(f"[{pid}] release_fn {name}")
             param.partition(param_list=[param], has_been_updated=False)
         if len(x) == 1:
             x = x[0]
@@ -126,7 +125,7 @@ def make_stage3_backend(module: torch.nn.Module):
         # Call AOTAutograd
         aot_mod = aot_module_simplified(gm, sample_inputs,
                                         fw_compiler=fw)
-        # aot_mod = torch._dynamo.optimize()(aot_mod)
+        aot_mod = torch._dynamo.optimize()(aot_mod)
 
         backend_count += 1
         return aot_mod

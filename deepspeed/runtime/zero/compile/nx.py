@@ -5,14 +5,17 @@ def fx_to_nx(fx_graph):
     """Converts a torch.fx.Graph to a NetworkX graph."""
     nx_graph = nx.DiGraph()
 
-    def traverse(node: fx.Node):
-        if node in nx_graph:
-            return
-        nx_graph.add_node(node)
-
-        for next_node in node.users.keys():
-            traverse(next_node)
-            nx_graph.add_edge(node, next_node)
+    def traverse(start_node: fx.Node):
+        stack = [start_node]
+        while stack:
+            node = stack.pop()
+            if node in nx_graph:
+                continue
+            nx_graph.add_node(node)
+            for next_node in node.users.keys():
+                if next_node not in nx_graph:
+                    stack.append(next_node)
+                nx_graph.add_edge(node, next_node)
 
     for node in fx_graph.nodes:
         traverse(node)

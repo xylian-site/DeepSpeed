@@ -80,6 +80,27 @@ def add_release(graph: Graph, node: Node, release_node: Node):
     add_postprocess(graph, node, make_release_func(release_node.target))
 
 
+def add_gather_and_release(gm: GraphModule, n_params: int):
+    graph = gm.graph
+    param_nodes = get_param_nodes(graph, n_params)
+    add_dependency_on_params(graph, param_nodes)
+
+    nx_graph = fx_to_nx(graph)
+    release_nodes = {}
+    for pn in param_nodes:
+        dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
+        release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+        
+    for pn in param_nodes:
+        add_allgather(graph, pn)
+
+    for v, nodes in release_nodes.items():
+        for node in nodes:
+            add_release(graph, node, v)
+
+    gm.recompile()
+
+
 backend_count = 0
 fw_count = 0
 def stage3_backend(gm: GraphModule, sample_inputs): 
@@ -87,43 +108,30 @@ def stage3_backend(gm: GraphModule, sample_inputs):
 
     n_params = len(list(gm.named_parameters()))
 
-    # Forward compiler capture
     def fw(gm, sample_inputs):
-        global fw_count
-        # g = FxGraphDrawer(gm, 'fn')
-        # with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
-        #     file.write(g.get_dot_graph().create_svg())
+        # global fw_count
+        # # g = FxGraphDrawer(gm, 'fn')
+        # # with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+        # #     file.write(g.get_dot_graph().create_svg())
 
-        graph = gm.graph
-        param_nodes = get_param_nodes(graph, n_params)
-        add_dependency_on_params(graph, param_nodes)
+        add_gather_and_release(gm, n_params)
 
-        nx_graph = fx_to_nx(graph)
-        release_nodes = {}
-        for pn in param_nodes:
-            dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
-            release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
-            
-        for pn in param_nodes:
-            add_allgather(graph, pn)
+        # # g = FxGraphDrawer(gm, 'fn')
+        # # with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+        # #     file.write(g.get_dot_graph().create_svg())
 
-        for v, nodes in release_nodes.items():
-            for node in nodes:
-                add_release(graph, node, v)
+        # fw_count += 1
 
-        gm.recompile()
+        return make_boxed_func(gm.forward)
 
-        # g = FxGraphDrawer(gm, 'fn')
-        # with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-        #     file.write(g.get_dot_graph().create_svg())
-
-        fw_count += 1
-
+    def bw(gm, sample_inputs):
+        add_gather_and_release(gm, n_params)
         return make_boxed_func(gm.forward)
 
     # Call AOTAutograd
     aot_mod = aot_module_simplified(gm, sample_inputs,
-                                    fw_compiler=fw)
+                                    fw_compiler=fw,
+                                    bw_compiler=bw)
     aot_mod = torch._dynamo.optimize()(aot_mod)
 
     backend_count += 1

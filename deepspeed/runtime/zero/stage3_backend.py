@@ -82,53 +82,50 @@ def add_release(graph: Graph, node: Node, release_node: Node):
 
 backend_count = 0
 fw_count = 0
-def make_stage3_backend(module: torch.nn.Module):
-    def stage3_backend(gm: GraphModule, sample_inputs): 
-        global backend_count
+def stage3_backend(gm: GraphModule, sample_inputs): 
+    global backend_count
 
-        n_params = len(list(gm.named_parameters()))
+    n_params = len(list(gm.named_parameters()))
 
-        # Forward compiler capture
-        def fw(gm, sample_inputs):
-            global fw_count
-            g = FxGraphDrawer(gm, 'fn')
-            with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
-                file.write(g.get_dot_graph().create_svg())
+    # Forward compiler capture
+    def fw(gm, sample_inputs):
+        global fw_count
+        # g = FxGraphDrawer(gm, 'fn')
+        # with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+        #     file.write(g.get_dot_graph().create_svg())
 
-            graph = gm.graph
-            param_nodes = get_param_nodes(graph, n_params)
-            add_dependency_on_params(graph, param_nodes)
+        graph = gm.graph
+        param_nodes = get_param_nodes(graph, n_params)
+        add_dependency_on_params(graph, param_nodes)
 
-            nx_graph = fx_to_nx(graph)
-            release_nodes = {}
-            for pn in param_nodes:
-                dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
-                release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
-                
-            for pn in param_nodes:
-                add_allgather(graph, pn)
+        nx_graph = fx_to_nx(graph)
+        release_nodes = {}
+        for pn in param_nodes:
+            dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
+            release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+            
+        for pn in param_nodes:
+            add_allgather(graph, pn)
 
-            for v, nodes in release_nodes.items():
-                for node in nodes:
-                    add_release(graph, node, v)
+        for v, nodes in release_nodes.items():
+            for node in nodes:
+                add_release(graph, node, v)
 
-            gm.recompile()
+        gm.recompile()
 
-            g = FxGraphDrawer(gm, 'fn')
-            with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-                file.write(g.get_dot_graph().create_svg())
+        # g = FxGraphDrawer(gm, 'fn')
+        # with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+        #     file.write(g.get_dot_graph().create_svg())
 
-            fw_count += 1
+        fw_count += 1
 
-            return make_boxed_func(gm.forward)
+        return make_boxed_func(gm.forward)
 
-        # Call AOTAutograd
-        aot_mod = aot_module_simplified(gm, sample_inputs,
-                                        fw_compiler=fw)
-        aot_mod = torch._dynamo.optimize()(aot_mod)
+    # Call AOTAutograd
+    aot_mod = aot_module_simplified(gm, sample_inputs,
+                                    fw_compiler=fw)
+    aot_mod = torch._dynamo.optimize()(aot_mod)
 
-        backend_count += 1
-        return aot_mod
-
-    return stage3_backend
+    backend_count += 1
+    return aot_mod
 

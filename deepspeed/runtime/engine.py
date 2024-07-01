@@ -30,7 +30,7 @@ from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload, ZeROOrderedDict
 from deepspeed.runtime.zero.empty_tensor import EmptyTensor
-from deepspeed.runtime.zero.stage3_backend import make_stage3_backend
+from deepspeed.runtime.zero.stage3_backend import stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
 
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -3679,7 +3679,7 @@ class DeepSpeedEngine(Module):
 
             _set_empty_tensor_recursively(self.module)
 
-            backend = make_stage3_backend(self.modules)
+            backend = stage3_backend
 
         self.module.compile(backend=backend, **compile_kwargs)
         self._is_compiled = True

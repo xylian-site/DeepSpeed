@@ -3656,6 +3656,8 @@ class DeepSpeedEngine(Module):
                 empty_param.item = param.item
                 empty_param.convert_to_zero_parameters = param.convert_to_zero_parameters
 
+                empty_param.ds_param = param
+
                 return empty_param
 
             def _set_empty_tensor_recursively(module):

@@ -54,8 +54,6 @@ class EmptyTensor(torch.Tensor):
             requires_grad=elem.requires_grad,
             device=elem.device,
         )
-        obj.mode = True
-        obj.elem = elem
 
         return obj
 
@@ -64,13 +62,10 @@ class EmptyTensor(torch.Tensor):
         def inflate(t):
             if isinstance(t, cls):
                 with no_dispatch():
-                    if t.mode:
-                        return torch.ones_like(t, device=t.device)
-                    else:
-                        return t.elem
+                    return torch.ones_like(t, device=t.device)
             else:
                 return t
-            
+
         args = tree_map(inflate, args)
         kwargs = tree_map(inflate, kwargs)
 

@@ -7,28 +7,29 @@ from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
 from torch._functorch.aot_autograd import aot_module_simplified
 
-import deepspeed.comm as dist
-from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.zero.compile.tracer import ParamLifetimeCheckTracer, add_dependency_on_params
+from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
 from typing import Callable, Any
 import torch
-from torch.fx import Node, Graph, symbolic_trace, GraphModule, Proxy
-import operator
+from torch.fx import Node, Graph, GraphModule
 
 
 import os
 pid = os.getpid()
+
+gathered_params = {}
 
 def make_allgather_func(name: str):
 
     # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
     def allgather_param(x):
-        print(f"[{pid}] allgather_fn {name}")
-        if hasattr(x, "all_gather"):
+        if hasattr(x, 'ds_param'):
+            x = x.ds_param
             x.all_gather(param_list=[x])
+            global gathered_params
+            gathered_params[name] = x
         return x
 
     # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
@@ -38,7 +39,11 @@ def make_allgather_func(name: str):
 def make_release_func(name: str):
 
     def release_param(*x):
-        print(f"[{pid}] release_fn {name}")
+        global gathered_params
+        if name in gathered_params:
+            param = gathered_params.pop(name)
+            print(f"[{pid}] release_fn {name}")
+            param.partition(param_list=[param], has_been_updated=False)
         if len(x) == 1:
             x = x[0]
         return x
@@ -82,10 +87,7 @@ def make_stage3_backend(module: torch.nn.Module):
     def stage3_backend(gm: GraphModule, sample_inputs): 
         global backend_count
 
-        graph = gm.graph
         n_params = len(list(gm.named_parameters()))
-
-        graph.process_inputs(sample_inputs)
 
         # Forward compiler capture
         def fw(gm, sample_inputs):
@@ -93,7 +95,7 @@ def make_stage3_backend(module: torch.nn.Module):
             g = FxGraphDrawer(gm, 'fn')
             with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
                 file.write(g.get_dot_graph().create_svg())
-            
+
             graph = gm.graph
             param_nodes = get_param_nodes(graph, n_params)
             add_dependency_on_params(graph, param_nodes)
@@ -120,13 +122,14 @@ def make_stage3_backend(module: torch.nn.Module):
             fw_count += 1
 
             return make_boxed_func(gm.forward)
-        
+
         # Call AOTAutograd
         aot_mod = aot_module_simplified(gm, sample_inputs,
                                         fw_compiler=fw)
+        # aot_mod = torch._dynamo.optimize()(aot_mod)
 
         backend_count += 1
-
         return aot_mod
 
     return stage3_backend
+

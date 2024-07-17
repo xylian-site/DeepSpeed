@@ -10,7 +10,7 @@ from torch._functorch.aot_autograd import aot_module_simplified
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
-from typing import Callable, Any
+from typing import Callable, Any, List, Set
 import torch
 from torch.fx import Node, Graph, GraphModule
 
@@ -25,8 +25,8 @@ def make_allgather_func(name: str):
     # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
 
     def allgather_param(x):
-        if hasattr(x, 'ds_param'):
-            x = x.ds_param
+        # print(f"allgather_param {name} {x.__class__} ds_id={hasattr(x, 'ds_id')} ds_param={hasattr(x, 'ds_param')} all_gather={hasattr(x, 'all_gather')}")
+        if hasattr(x, 'ds_id'):
             x.all_gather(param_list=[x])
             global gathered_params
             gathered_params[name] = x
@@ -51,7 +51,9 @@ def make_release_func(name: str):
 
 
 def get_param_nodes(graph: Graph, n_params: int):
-    return [n for n in graph.nodes if n.op == "placeholder"][:n_params]
+    for n in graph.nodes:
+        if n.op == "placeholder":
+            print(f"get_param_nodes {n.op} {n.name}")
 
 
 def get_param_users(graph: Graph, n_params: int):
@@ -80,9 +82,8 @@ def add_release(graph: Graph, node: Node, release_node: Node):
     add_postprocess(graph, node, make_release_func(release_node.target))
 
 
-def add_gather_and_release(gm: GraphModule, n_params: int):
+def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     graph = gm.graph
-    param_nodes = get_param_nodes(graph, n_params)
     add_dependency_on_params(graph, param_nodes)
 
     nx_graph = fx_to_nx(graph)
@@ -101,6 +102,9 @@ def add_gather_and_release(gm: GraphModule, n_params: int):
     gm.recompile()
 
 
+param_names = set()
+
+
 backend_count = 0
 fw_count = 0
 def stage3_backend(gm: GraphModule, sample_inputs): 
@@ -109,23 +113,48 @@ def stage3_backend(gm: GraphModule, sample_inputs):
     n_params = len(list(gm.named_parameters()))
 
     def fw(gm, sample_inputs):
-        # global fw_count
-        # # g = FxGraphDrawer(gm, 'fn')
-        # # with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
-        # #     file.write(g.get_dot_graph().create_svg())
+        global fw_count
+        # gm.print_readable()
+        g = FxGraphDrawer(gm, 'fn')
+        with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+            file.write(g.get_dot_graph().create_svg())
 
-        add_gather_and_release(gm, n_params)
 
-        # # g = FxGraphDrawer(gm, 'fn')
-        # # with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-        # #     file.write(g.get_dot_graph().create_svg())
+        param_nodes = [n for n in gm.graph.nodes if n.op == "placeholder"][:n_params]
 
-        # fw_count += 1
+        global param_names
+        for n in param_nodes:
+            if n.op == "placeholder":
+                param_names.add(n.name)
+
+        add_gather_and_release(gm, param_nodes)
+
+        g = FxGraphDrawer(gm, 'fn')
+        with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+            file.write(g.get_dot_graph().create_svg())
+
+        fw_count += 1
 
         return make_boxed_func(gm.forward)
 
     def bw(gm, sample_inputs):
-        add_gather_and_release(gm, n_params)
+        g = FxGraphDrawer(gm, 'fn')
+        gm.print_readable()
+        with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+            file.write(g.get_dot_graph().create_svg())
+
+        for v in gm.graph.nodes:
+            if v.op == "placeholder":
+                print(f"bw input {v.name} param?={v.name in param_names}")
+
+        param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
+
+        add_gather_and_release(gm, param_nodes)
+
+        g = FxGraphDrawer(gm, 'fn')
+        with open(f"backward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
+            file.write(g.get_dot_graph().create_svg())
+
         return make_boxed_func(gm.forward)
 
     # Call AOTAutograd

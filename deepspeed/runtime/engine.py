@@ -3625,59 +3625,44 @@ class DeepSpeedEngine(Module):
             return
 
         if self.zero_optimization_stage() == ZeroStageEnum.weights:
-            def _convert_to_empty_tensor(param):
-                if param.ds_persist:
-                    param.all_gather(param_list=[param])
-                    return param
-
-                with deepspeed.zero.GatheredParameters([param]):
-                    empty_param = torch.nn.Parameter(EmptyTensor(param))
-
-                empty_param.ds_param_type = param.ds_param_type
-                empty_param.ds_status = param.ds_status
-                empty_param.ds_shape = param.ds_shape
-                empty_param.ds_numel = param.ds_numel
-                empty_param.ds_tensor = param.ds_tensor
-                empty_param.ds_active_sub_modules = param.ds_active_sub_modules
-                empty_param.ds_persist = param.ds_persist
-                empty_param.is_external_param = param.is_external_param
-                empty_param.ds_process_group = param.ds_process_group
-                empty_param.ds_zero_param_process_group = param.ds_zero_param_process_group
-                empty_param.ds_secondary_tensor = param.ds_secondary_tensor
-                empty_param.ds_secondary_tensor_group_size = param.ds_secondary_tensor_group_size
-                empty_param.ds_secondary_tensor_num_of_groups = param.ds_secondary_tensor_num_of_groups
-                empty_param.nvme_swapper = param.nvme_swapper
-                empty_param.ds_id = param.ds_id
-                empty_param.all_gather = param.all_gather
-                empty_param.all_gather_coalesced = param.all_gather_coalesced
-                empty_param.partition = param.partition
-                empty_param.reduce_gradients_at_owner = param.reduce_gradients_at_owner
-                empty_param.partition_gradients = param.partition_gradients
-                empty_param.aligned_size = param.aligned_size
-                empty_param.padding_size = param.padding_size
-                empty_param.partition_numel = param.partition_numel
-                empty_param.ds_summary = param.ds_summary
-                empty_param.item = param.item
-                empty_param.convert_to_zero_parameters = param.convert_to_zero_parameters
-
-                empty_param.ds_param = param
-
-                return empty_param
-
-            def _set_empty_tensor_recursively(module):
-                for name, child in module.named_children():
-                    _set_empty_tensor_recursively(child)
-
-                for name, param in module.named_parameters(recurse=False):
-                    if hasattr(param, 'ds_id'):
-                        empty_param = _convert_to_empty_tensor(param)
-                        setattr(module, name, empty_param)
 
             for m in self.module.modules():
                 m._parameters = m._original_parameters
             self.optimizer.parameter_offload._remove_module_hooks()
 
-            _set_empty_tensor_recursively(self.module)
+            from torch._subclasses import FakeTensorMode 
+            original_from_tensor = FakeTensorMode.from_tensor
+
+            def from_tensor_wrapper(self, tensor, *args, **kwargs):
+                if hasattr(tensor, 'ds_id'):
+                    tensor = torch.randn(tensor.ds_shape, device=tensor.device, dtype=tensor.dtype)
+                return original_from_tensor(self, tensor, *args, **kwargs)
+
+            FakeTensorMode.from_tensor = from_tensor_wrapper
+
+            from torch._subclasses.fake_tensor import FakeCopyMode
+            class Z3FakeCopyMode(FakeCopyMode):
+                def __init__(self, fake_mode):
+                    super().__init__(fake_mode)
+                    self.param_map = {}
+
+                def __torch_function__(self, func, types, args=(), kwargs=None):
+                    if func == torch._C.TensorBase.clone:
+                        v = args[0]
+                        if args[0] in self.param_map:
+                            v = self.param_map[args[0]]
+                        return func(
+                            self.fake_mode.from_tensor(v, static_shapes=True), **kwargs
+                        )
+
+                    ret = super().__torch_function__(func, types, args, kwargs)
+
+                    if len(args) == 1 and isinstance(args[0], torch.nn.Parameter):
+                        self.param_map[ret] = args[0]
+
+                    return ret
+
+            torch._subclasses.fake_tensor.FakeCopyMode = Z3FakeCopyMode
 
             backend = stage3_backend
 

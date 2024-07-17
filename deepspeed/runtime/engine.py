@@ -3635,7 +3635,7 @@ class DeepSpeedEngine(Module):
 
             def from_tensor_wrapper(self, tensor, *args, **kwargs):
                 if hasattr(tensor, 'ds_id'):
-                    tensor = torch.randn(tensor.ds_shape, device=tensor.device, dtype=tensor.dtype)
+                    tensor = torch.randn(tensor.ds_shape, device=tensor.device, dtype=tensor.dtype, requires_grad=tensor.requires_grad)
                 return original_from_tensor(self, tensor, *args, **kwargs)
 
             FakeTensorMode.from_tensor = from_tensor_wrapper

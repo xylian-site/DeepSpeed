@@ -3630,6 +3630,10 @@ class DeepSpeedEngine(Module):
                 m._parameters = m._original_parameters
             self.optimizer.parameter_offload._remove_module_hooks()
 
+            for hook in self.optimizer._grad_acc_hooks:
+                hook.remove()
+            self.optimizer._grad_acc_hooks.clear()
+
             from torch._subclasses import FakeTensorMode 
             original_from_tensor = FakeTensorMode.from_tensor
 

@@ -144,8 +144,7 @@ def stage3_backend(gm: GraphModule, sample_inputs):
             file.write(g.get_dot_graph().create_svg())
 
         for v in gm.graph.nodes:
-            if v.op == "placeholder":
-                print(f"bw input {v.name} param?={v.name in param_names}")
+                v.args = ([None] * len(v.args[0]),)
 
         param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
 

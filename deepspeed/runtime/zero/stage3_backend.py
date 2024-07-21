@@ -19,6 +19,8 @@ import os
 pid = os.getpid()
 
 gathered_params = {}
+param_map = {}
+
 
 def make_allgather_func(name: str):
 
@@ -30,6 +32,9 @@ def make_allgather_func(name: str):
             x.all_gather(param_list=[x])
             global gathered_params
             gathered_params[name] = x
+
+            global param_map
+            param_map[name] = x
         return x
 
     # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
@@ -48,6 +53,15 @@ def make_release_func(name: str):
         return x
 
     return release_param
+
+
+def make_reduce_func(name: str):
+
+    def reduce_grad(*x):
+        print(f"reduce_grad {name} x={x.__class__} len={len(x)} x[0]={x[0].__class__} found_param={name in param_map} grad={param_map[name].grad}")
+        return x
+
+    return reduce_grad
 
 
 def get_param_nodes(graph: Graph, n_params: int):
@@ -82,6 +96,9 @@ def add_release(graph: Graph, node: Node, release_node: Node):
     add_postprocess(graph, node, make_release_func(release_node.target))
 
 
+def add_reduce(graph: Graph, grad_node: Node, param_name: str):
+    add_postprocess(graph, grad_node, make_reduce_func(param_name))
+
 def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     graph = gm.graph
     add_dependency_on_params(graph, param_nodes)
@@ -102,8 +119,8 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     gm.recompile()
 
 
-param_names = set()
-
+param_names = []
+param_to_grad = {}
 
 backend_count = 0
 fw_count = 0
@@ -125,7 +142,7 @@ def stage3_backend(gm: GraphModule, sample_inputs):
         global param_names
         for n in param_nodes:
             if n.op == "placeholder":
-                param_names.add(n.name)
+                param_names.append(n.name)
 
         add_gather_and_release(gm, param_nodes)
 
@@ -143,12 +160,22 @@ def stage3_backend(gm: GraphModule, sample_inputs):
         with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
+        output_node = None
         for v in gm.graph.nodes:
-                v.args = ([None] * len(v.args[0]),)
+            if v.target == "output":
+                output_node = v
+                break
 
         param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
 
         add_gather_and_release(gm, param_nodes)
+
+        for param_name, grad in zip(param_names, output_node.args[0]):
+            add_reduce(gm.graph, grad, param_name)
+
+        output_node.args = ([None] * len(v.args[0]),)
+
+        gm.recompile()
 
         g = FxGraphDrawer(gm, 'fn')
         with open(f"backward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:

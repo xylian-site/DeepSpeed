@@ -3668,8 +3668,10 @@ class DeepSpeedEngine(Module):
 
             torch._subclasses.fake_tensor.FakeCopyMode = Z3FakeCopyMode
 
+            deepspeed.runtime.zero.stage3_backend.z3_optimizer = self.optimizer
             backend = stage3_backend
 
+        print(f"Compiling")
         self.module.compile(backend=backend, **compile_kwargs)
         self._is_compiled = True
 

@@ -9,6 +9,7 @@ from torch._functorch.aot_autograd import aot_module_simplified
 
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
 from typing import Callable, Any, List, Set
 import torch
@@ -20,6 +21,7 @@ pid = os.getpid()
 
 gathered_params = {}
 param_map = {}
+z3_optimizer = None
 
 
 def make_allgather_func(name: str):
@@ -58,7 +60,16 @@ def make_release_func(name: str):
 def make_reduce_func(name: str):
 
     def reduce_grad(*x):
-        print(f"reduce_grad {name} x={x.__class__} len={len(x)} x[0]={x[0].__class__} found_param={name in param_map} grad={param_map[name].grad}")
+        if name in param_map:
+            param = param_map[name]
+            if param.ds_status != ZeroParamStatus.AVAILABLE:
+                 param.all_gather(param_list=[param])
+            param.grad = x[0]
+            z3_optimizer.reduce_ready_partitions_and_remove_grads(param)
+            param.partition(param_list=[param], has_been_updated=False)
+            return None
+        if len(x) == 1:
+            x = x[0]
         return x
 
     return reduce_grad
@@ -156,7 +167,7 @@ def stage3_backend(gm: GraphModule, sample_inputs):
 
     def bw(gm, sample_inputs):
         g = FxGraphDrawer(gm, 'fn')
-        gm.print_readable()
+        # gm.print_readable()
         with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
@@ -168,12 +179,10 @@ def stage3_backend(gm: GraphModule, sample_inputs):
 
         param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
 
-        add_gather_and_release(gm, param_nodes)
-
+        for pn in param_nodes:
+            add_allgather(gm.graph, pn)
         for param_name, grad in zip(param_names, output_node.args[0]):
             add_reduce(gm.graph, grad, param_name)
-
-        output_node.args = ([None] * len(v.args[0]),)
 
         gm.recompile()
 

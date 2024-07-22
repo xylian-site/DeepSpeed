@@ -131,7 +131,6 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
 
 
 param_names = []
-param_to_grad = {}
 
 backend_count = 0
 fw_count = 0
@@ -151,9 +150,7 @@ def stage3_backend(gm: GraphModule, sample_inputs):
         param_nodes = [n for n in gm.graph.nodes if n.op == "placeholder"][:n_params]
 
         global param_names
-        for n in param_nodes:
-            if n.op == "placeholder":
-                param_names.append(n.name)
+        param_names = [n.name for n in param_nodes if n.op == "placeholder"]
 
         add_gather_and_release(gm, param_nodes)
 

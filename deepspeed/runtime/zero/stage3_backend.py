@@ -130,6 +130,13 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     gm.recompile()
 
 
+def get_output_node(graph: Graph):
+    for v in graph.nodes:
+        if v.target == "output":
+            return v
+    raise ValueError("No output node found")
+
+
 param_names = []
 
 backend_count = 0
@@ -168,11 +175,7 @@ def stage3_backend(gm: GraphModule, sample_inputs):
         with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
-        output_node = None
-        for v in gm.graph.nodes:
-            if v.target == "output":
-                output_node = v
-                break
+        output_node = get_output_node(gm.graph)
 
         param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
 

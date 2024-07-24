@@ -1,32 +1,23 @@
+from typing import List
+
 import torch.fx as fx
 import networkx as nx
 
-def fx_to_nx(fx_graph):
+def fx_to_nx(fx_graph: fx.Graph) -> nx.DiGraph:
     """Converts a torch.fx.Graph to a NetworkX graph."""
     nx_graph = nx.DiGraph()
 
-    def traverse(start_node: fx.Node):
-        stack = [start_node]
-        while stack:
-            node = stack.pop()
-            if node in nx_graph:
-                continue
-            nx_graph.add_node(node)
-            for next_node in node.users.keys():
-                if next_node not in nx_graph:
-                    stack.append(next_node)
-                nx_graph.add_edge(node, next_node)
+    for node in fx_graph.nodes:
+        nx_graph.add_node(node)
 
     for node in fx_graph.nodes:
-        traverse(node)
-
-    # A = nx.nx_agraph.to_agraph(nx_graph)
-    # A.draw("graph.png", format="png", prog="dot")
+        for user in node.users.keys():
+            nx_graph.add_edge(node, user)
     
     return nx_graph
 
 
-def find_reachable_terminal_nodes(graph, marked_nodes):
+def find_reachable_terminal_nodes(graph: nx.DiGraph, marked_nodes: List[fx.Node]) -> List[fx.Node]:
     """
     Find marked nodes in a directed graph that can reach the terminal node(s) without passing through other marked nodes.
 
@@ -69,3 +60,24 @@ def find_reachable_terminal_nodes(graph, marked_nodes):
                 queue.append((neighbor, passed_through_marked_node or (neighbor in marked_nodes and neighbor != marked_node)))
 
     return reachable_marked_nodes
+
+
+def sort_nodes_by_distance_to_output(graph: nx.DiGraph, output_node: fx.Node) -> List[fx.Node]:
+    """
+    Sort nodes in a directed graph by their distance to the output node.
+
+    Parameters:
+    - graph: NetworkX DiGraph object, the directed graph.
+    - output_node: The output node.
+
+    Returns:
+    - List of nodes sorted by their distance to the output node.
+    """
+
+
+    distances = nx.single_source_shortest_path_length(graph.reverse(), output_node)
+    print(f"distances: {distances}")
+    sorted_nodes = sorted(distances.items(), key=lambda x: x[1])
+
+    # for node, distance in sorted_nodes:
+    #     print(f"Node: {node}, Distance: {distance}")

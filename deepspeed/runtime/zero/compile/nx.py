@@ -17,6 +17,32 @@ def fx_to_nx(fx_graph: fx.Graph) -> nx.DiGraph:
     return nx_graph
 
 
+def serialize(graph: nx.DiGraph, fname: str) -> None:
+    """
+    Convert a NetworkX DiGraph object to a serializable dictionary.
+
+    Parameters:
+    - graph: NetworkX DiGraph object.
+
+    Returns:
+    - A serializable dictionary representation of the graph.
+    """
+    new_graph = nx.DiGraph()
+    added = set()
+    for node in graph.nodes:
+        if node.name not in added:
+            new_graph.add_node(node.name)
+            added.add(node.name)
+        for user in node.users.keys():
+            new_graph.add_edge(node.name, user.name)
+
+    data = nx.node_link_data(new_graph)
+    print(f"Data: {data}")
+    import json
+    with open(fname, "w") as f:
+        json.dump(data, f)
+
+
 def find_reachable_terminal_nodes(graph: nx.DiGraph, marked_nodes: List[fx.Node]) -> List[fx.Node]:
     """
     Find marked nodes in a directed graph that can reach the terminal node(s) without passing through other marked nodes.
@@ -77,7 +103,7 @@ def sort_nodes_by_distance_to_output(graph: nx.DiGraph, output_node: fx.Node) ->
 
     distances = nx.single_source_shortest_path_length(graph.reverse(), output_node)
     print(f"distances: {distances}")
-    sorted_nodes = sorted(distances.items(), key=lambda x: x[1])
+    return sorted(distances.items(), key=lambda x: x[1])
 
     # for node, distance in sorted_nodes:
     #     print(f"Node: {node}, Distance: {distance}")

@@ -1,5 +1,5 @@
-from copy import deepcopy
-import argparse
+from typing import Dict
+from dataclasses import dataclass
 
 import torch
 import torch._dynamo
@@ -8,13 +8,15 @@ from functorch.compile import make_boxed_func
 from torch._functorch.aot_autograd import aot_module_simplified
 
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
-from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
+from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes, sort_nodes_by_distance_to_output, serialize
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
 from typing import Callable, Any, List, Set
 import torch
 from torch.fx import Node, Graph, GraphModule
 
+from .compile.fx import get_output_node, add_postprocess
+from .compile.schedule import schedule
 
 import os
 pid = os.getpid()
@@ -75,30 +77,6 @@ def make_reduce_func(name: str):
     return reduce_grad
 
 
-def get_param_nodes(graph: Graph, n_params: int):
-    for n in graph.nodes:
-        if n.op == "placeholder":
-            print(f"get_param_nodes {n.op} {n.name}")
-
-
-def get_param_users(graph: Graph, n_params: int):
-    param_nodes = get_param_nodes(graph, n_params)
-    return {p: set(p.users.keys()) for p in param_nodes}
-
-
-def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any]):
-    # https://github.com/pytorch/examples/blob/main/fx/wrap_output_dynamically.py
-    with graph.inserting_after(node):
-        node_users = node.users.keys()
-        new_node = graph.call_function(fn, (node,), {})
-        users = {}
-        for u in node_users:
-            if u != new_node:
-                users[u] = (node, new_node)
-        for u, (old_in, new_in) in users.items():
-            u.replace_input_with(old_in, new_in)
-
-
 def add_allgather(graph: Graph, node: Node):
     add_postprocess(graph, node, make_allgather_func(node.target))
 
@@ -130,36 +108,83 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     gm.recompile()
 
 
-def get_output_node(graph: Graph):
-    for v in graph.nodes:
-        if v.target == "output":
-            return v
-    raise ValueError("No output node found")
+@dataclass
+class DSGraphParam:
+    name: str
+    shape: torch.Size
+    dtype: torch.dtype
+    device: torch.device
+    node: Node
+    allgather_node: Node
+    release_node: Node
+    param: torch.Tensor
 
 
-param_names = []
+class DSGraphParamManager:
+    def __init__(self, fw_graph: Graph, sample_inputs: Any, n_params: int):
+        self._fw_graph = fw_graph
+        self._params: Dict[str, DSGraphParam] = {}
+        self._param_name_to_grad: Dict[str, Node] = {}
+
+        self._param_nodes = [n for n in self._fw_graph.nodes if n.op == "placeholder"][:n_params]
+        param_inputs = sample_inputs[:n_params]
+        
+        for pn, pi in zip(self.param_nodes, param_inputs):
+            self._params[pn.name] = DSGraphParam(
+                name=pn.name,
+                shape=pi.size(),
+                dtype=pi.dtype,
+                device=pi.device,
+                node=pn,
+                allgather_node=None,
+                release_node=None,
+                param=pi
+            )
+
+    def add_bw_graph(self, bw_graph: Graph):
+        self._bw_graph = bw_graph
+
+        output_node = get_output_node(self._bw_graph)
+        self._param_nodes_bw = [n for n in self._bw_graph.nodes if n.name in self.param_names]
+        self._param_name_to_grad = {param_node.name: grad for param_node, grad in zip(self.param_nodes, output_node.args[0])}
+
+    @property
+    def param_nodes(self):
+        return self._param_nodes
+
+    @property
+    def param_names(self):
+        return [pn.name for pn in self.param_nodes]
+
+    @property
+    def param_nodes_bw(self):
+        return self._param_nodes_bw
+
+    def get_grad_name(self, param_name):
+        assert self._param_name_to_grad is not None, "Backward graph is not added yet"
+        return self._param_name_to_grad[param_name]
+
 
 backend_count = 0
 fw_count = 0
+param_manager = None
 def stage3_backend(gm: GraphModule, sample_inputs): 
     global backend_count
 
     n_params = len(list(gm.named_parameters()))
 
     def fw(gm, sample_inputs):
+        global param_manager
+        param_manager = DSGraphParamManager(gm.graph, sample_inputs, n_params)
+
         global fw_count
-        # gm.print_readable()
         g = FxGraphDrawer(gm, 'fn')
         with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
+        add_gather_and_release(gm, param_manager.param_nodes)
 
-        param_nodes = [n for n in gm.graph.nodes if n.op == "placeholder"][:n_params]
-
-        global param_names
-        param_names = [n.name for n in param_nodes if n.op == "placeholder"]
-
-        add_gather_and_release(gm, param_nodes)
+        schedule(gm.graph)
 
         g = FxGraphDrawer(gm, 'fn')
         with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
@@ -170,19 +195,17 @@ def stage3_backend(gm: GraphModule, sample_inputs):
         return make_boxed_func(gm.forward)
 
     def bw(gm, sample_inputs):
+        param_manager.add_bw_graph(gm.graph)
+
         g = FxGraphDrawer(gm, 'fn')
         # gm.print_readable()
         with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
-        output_node = get_output_node(gm.graph)
-
-        param_nodes = [n for n in gm.graph.nodes if n.name in param_names]
-
-        for pn in param_nodes:
+        for pn in param_manager.param_nodes_bw:
             add_allgather(gm.graph, pn)
-        for param_name, grad in zip(param_names, output_node.args[0]):
-            add_reduce(gm.graph, grad, param_name)
+        for pn in param_manager.param_nodes:
+            add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
 
         gm.recompile()
 

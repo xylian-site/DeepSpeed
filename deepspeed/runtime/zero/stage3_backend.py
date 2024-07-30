@@ -16,8 +16,9 @@ from typing import Callable, Any, List, Set
 import torch
 from torch.fx import Node, Graph, GraphModule
 
-from .compile.fx import get_output_node, add_postprocess
+from .compile.fx import add_postprocess
 from .compile.schedule import schedule
+from .compile.graph_param import DSGraphParamManager
 
 import os
 pid = os.getpid()
@@ -79,91 +80,37 @@ def make_reduce_func(name: str):
 
 
 def add_allgather(graph: Graph, node: Node):
-    add_postprocess(graph, node, make_allgather_func(node.target))
+    return add_postprocess(graph, node, make_allgather_func(node.target))
 
 
 def add_release(graph: Graph, node: Node, release_node: Node):
-    add_postprocess(graph, node, make_release_func(release_node.target))
+    return add_postprocess(graph, node, make_release_func(release_node.target))
 
 
 def add_reduce(graph: Graph, grad_node: Node, param_name: str):
-    add_postprocess(graph, grad_node, make_reduce_func(param_name))
+    return add_postprocess(graph, grad_node, make_reduce_func(param_name))
 
 def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     graph = gm.graph
     add_dependency_on_params(graph, param_nodes)
 
     nx_graph = fx_to_nx(graph)
-    release_nodes = {}
+    user_nodes = {}
     for pn in param_nodes:
         dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
-        release_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+        user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
         
+    allgather_nodes = {}
     for pn in param_nodes:
-        add_allgather(graph, pn)
+        allgather_nodes[pn] = add_allgather(graph, pn)
 
-    for v, nodes in release_nodes.items():
+    release_nodes = {}
+    for v, nodes in user_nodes.items():
         for node in nodes:
-            add_release(graph, node, v)
+            assert v not in release_nodes
+            release_nodes[v] = add_release(graph, node, v)
 
-    gm.recompile()
-
-
-@dataclass
-class DSGraphParam:
-    name: str
-    shape: torch.Size
-    dtype: torch.dtype
-    device: torch.device
-    node: Node
-    allgather_node: Node
-    release_node: Node
-    param: torch.Tensor
-
-
-class DSGraphParamManager:
-    def __init__(self, fw_graph: Graph, sample_inputs: Any, n_params: int):
-        self._fw_graph = fw_graph
-        self._params: Dict[str, DSGraphParam] = {}
-        self._param_name_to_grad: Dict[str, Node] = {}
-
-        self._param_nodes = [n for n in self._fw_graph.nodes if n.op == "placeholder"][:n_params]
-        param_inputs = sample_inputs[:n_params]
-        
-        for pn, pi in zip(self.param_nodes, param_inputs):
-            self._params[pn.name] = DSGraphParam(
-                name=pn.name,
-                shape=pi.size(),
-                dtype=pi.dtype,
-                device=pi.device,
-                node=pn,
-                allgather_node=None,
-                release_node=None,
-                param=pi
-            )
-
-    def add_bw_graph(self, bw_graph: Graph):
-        self._bw_graph = bw_graph
-
-        output_node = get_output_node(self._bw_graph)
-        self._param_nodes_bw = [n for n in self._bw_graph.nodes if n.name in self.param_names]
-        self._param_name_to_grad = {param_node.name: grad for param_node, grad in zip(self.param_nodes, output_node.args[0])}
-
-    @property
-    def param_nodes(self):
-        return self._param_nodes
-
-    @property
-    def param_names(self):
-        return [pn.name for pn in self.param_nodes]
-
-    @property
-    def param_nodes_bw(self):
-        return self._param_nodes_bw
-
-    def get_grad_name(self, param_name):
-        assert self._param_name_to_grad is not None, "Backward graph is not added yet"
-        return self._param_name_to_grad[param_name]
+    return allgather_nodes, release_nodes    
 
 
 graph_counts = defaultdict(int)
@@ -193,11 +140,17 @@ def make_stage3_backend(dump_graphs=False):
 
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
-            add_gather_and_release(gm, param_manager.param_nodes)
-            schedule(gm.graph)
+            allgather_nodes, release_nodes = add_gather_and_release(gm, param_manager.param_nodes)
+            for pn, an in allgather_nodes.items():
+                param_manager.add_allgather_node(pn.name, an)
+            for pn, rn in release_nodes.items():
+                param_manager.add_release_node(pn.name, rn)
+
+            schedule(gm.graph, param_manager)
 
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
+            gm.recompile()
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
@@ -210,10 +163,9 @@ def make_stage3_backend(dump_graphs=False):
             for pn in param_manager.param_nodes:
                 add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
 
-            gm.recompile()
-
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
 
+            gm.recompile()
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd

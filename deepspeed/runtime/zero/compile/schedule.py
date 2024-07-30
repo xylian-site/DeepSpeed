@@ -1,7 +1,8 @@
 import torch
 import networkx as nx
-from .nx import fx_to_nx, sort_nodes_by_distance_to_output
+from .nx import fx_to_nx
 from .fx import get_output_node
+from .graph_param import DSGraphParamManager
 
 
 def get_nx_output_node(G: nx.DiGraph):
@@ -19,7 +20,7 @@ def find_release_nodes(G: nx.DiGraph):
     return release_nodes
 
 
-def find_all_dependency_nodes(G: nx.DiGraph, node, dependency_graph=None):
+def find_all_dependency_nodes(G: nx.DiGraph, node, dependency_graph=None) -> nx.DiGraph:
     if dependency_graph is None:
         dependency_graph = nx.DiGraph()
     
@@ -33,6 +34,16 @@ def find_all_dependency_nodes(G: nx.DiGraph, node, dependency_graph=None):
         dependency_graph.add_edge(pred, node)
         
     return dependency_graph
+
+
+def sum_allgather_sizes(G: nx.DiGraph, param_manager: DSGraphParamManager) -> int:
+    allgather_sizes = 0
+    for node in G.nodes:
+        if param_manager.is_allgather_node(node):
+            param_name = param_manager.allgather_param_name(node)
+            graph_param = param_manager.get_graph_param(param_name)
+            allgather_sizes += graph_param.numel
+    return allgather_sizes
 
 
 def schedule_by_distance(G: nx.DiGraph) -> nx.DiGraph:
@@ -90,7 +101,7 @@ def schedule_by_distance(G: nx.DiGraph) -> nx.DiGraph:
         i += 1
 
 
-def schedule(fx_graph: torch.fx.Graph) -> torch.fx.Graph:
+def schedule(fx_graph: torch.fx.Graph, param_manager: DSGraphParamManager) -> torch.fx.Graph:
     output_node = get_output_node(fx_graph)
     nx_graph = fx_to_nx(fx_graph)
 
@@ -101,8 +112,10 @@ def schedule(fx_graph: torch.fx.Graph) -> torch.fx.Graph:
     schedule_by_distance(nx_graph)
 
     for n in find_release_nodes(nx_graph):
-        print(f"release node {n}")
+        param_name = param_manager.release_param_name(n)
+        graph_param = param_manager.get_graph_param(param_name)
+        print(f"release node {n}: param_name={param_name} numel={graph_param.numel}")
         dependencies = find_all_dependency_nodes(nx_graph, n)
-        print(f"  dependency {dependencies}")
+        print(f"  dependency {dependencies} sum_allgather={sum_allgather_sizes(dependencies, param_manager)}")
 
     return fx_graph

@@ -29,8 +29,7 @@ from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload, ZeROOrderedDict
-from deepspeed.runtime.zero.empty_tensor import EmptyTensor
-from deepspeed.runtime.zero.stage3_backend import stage3_backend
+from deepspeed.runtime.zero.stage3_backend import make_stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
 
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -3669,7 +3668,7 @@ class DeepSpeedEngine(Module):
             torch._subclasses.fake_tensor.FakeCopyMode = Z3FakeCopyMode
 
             deepspeed.runtime.zero.stage3_backend.z3_optimizer = self.optimizer
-            backend = stage3_backend
+            backend = make_stage3_backend(dump_graphs=True)
 
         print(f"Compiling")
         self.module.compile(backend=backend, **compile_kwargs)

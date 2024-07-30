@@ -1,5 +1,6 @@
 from typing import Dict
 from dataclasses import dataclass
+from collections import defaultdict
 
 import torch
 import torch._dynamo
@@ -165,62 +166,62 @@ class DSGraphParamManager:
         return self._param_name_to_grad[param_name]
 
 
-backend_count = 0
-fw_count = 0
+graph_counts = defaultdict(int)
 param_manager = None
-def stage3_backend(gm: GraphModule, sample_inputs): 
-    global backend_count
 
-    n_params = len(list(gm.named_parameters()))
 
-    def fw(gm, sample_inputs):
-        global param_manager
-        param_manager = DSGraphParamManager(gm.graph, sample_inputs, n_params)
+def dump_graph(graph: GraphModule, name: str, skip=False):
+    if not skip:
+        global graph_counts
+        fname = f"{name}_{graph_counts[name]}.dot"
 
-        global fw_count
-        g = FxGraphDrawer(gm, 'fn')
-        with open(f"forward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
+        g = FxGraphDrawer(graph, fname)
+        with open(f"{name}.svg", "wb") as file:
             file.write(g.get_dot_graph().create_svg())
 
-        add_gather_and_release(gm, param_manager.param_nodes)
+        graph_counts[name] += 1
 
-        schedule(gm.graph)
 
-        g = FxGraphDrawer(gm, 'fn')
-        with open(f"forward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-            file.write(g.get_dot_graph().create_svg())
+def make_stage3_backend(dump_graphs=False):
 
-        fw_count += 1
+    def stage3_backend(gm: GraphModule, sample_inputs): 
+        n_params = len(list(gm.named_parameters()))
 
-        return make_boxed_func(gm.forward)
+        def fw(gm, sample_inputs):
+            global param_manager
+            param_manager = DSGraphParamManager(gm.graph, sample_inputs, n_params)
 
-    def bw(gm, sample_inputs):
-        param_manager.add_bw_graph(gm.graph)
+            dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
-        g = FxGraphDrawer(gm, 'fn')
-        # gm.print_readable()
-        with open(f"backward_aot_{backend_count}_{fw_count}.svg", "wb") as file:
-            file.write(g.get_dot_graph().create_svg())
+            add_gather_and_release(gm, param_manager.param_nodes)
+            schedule(gm.graph)
 
-        for pn in param_manager.param_nodes_bw:
-            add_allgather(gm.graph, pn)
-        for pn in param_manager.param_nodes:
-            add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
+            dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
-        gm.recompile()
+            return make_boxed_func(gm.forward)
 
-        g = FxGraphDrawer(gm, 'fn')
-        with open(f"backward_aot_{backend_count}_{fw_count}_mod.svg", "wb") as file:
-            file.write(g.get_dot_graph().create_svg())
+        def bw(gm, sample_inputs):
+            param_manager.add_bw_graph(gm.graph)
 
-        return make_boxed_func(gm.forward)
+            dump_graph(gm, f"backward_aot", skip=not dump_graphs)
 
-    # Call AOTAutograd
-    aot_mod = aot_module_simplified(gm, sample_inputs,
-                                    fw_compiler=fw,
-                                    bw_compiler=bw)
-    aot_mod = torch._dynamo.optimize()(aot_mod)
+            for pn in param_manager.param_nodes_bw:
+                add_allgather(gm.graph, pn)
+            for pn in param_manager.param_nodes:
+                add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
 
-    backend_count += 1
-    return aot_mod
+            gm.recompile()
 
+            dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
+
+            return make_boxed_func(gm.forward)
+
+        # Call AOTAutograd
+        aot_mod = aot_module_simplified(gm, sample_inputs,
+                                        fw_compiler=fw,
+                                        bw_compiler=bw)
+        aot_mod = torch._dynamo.optimize()(aot_mod)
+
+        return aot_mod
+
+    return stage3_backend

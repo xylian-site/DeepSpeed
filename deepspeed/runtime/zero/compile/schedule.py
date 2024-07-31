@@ -1,8 +1,23 @@
 import torch
 import networkx as nx
+from networkx.drawing.nx_pydot import to_pydot
+from typing import Optional
+
+import torch.fx
+
 from .nx import fx_to_nx
 from .fx import get_output_node
 from .graph_param import DSGraphParamManager
+
+
+def get_input_nodes(G: nx.DiGraph):
+    return [n for n in G.nodes if hasattr(n, "op") and n.op == "placeholder"]
+
+
+def move_input_nodes_to_front(nodes):
+    input_nodes = [n for n in nodes if n.op == "placeholder"]
+    other_nodes = [n for n in nodes if n.op != "placeholder"]
+    return input_nodes + other_nodes
 
 
 def get_nx_output_node(G: nx.DiGraph):
@@ -101,21 +116,90 @@ def schedule_by_distance(G: nx.DiGraph) -> nx.DiGraph:
         i += 1
 
 
-def schedule(fx_graph: torch.fx.Graph, param_manager: DSGraphParamManager) -> torch.fx.Graph:
-    output_node = get_output_node(fx_graph)
-    nx_graph = fx_to_nx(fx_graph)
+def find_allgather_graph(G: nx.DiGraph, param_manager: DSGraphParamManager) -> Optional[nx.DiGraph]:
+    release_nodes = find_release_nodes(G)
+    if len(release_nodes) == 0:
+        return None
 
-    distances = nx.single_source_shortest_path_length(nx_graph.reverse(), output_node)
-    for n, d in distances.items():
-        print(f"n={n} {n.op} distance={d}")
-
-    schedule_by_distance(nx_graph)
-
-    for n in find_release_nodes(nx_graph):
+    release_nodes_with_ag_sizes = []
+    for n in find_release_nodes(G):
         param_name = param_manager.release_param_name(n)
         graph_param = param_manager.get_graph_param(param_name)
-        print(f"release node {n}: param_name={param_name} numel={graph_param.numel}")
-        dependencies = find_all_dependency_nodes(nx_graph, n)
-        print(f"  dependency {dependencies} sum_allgather={sum_allgather_sizes(dependencies, param_manager)}")
+        # print(f"release node {n}: param_name={param_name} numel={graph_param.numel}")
+        dependencies = find_all_dependency_nodes(G, n)
+        # print(f"  dependency {dependencies} sum_allgather={sum_allgather_sizes(dependencies, param_manager)}")
+
+        allgather_nodes = [n for n in dependencies.nodes if param_manager.is_allgather_node(n)]
+        release_nodes_with_ag_sizes.append((n, dependencies, allgather_nodes, sum_allgather_sizes(dependencies, param_manager)))
+    # sort release nodes by allgather size
+    return sorted(release_nodes_with_ag_sizes, key=lambda x: x[3], reverse=False)
+
+
+def sort_nodes_by_dfs(G: nx.DiGraph) -> nx.DiGraph:
+    copy_G = G.copy()
+    start_node = object() # Dummy node
+    copy_G.add_node(start_node)
+    for n in get_input_nodes(copy_G):
+        copy_G.add_edge(start_node, n)
+
+    open_nodes = [start_node]
+    seen = set()
+    sorted_nodes = []
+
+    while len(open_nodes) > 0:
+        node = open_nodes.pop()
+        
+        sorted_nodes.append(node)
+        seen.add(node)
+
+        for succ in copy_G.successors(node):
+            if succ in seen:
+                continue
+            # check if all predecessors are in seen
+            if all([pred in seen for pred in copy_G.predecessors(succ)]):
+                open_nodes.append(succ)
+
+    # drop start node
+    return move_input_nodes_to_front(sorted_nodes[1:])
+
+
+
+def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager) -> nx.DiGraph:
+    
+    allgather_subgraphs = find_allgather_graph(G, param_manager)
+
+    i = 0
+    new_graph_nodes = []
+    for subgraph_info in allgather_subgraphs:
+        node, subgraph, allgather_nodes, allgather_size = subgraph_info
+
+        sorted_nodes = sort_nodes_by_dfs(subgraph)
+        print(f"subgraph {i}: nodes={subgraph.nodes} sorted_nodes={sorted_nodes} allgather_size={allgather_size}")
+        new_graph_nodes.extend(sorted_nodes)
+        i += 1
+
+    new_graph_nodes = move_input_nodes_to_front(new_graph_nodes)
+
+    new_G = nx.DiGraph()
+    for n in new_graph_nodes:
+        new_G.add_node(n)
+        for pred in G.predecessors(n):
+            new_G.add_edge(pred, n)
+
+    # add missing nodes in topological order
+    for n in nx.topological_sort(G):
+        if n not in new_G.nodes:
+            new_G.add_node(n)
+            for pred in G.predecessors(n):
+                new_G.add_edge(pred, n)
+
+    to_pydot(new_G).write_svg(f"subgraph_final.svg")
+
+    return new_G
+
+
+def schedule(fx_graph: torch.fx.Graph, param_manager: DSGraphParamManager) -> torch.fx.Graph:
+    nx_graph = fx_to_nx(fx_graph)
+    schedule_by_allgather_size(nx_graph, param_manager)
 
     return fx_graph

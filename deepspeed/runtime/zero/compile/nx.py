@@ -17,6 +17,17 @@ def fx_to_nx(fx_graph: fx.Graph) -> nx.DiGraph:
     return nx_graph
 
 
+def nx_to_fx(nx_graph: nx.DiGraph) -> fx.Graph:
+    """Converts a NetworkX graph to a torch.fx.Graph."""
+    fx_graph = fx.Graph()
+    value_remap = {}
+
+    for node in nx_graph.nodes:
+        value_remap[node] = fx_graph.node_copy(node, lambda n : value_remap[n])
+    
+    return fx_graph
+
+
 def serialize(graph: nx.DiGraph, fname: str) -> None:
     """
     Convert a NetworkX DiGraph object to a serializable dictionary.

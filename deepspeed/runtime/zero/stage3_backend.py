@@ -146,8 +146,7 @@ def make_stage3_backend(dump_graphs=False):
             for pn, rn in release_nodes.items():
                 param_manager.add_release_node(pn.name, rn)
 
-            schedule(gm.graph, param_manager)
-
+            gm.graph = schedule(gm.graph, param_manager)
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
             gm.recompile()

@@ -72,6 +72,10 @@ class DSGraphParamManager:
     @property
     def param_nodes_bw(self):
         return self._param_nodes_bw
+    
+    @property
+    def input_nodes(self):
+        return [n for n in self._fw_graph.nodes if n.op == "placeholder"]
 
     def get_graph_param(self, param_name):
         return self._params[param_name]

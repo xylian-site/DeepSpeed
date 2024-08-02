@@ -5,7 +5,7 @@ from typing import Optional
 
 import torch.fx
 
-from .nx import fx_to_nx
+from .nx import fx_to_nx, nx_to_fx
 from .fx import get_output_node
 from .graph_param import DSGraphParamManager
 
@@ -14,9 +14,8 @@ def get_input_nodes(G: nx.DiGraph):
     return [n for n in G.nodes if hasattr(n, "op") and n.op == "placeholder"]
 
 
-def move_input_nodes_to_front(nodes):
-    input_nodes = [n for n in nodes if n.op == "placeholder"]
-    other_nodes = [n for n in nodes if n.op != "placeholder"]
+def move_input_nodes_to_front(nodes, input_nodes):
+    other_nodes = [n for n in nodes if n not in input_nodes]
     return input_nodes + other_nodes
 
 
@@ -27,10 +26,12 @@ def get_nx_output_node(G: nx.DiGraph):
     raise ValueError("No output node found")
 
 
-def find_release_nodes(G: nx.DiGraph):
+def find_release_nodes(G: nx.DiGraph, bw=False):
+    node_name = "reduce_grad" if bw else "release_param"
+
     release_nodes = []
     for node in G.nodes:
-        if node.name.startswith("release_param"):
+        if node.name.startswith(node_name):
             release_nodes.append(node)
     return release_nodes
 
@@ -116,13 +117,13 @@ def schedule_by_distance(G: nx.DiGraph) -> nx.DiGraph:
         i += 1
 
 
-def find_allgather_graph(G: nx.DiGraph, param_manager: DSGraphParamManager) -> Optional[nx.DiGraph]:
-    release_nodes = find_release_nodes(G)
+def find_allgather_graph(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=False) -> Optional[nx.DiGraph]:
+    release_nodes = find_release_nodes(G, bw=bw)
     if len(release_nodes) == 0:
         return None
 
     release_nodes_with_ag_sizes = []
-    for n in find_release_nodes(G):
+    for n in find_release_nodes(G, bw=bw):
         param_name = param_manager.release_param_name(n)
         graph_param = param_manager.get_graph_param(param_name)
         # print(f"release node {n}: param_name={param_name} numel={graph_param.numel}")
@@ -160,25 +161,24 @@ def sort_nodes_by_dfs(G: nx.DiGraph) -> nx.DiGraph:
                 open_nodes.append(succ)
 
     # drop start node
-    return move_input_nodes_to_front(sorted_nodes[1:])
+    return sorted_nodes[1:]
 
 
-
-def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager) -> nx.DiGraph:
+def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=False) -> nx.DiGraph:
     
-    allgather_subgraphs = find_allgather_graph(G, param_manager)
+    allgather_subgraphs = find_allgather_graph(G, param_manager, bw=bw)
 
     i = 0
     new_graph_nodes = []
     for subgraph_info in allgather_subgraphs:
         node, subgraph, allgather_nodes, allgather_size = subgraph_info
 
-        sorted_nodes = sort_nodes_by_dfs(subgraph)
-        print(f"subgraph {i}: nodes={subgraph.nodes} sorted_nodes={sorted_nodes} allgather_size={allgather_size}")
+        sorted_nodes = move_input_nodes_to_front(sort_nodes_by_dfs(subgraph), param_manager.input_nodes)
+        # print(f"subgraph {i}: nodes={subgraph.nodes} sorted_nodes={sorted_nodes} allgather_size={allgather_size}")
         new_graph_nodes.extend(sorted_nodes)
         i += 1
 
-    new_graph_nodes = move_input_nodes_to_front(new_graph_nodes)
+    new_graph_nodes = move_input_nodes_to_front(new_graph_nodes, param_manager.input_nodes)
 
     new_G = nx.DiGraph()
     for n in new_graph_nodes:
@@ -198,8 +198,7 @@ def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager
     return new_G
 
 
-def schedule(fx_graph: torch.fx.Graph, param_manager: DSGraphParamManager) -> torch.fx.Graph:
+def schedule(fx_graph: torch.fx.Graph, param_manager: DSGraphParamManager, bw=False) -> torch.fx.Graph:
     nx_graph = fx_to_nx(fx_graph)
-    schedule_by_allgather_size(nx_graph, param_manager)
-
-    return fx_graph
+    new_graph = schedule_by_allgather_size(nx_graph, param_manager, bw=bw)
+    return nx_to_fx(new_graph)

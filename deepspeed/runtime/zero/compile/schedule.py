@@ -52,11 +52,11 @@ def find_all_dependency_nodes(G: nx.DiGraph, node, dependency_graph=None) -> nx.
     return dependency_graph
 
 
-def sum_allgather_sizes(G: nx.DiGraph, param_manager: DSGraphParamManager) -> int:
+def sum_allgather_sizes(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=False) -> int:
     allgather_sizes = 0
     for node in G.nodes:
-        if param_manager.is_allgather_node(node):
-            param_name = param_manager.allgather_param_name(node)
+        if param_manager.is_allgather_node(node, bw=bw):
+            param_name = param_manager.allgather_param_name(node, bw=bw)
             graph_param = param_manager.get_graph_param(param_name)
             allgather_sizes += graph_param.numel
     return allgather_sizes
@@ -124,13 +124,9 @@ def find_allgather_graph(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=F
 
     release_nodes_with_ag_sizes = []
     for n in find_release_nodes(G, bw=bw):
-        param_name = param_manager.release_param_name(n)
-        graph_param = param_manager.get_graph_param(param_name)
-        # print(f"release node {n}: param_name={param_name} numel={graph_param.numel}")
         dependencies = find_all_dependency_nodes(G, n)
-        # print(f"  dependency {dependencies} sum_allgather={sum_allgather_sizes(dependencies, param_manager)}")
 
-        allgather_nodes = [n for n in dependencies.nodes if param_manager.is_allgather_node(n)]
+        allgather_nodes = [n for n in dependencies.nodes if param_manager.is_allgather_node(n, bw=bw)]
         release_nodes_with_ag_sizes.append((n, dependencies, allgather_nodes, sum_allgather_sizes(dependencies, param_manager)))
     # sort release nodes by allgather size
     return sorted(release_nodes_with_ag_sizes, key=lambda x: x[3], reverse=False)
@@ -173,12 +169,11 @@ def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager
     for subgraph_info in allgather_subgraphs:
         node, subgraph, allgather_nodes, allgather_size = subgraph_info
 
-        sorted_nodes = move_input_nodes_to_front(sort_nodes_by_dfs(subgraph), param_manager.input_nodes)
-        # print(f"subgraph {i}: nodes={subgraph.nodes} sorted_nodes={sorted_nodes} allgather_size={allgather_size}")
+        sorted_nodes = move_input_nodes_to_front(sort_nodes_by_dfs(subgraph), param_manager.get_input_nodes(bw=bw))
         new_graph_nodes.extend(sorted_nodes)
         i += 1
 
-    new_graph_nodes = move_input_nodes_to_front(new_graph_nodes, param_manager.input_nodes)
+    new_graph_nodes = move_input_nodes_to_front(new_graph_nodes, param_manager.get_input_nodes(bw=bw))
 
     new_G = nx.DiGraph()
     for n in new_graph_nodes:
@@ -193,7 +188,7 @@ def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager
             for pred in G.predecessors(n):
                 new_G.add_edge(pred, n)
 
-    to_pydot(new_G).write_svg(f"subgraph_final.svg")
+    # to_pydot(new_G).write_svg(f"subgraph_final.svg")
 
     return new_G
 

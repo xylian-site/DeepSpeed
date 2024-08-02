@@ -27,6 +27,7 @@ class DSGraphParam:
 class DSGraphParamManager:
     def __init__(self, fw_graph: Graph, sample_inputs: Any, n_params: int):
         self._fw_graph = fw_graph
+        self._bw_graph = None
         self._params: Dict[str, DSGraphParam] = {}
         self._param_name_to_grad: Dict[str, Node] = {}
 
@@ -48,6 +49,9 @@ class DSGraphParamManager:
         self._allgather_nodes = {}
         self._release_nodes = {}
 
+        self._bw_allgather_nodes = {}
+        self._bw_release_nodes = {}
+
     def add_bw_graph(self, bw_graph: Graph):
         self._bw_graph = bw_graph
 
@@ -55,11 +59,17 @@ class DSGraphParamManager:
         self._param_nodes_bw = [n for n in self._bw_graph.nodes if n.name in self.param_names]
         self._param_name_to_grad = {param_node.name: grad for param_node, grad in zip(self.param_nodes, output_node.args[0])}
 
-    def add_allgather_node(self, param_name, allgather_node):
-        self._allgather_nodes[allgather_node] = param_name
+    def add_allgather_node(self, param_name, allgather_node, bw=False):
+        if bw:
+            self._bw_allgather_nodes[allgather_node] = param_name
+        else:
+            self._allgather_nodes[allgather_node] = param_name
 
-    def add_release_node(self, param_name, release_node):
-        self._release_nodes[release_node] = param_name
+    def add_release_node(self, param_name, release_node, bw=False):
+        if bw:
+            self._bw_release_nodes[release_node] = param_name
+        else:
+            self._release_nodes[release_node] = param_name
 
     @property
     def param_nodes(self):
@@ -73,9 +83,9 @@ class DSGraphParamManager:
     def param_nodes_bw(self):
         return self._param_nodes_bw
     
-    @property
-    def input_nodes(self):
-        return [n for n in self._fw_graph.nodes if n.op == "placeholder"]
+    def get_input_nodes(self, bw=False):
+        graph = self._bw_graph if bw else self._fw_graph
+        return [n for n in graph.nodes if n.op == "placeholder"]
 
     def get_graph_param(self, param_name):
         return self._params[param_name]
@@ -84,14 +94,22 @@ class DSGraphParamManager:
         assert self._param_name_to_grad is not None, "Backward graph is not added yet"
         return self._param_name_to_grad[param_name]
 
-    def allgather_param_name(self, node: Node):
+    def allgather_param_name(self, node: Node, bw=False):
+        if bw:
+            return self._bw_allgather_nodes[node]
         return self._allgather_nodes[node]
     
-    def is_allgather_node(self, node: Node):
+    def is_allgather_node(self, node: Node, bw=False):
+        if bw:
+            return node in self._bw_allgather_nodes
         return node in self._allgather_nodes
     
-    def release_param_name(self, node: Node):
+    def release_param_name(self, node: Node, bw=False):
+        if bw:
+            return self._bw_release_nodes[node]
         return self._release_nodes[node]
     
-    def is_release_node(self, node: Node):
+    def is_release_node(self, node: Node, bw=False):
+        if bw:
+            return node in self._bw_release_nodes
         return node in self._release_nodes

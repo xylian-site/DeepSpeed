@@ -113,6 +113,15 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node]):
     return allgather_nodes, release_nodes    
 
 
+def add_gather_and_reduce(gm: GraphModule, param_manager: DSGraphParamManager):
+    for pn in param_manager.param_nodes_bw:
+        n = add_allgather(gm.graph, pn)
+        param_manager.add_allgather_node(pn.name, n, bw=True)
+    for pn in param_manager.param_nodes:
+        rn = add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
+        param_manager.add_release_node(pn.name, rn, bw=True)
+        
+
 graph_counts = defaultdict(int)
 param_manager = None
 
@@ -157,11 +166,9 @@ def make_stage3_backend(dump_graphs=False):
 
             dump_graph(gm, f"backward_aot", skip=not dump_graphs)
 
-            for pn in param_manager.param_nodes_bw:
-                add_allgather(gm.graph, pn)
-            for pn in param_manager.param_nodes:
-                add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
+            add_gather_and_reduce(gm, param_manager)
 
+            gm.graph = schedule(gm.graph, param_manager, bw=True)
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
 
             gm.recompile()

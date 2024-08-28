@@ -28,8 +28,8 @@ from .zero.offload_config import OffloadDeviceEnum
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
-from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload, ZeROOrderedDict
-from deepspeed.runtime.zero.stage3_backend import make_stage3_backend
+from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
+from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
 
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -3610,7 +3610,11 @@ class DeepSpeedEngine(Module):
             gc.collect()
             get_accelerator().empty_cache()
 
-    def compile(self, backend=get_accelerator().get_compile_backend(), compile_kwargs={}) -> None:
+    def compile(self,
+                backend=get_accelerator().get_compile_backend(),
+                compile_kwargs={},
+                schedule=False,
+                dump_graphs=False) -> None:
         """Compile the module using the specified backend and kwargs.
         If a compiler_fn is set, it will be used instead of torch.compile().
         """
@@ -3623,7 +3627,8 @@ class DeepSpeedEngine(Module):
         if self.is_compiled:
             return
 
-        if self.zero_optimization_stage() == ZeroStageEnum.weights:
+        if schedule:
+            assert self.zero_optimization_stage() == ZeroStageEnum.weights, "Only stage3 support for schedule"
 
             for m in self.module.modules():
                 m._parameters = m._original_parameters
@@ -3633,18 +3638,23 @@ class DeepSpeedEngine(Module):
                 hook.remove()
             self.optimizer._grad_acc_hooks.clear()
 
-            from torch._subclasses import FakeTensorMode 
+            from torch._subclasses import FakeTensorMode
             original_from_tensor = FakeTensorMode.from_tensor
 
             def from_tensor_wrapper(self, tensor, *args, **kwargs):
                 if hasattr(tensor, 'ds_id'):
-                    tensor = torch.randn(tensor.ds_shape, device=tensor.device, dtype=tensor.dtype, requires_grad=tensor.requires_grad)
+                    tensor = torch.randn(tensor.ds_shape,
+                                         device=tensor.device,
+                                         dtype=tensor.dtype,
+                                         requires_grad=tensor.requires_grad)
                 return original_from_tensor(self, tensor, *args, **kwargs)
 
             FakeTensorMode.from_tensor = from_tensor_wrapper
 
             from torch._subclasses.fake_tensor import FakeCopyMode
+
             class Z3FakeCopyMode(FakeCopyMode):
+
                 def __init__(self, fake_mode):
                     super().__init__(fake_mode)
                     self.param_map = {}
@@ -3654,9 +3664,7 @@ class DeepSpeedEngine(Module):
                         v = args[0]
                         if args[0] in self.param_map:
                             v = self.param_map[args[0]]
-                        return func(
-                            self.fake_mode.from_tensor(v, static_shapes=True), **kwargs
-                        )
+                        return func(self.fake_mode.from_tensor(v, static_shapes=True), **kwargs)
 
                     ret = super().__torch_function__(func, types, args, kwargs)
 
@@ -3668,7 +3676,7 @@ class DeepSpeedEngine(Module):
             torch._subclasses.fake_tensor.FakeCopyMode = Z3FakeCopyMode
 
             deepspeed.runtime.zero.stage3_backend.z3_optimizer = self.optimizer
-            backend = make_stage3_backend(dump_graphs=True)
+            backend = make_stage3_backend(dump_graphs=dump_graphs)
 
         print(f"Compiling")
         self.module.compile(backend=backend, **compile_kwargs)

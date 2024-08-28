@@ -1,3 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from dataclasses import dataclass, field
 from typing import Any, Dict
 from functools import reduce
@@ -25,6 +30,7 @@ class DSGraphParam:
 
 
 class DSGraphParamManager:
+
     def __init__(self, fw_graph: Graph, sample_inputs: Any, n_params: int):
         self._fw_graph = fw_graph
         self._bw_graph = None
@@ -33,18 +39,16 @@ class DSGraphParamManager:
 
         self._param_nodes = [n for n in self._fw_graph.nodes if n.op == "placeholder"][:n_params]
         param_inputs = sample_inputs[:n_params]
-        
+
         for pn, pi in zip(self.param_nodes, param_inputs):
-            self._params[pn.name] = DSGraphParam(
-                name=pn.name,
-                shape=pi.size(),
-                dtype=pi.dtype,
-                device=pi.device,
-                node=pn,
-                allgather_node=None,
-                release_node=None,
-                param=pi
-            )
+            self._params[pn.name] = DSGraphParam(name=pn.name,
+                                                 shape=pi.size(),
+                                                 dtype=pi.dtype,
+                                                 device=pi.device,
+                                                 node=pn,
+                                                 allgather_node=None,
+                                                 release_node=None,
+                                                 param=pi)
 
         self._allgather_nodes = {}
         self._release_nodes = {}
@@ -57,7 +61,10 @@ class DSGraphParamManager:
 
         output_node = get_output_node(self._bw_graph)
         self._param_nodes_bw = [n for n in self._bw_graph.nodes if n.name in self.param_names]
-        self._param_name_to_grad = {param_node.name: grad for param_node, grad in zip(self.param_nodes, output_node.args[0])}
+        self._param_name_to_grad = {
+            param_node.name: grad
+            for param_node, grad in zip(self.param_nodes, output_node.args[0])
+        }
 
     def add_allgather_node(self, param_name, allgather_node, bw=False):
         if bw:
@@ -82,7 +89,7 @@ class DSGraphParamManager:
     @property
     def param_nodes_bw(self):
         return self._param_nodes_bw
-    
+
     def get_input_nodes(self, bw=False):
         graph = self._bw_graph if bw else self._fw_graph
         return [n for n in graph.nodes if n.op == "placeholder"]
@@ -98,17 +105,17 @@ class DSGraphParamManager:
         if bw:
             return self._bw_allgather_nodes[node]
         return self._allgather_nodes[node]
-    
+
     def is_allgather_node(self, node: Node, bw=False):
         if bw:
             return node in self._bw_allgather_nodes
         return node in self._allgather_nodes
-    
+
     def release_param_name(self, node: Node, bw=False):
         if bw:
             return self._bw_release_nodes[node]
         return self._release_nodes[node]
-    
+
     def is_release_node(self, node: Node, bw=False):
         if bw:
             return node in self._bw_release_nodes

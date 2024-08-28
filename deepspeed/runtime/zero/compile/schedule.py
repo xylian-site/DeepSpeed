@@ -1,6 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 import torch
 import networkx as nx
-from networkx.drawing.nx_pydot import to_pydot
 from typing import Optional
 
 import torch.fx
@@ -27,7 +31,7 @@ def get_nx_output_node(G: nx.DiGraph):
 
 
 def find_release_nodes(G: nx.DiGraph, bw=False):
-    node_name = "reduce_grad" if bw else "release_param"
+    node_name = "reduce_ds_param_" if bw else "release_ds_param_"
 
     release_nodes = []
     for node in G.nodes:
@@ -39,16 +43,16 @@ def find_release_nodes(G: nx.DiGraph, bw=False):
 def find_all_dependency_nodes(G: nx.DiGraph, node, dependency_graph=None) -> nx.DiGraph:
     if dependency_graph is None:
         dependency_graph = nx.DiGraph()
-    
+
     # add node to dependency graph if not already present
     if node in dependency_graph.nodes:
         return
-    
+
     dependency_graph.add_node(node)
     for pred in G.predecessors(node):
         find_all_dependency_nodes(G, pred, dependency_graph)
         dependency_graph.add_edge(pred, node)
-        
+
     return dependency_graph
 
 
@@ -127,14 +131,15 @@ def find_allgather_graph(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=F
         dependencies = find_all_dependency_nodes(G, n)
 
         allgather_nodes = [n for n in dependencies.nodes if param_manager.is_allgather_node(n, bw=bw)]
-        release_nodes_with_ag_sizes.append((n, dependencies, allgather_nodes, sum_allgather_sizes(dependencies, param_manager)))
+        release_nodes_with_ag_sizes.append(
+            (n, dependencies, allgather_nodes, sum_allgather_sizes(dependencies, param_manager)))
     # sort release nodes by allgather size
     return sorted(release_nodes_with_ag_sizes, key=lambda x: x[3], reverse=False)
 
 
 def sort_nodes_by_dfs(G: nx.DiGraph) -> nx.DiGraph:
     copy_G = G.copy()
-    start_node = object() # Dummy node
+    start_node = object()  # Dummy node
     copy_G.add_node(start_node)
     for n in get_input_nodes(copy_G):
         copy_G.add_edge(start_node, n)
@@ -145,7 +150,7 @@ def sort_nodes_by_dfs(G: nx.DiGraph) -> nx.DiGraph:
 
     while len(open_nodes) > 0:
         node = open_nodes.pop()
-        
+
         sorted_nodes.append(node)
         seen.add(node)
 
@@ -161,7 +166,7 @@ def sort_nodes_by_dfs(G: nx.DiGraph) -> nx.DiGraph:
 
 
 def schedule_by_allgather_size(G: nx.DiGraph, param_manager: DSGraphParamManager, bw=False) -> nx.DiGraph:
-    
+
     allgather_subgraphs = find_allgather_graph(G, param_manager, bw=bw)
 
     i = 0

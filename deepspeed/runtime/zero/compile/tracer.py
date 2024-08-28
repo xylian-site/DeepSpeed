@@ -1,15 +1,17 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from typing import Any, Callable, Dict, Optional, Tuple, Union, List
 from collections import defaultdict
 import torch
 from torch.fx import Tracer, Node, Graph
-from torch.fx.proxy import Proxy, GraphAppendingTracer
 import torch.utils._pytree as pytree
 
-
 aten = torch._ops.ops.aten
-ops_reuse_inputs = [
-    aten.t.default
-]
+ops_reuse_inputs = [aten.t.default]
+
 
 def add_dependency_on_params(graph: Graph, param_nodes: List[Node]) -> None:
     reuse_inputs = defaultdict(list)
@@ -33,15 +35,15 @@ def add_dependency_on_params(graph: Graph, param_nodes: List[Node]) -> None:
 
 
 def fake_to_real(a):
+
     def to_real_tensor(t):
         return t
 
     return pytree.tree_map_only(torch.Tensor, to_real_tensor, a)
 
 
-
 class ParamLifetimeCheckTracer(Tracer):
-        
+
     # Inside here you can override various methods
     # to customize tracing. See the `Tracer` API
     # reference
@@ -49,16 +51,20 @@ class ParamLifetimeCheckTracer(Tracer):
         super().__init__()
         self.reuse_inputs = defaultdict(list)
 
-    def create_node(self, kind : str, target : Union[str, Callable],
-                    args : Tuple[Any], kwargs : Dict[str, Any], name : Optional[str] = None,
-                    type_expr : Optional[Any] = None) -> Node:
+    def create_node(self,
+                    kind: str,
+                    target: Union[str, Callable],
+                    args: Tuple[Any],
+                    kwargs: Dict[str, Any],
+                    name: Optional[str] = None,
+                    type_expr: Optional[Any] = None) -> Node:
         n = super().create_node(kind, target, args, kwargs, name)
 
         if n.target in self.ops_reuse_inputs:
             for a in args:
                 if isinstance(a, Node):
                     self.reuse_inputs[a].append(n)
-        # n.reuse_inputs = 
+        # n.reuse_inputs =
         # print(f"create_node kind={kind} target={target} args={args} kwargs={kwargs} name={name} type_expr={type_expr}")
         return n
 
@@ -71,12 +77,14 @@ class ParamLifetimeCheckTracer(Tracer):
 
 # Let's use this custom tracer to trace through this module
 class MyModule(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
         self.fc = torch.nn.Linear(4, 3)
 
     def forward(self, x):
         return torch.relu(x) + torch.ones(3, 4)
+
 
 # mod = MyModule()
 

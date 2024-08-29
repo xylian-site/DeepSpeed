@@ -11,4 +11,4 @@
 #include <stdio.h>
 #include <torch/extension.h>
 
-void test_call(at::Tensor param);
+at::Tensor test_call(at::Tensor param);

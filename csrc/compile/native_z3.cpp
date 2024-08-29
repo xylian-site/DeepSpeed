@@ -7,14 +7,21 @@
 
 // C++ interface
 
-void test_call(at::Tensor param)
+at::Tensor test_call(at::Tensor param)
 {
     std::cout << "test_call " << param << std::endl;
+    return param;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+TORCH_LIBRARY(native_z3, m)
 {
-    m.def("test_call",
-          &test_call,
-          "Test function");
+    // Note that "float" in the schema corresponds to the C++ double type
+    // and the Python float type.
+    m.def("test_call(Tensor a) -> Tensor");
 }
+
+TORCH_LIBRARY_IMPL(native_z3, CPU, m) { m.impl("test_call", &test_call); }
+
+TORCH_LIBRARY_IMPL(native_z3, CUDA, m) { m.impl("test_call", &test_call); }
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("test_call", &test_call, "Test function"); }

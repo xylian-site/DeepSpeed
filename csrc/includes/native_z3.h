@@ -12,3 +12,4 @@
 #include <torch/extension.h>
 
 at::Tensor test_call(at::Tensor param);
+void register_param(long ds_id, const std::vector<int64_t>& ds_shape, at::Tensor ds_tensor);

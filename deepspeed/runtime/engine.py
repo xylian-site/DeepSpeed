@@ -3683,6 +3683,11 @@ class DeepSpeedEngine(Module):
         if schedule:
             assert self.zero_optimization_stage() == ZeroStageEnum.weights, "Only stage3 support for schedule"
 
+            from deepspeed.ops.op_builder import NativeZ3Builder
+            nz3 = NativeZ3Builder().load()
+            for p in self.module.parameters():
+                nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor)
+
             for m in self.module.modules():
                 m._parameters = m._original_parameters
             self.optimizer.parameter_offload._remove_module_hooks()

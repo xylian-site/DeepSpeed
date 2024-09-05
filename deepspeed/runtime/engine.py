@@ -1883,7 +1883,7 @@ class DeepSpeedEngine(Module):
         if self.module.training and self.random_ltd_enabled():
             self.random_ltd_scheduler.update_seq(self.global_steps)
 
-        if self.zero_optimization_partition_weights():
+        if self.zero_optimization_partition_weights() and not self.is_compiled:
             # Enable automated discovery of external parameters by indicating that
             # we are in a forward pass.
             for module in self.module.modules():
@@ -1899,7 +1899,7 @@ class DeepSpeedEngine(Module):
 
         loss = self.module(*inputs, **kwargs)
 
-        if self.zero_optimization_partition_weights():
+        if self.zero_optimization_partition_weights() and not self.is_compiled:
             # Disable automated discovery of external parameters
             for module in self.module.modules():
                 module._parameters._in_forward = False

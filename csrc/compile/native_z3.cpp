@@ -36,7 +36,7 @@ public:
         params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor));
     }
 
-    DSParam getParam(long ds_id) { return params_.at(ds_id); }
+    const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
 
 private:
     std::unordered_map<long, DSParam> params_;
@@ -72,8 +72,15 @@ void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
 
 at::Tensor allgather(at::Tensor param_tensor, long ds_id)
 {
-    std::cout << "allgather called ds_id=" << ds_id << std::endl;
-    return param_tensor;
+    const DSParam& param = registry.getParam(ds_id);
+    at::Tensor output_buf = torch::empty(param.getShape(), param.getDSTensor().options());
+    std::vector<at::Tensor> outputs = {output_buf};
+    std::vector<at::Tensor> inputs = {param.getDSTensor()};
+    c10::intrusive_ptr<c10d::Work> handle =
+        process_group->allgather_into_tensor_coalesced(outputs, inputs);
+    handle->wait();  // necessary
+
+    return output_buf;
 }
 
 TORCH_LIBRARY(native_z3, m)

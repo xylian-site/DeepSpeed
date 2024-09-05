@@ -60,7 +60,7 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 
 void register_param(long ds_id, const std::vector<int64_t>& ds_shape, at::Tensor ds_tensor)
 {
-    std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
+    // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
     registry.registerParam(ds_id, ds_shape, ds_tensor);
 }
 
@@ -70,8 +70,10 @@ void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
     process_group = pg;
 }
 
-at::Tensor allgather(at::Tensor param_tensor, long ds_id)
+at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
 {
+    // std::cout << "allgather_param ds_id=" << ds_id << std::endl;
+
     const DSParam& param = registry.getParam(ds_id);
     at::Tensor output_buf = torch::empty(param.getShape(), param.getDSTensor().options());
     std::vector<at::Tensor> outputs = {output_buf};
@@ -83,24 +85,33 @@ at::Tensor allgather(at::Tensor param_tensor, long ds_id)
     return output_buf;
 }
 
+at::Tensor release_param(at::Tensor v, long ds_id)
+{
+    // std::cout << "release_param ds_id=" << ds_id << std::endl;
+    return v;
+}
+
 TORCH_LIBRARY(native_z3, m)
 {
     // Note that "float" in the schema corresponds to the C++ double type
     // and the Python float type.
     m.def("test_call(Tensor a) -> Tensor");
-    m.def("allgather(Tensor a, int id) -> Tensor");
+    m.def("allgather_param(Tensor a, int id) -> Tensor");
+    m.def("release_param(Tensor a, int id) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 {
     m.impl("test_call", &test_call);
-    m.impl("allgather", &allgather);
+    m.impl("allgather_param", &allgather_param);
+    m.impl("release_param", &release_param);
 }
 
 TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
 {
     m.impl("test_call", &test_call);
-    m.impl("allgather", &allgather);
+    m.impl("allgather_param", &allgather_param);
+    m.impl("release_param", &release_param);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)

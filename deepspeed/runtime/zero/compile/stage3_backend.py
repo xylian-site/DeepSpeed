@@ -30,43 +30,6 @@ param_map = {}
 z3_optimizer = None
 
 
-def make_allgather_func(name: str):
-    return torch.ops.native_z3.allgather
-
-    # # torch.library.define(f"ds_compile::gather_param_{name}", "(Tensor x) -> Tensor")
-
-    # def allgather_param(x):
-    #     if hasattr(x, 'ds_id'):
-    #         print(f"allgather_param: {name} {x.ds_id} {x.ds_status}")
-
-    #         # torch.ops.native_z3.allgather(x)
-
-    #         x.all_gather(param_list=[x])
-    #         global gathered_params
-    #         gathered_params[name] = x
-
-    #         global param_map
-    #         param_map[name] = x
-    #     return x
-
-    # # torch.library.impl(f"ds_compile::gather_param_{name}", ["cpu", "cuda"], allgather_param)
-    # return allgather_param
-
-
-def make_release_func(name: str):
-
-    def release_param(*x):
-        global gathered_params
-        if name in gathered_params:
-            param = gathered_params.pop(name)
-            param.partition(param_list=[param], has_been_updated=False)
-        if len(x) == 1:
-            x = x[0]
-        return x
-
-    return release_param
-
-
 def make_reduce_func(name: str):
 
     def reduce_grad(*x):
@@ -88,15 +51,16 @@ def make_reduce_func(name: str):
 def add_allgather(graph: Graph, node: Node, ds_id):
     return add_postprocess(graph,
                            node,
-                           make_allgather_func(node.target),
+                           torch.ops.native_z3.allgather_param,
                            extra_args=[ds_id],
                            name=f"allgather_ds_param_{node.target}")
 
 
-def add_release(graph: Graph, node: Node, release_node: Node):
+def add_release(graph: Graph, node: Node, release_node: Node, ds_id):
     return add_postprocess(graph,
                            node,
-                           make_release_func(release_node.target),
+                           torch.ops.native_z3.release_param,
+                           extra_args=[ds_id],
                            name=f"release_ds_param_{release_node.target}")
 
 
@@ -116,14 +80,13 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dic
 
     allgather_nodes = {}
     for pn in param_nodes:
-        print(f"add_gather_and_release: {pn.name} ds_id: {ds_ids[pn.name]}")
         allgather_nodes[pn] = add_allgather(graph, pn, ds_ids[pn.name])
 
     release_nodes = {}
     for v, nodes in user_nodes.items():
         for node in nodes:
             assert v not in release_nodes
-            release_nodes[v] = add_release(graph, node, v)
+            release_nodes[v] = add_release(graph, node, v, ds_ids[v.name])
 
     return allgather_nodes, release_nodes
 

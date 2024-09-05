@@ -3685,6 +3685,7 @@ class DeepSpeedEngine(Module):
 
             from deepspeed.ops.op_builder import NativeZ3Builder
             nz3 = NativeZ3Builder().load()
+            nz3.set_process_group(self.data_parallel_group)
             for p in self.module.parameters():
                 nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor)
 

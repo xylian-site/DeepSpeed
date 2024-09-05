@@ -3,6 +3,9 @@
 
 # DeepSpeed Team
 
+import os
+import torch
+
 from .builder import TorchCPUOpBuilder
 
 
@@ -24,4 +27,4 @@ class NativeZ3Builder(TorchCPUOpBuilder):
         return args
 
     def include_paths(self):
-        return ['csrc/includes']
+        return ['csrc/includes', os.path.join(torch.utils.cpp_extension.CUDA_HOME, "include")]

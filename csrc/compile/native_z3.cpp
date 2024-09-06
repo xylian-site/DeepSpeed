@@ -63,9 +63,37 @@ public:
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return gathered_params_.count(ds_id) > 0; }
 
+    void registerOpNArgs(const std::string& op_name, long n_args)
+    {
+        op_n_args_.emplace(op_name, n_args);
+    }
+
+    void resetArgCounter(const std::string& op_name)
+    {
+        assert(op_n_args_.count(op_name) > 0);
+        assert(args_counter_.count(op_name) == 0);
+        args_counter_.emplace(op_name, op_n_args_.at(op_name));
+    }
+
+    void decrementArgCounter(const std::string& op_name)
+    {
+        assert(args_counter_.count(op_name) > 0);
+        if (args_counter_.at(op_name)) return;
+        args_counter_[op_name]--;
+    }
+
+    bool isArgCounterZero(const std::string& op_name) const
+    {
+        assert(args_counter_.count(op_name) > 0);
+        return args_counter_.at(op_name) == 0;
+    }
+
 private:
     std::unordered_map<long, DSParam> params_;
     std::unordered_map<long, at::Tensor> gathered_params_;
+    std::unordered_map<long, at::Tensor> allgather_handles_;
+    std::unordered_map<std::string, long> op_n_args_;
+    std::unordered_map<std::string, long> args_counter_;
 };
 
 static DSParamRegistry registry = DSParamRegistry();
@@ -94,10 +122,31 @@ void register_param(long ds_id,
     registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
-void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
+void register_op_n_args(const std::string& op_name, long n_args)
 {
-    std::cout << "set_process_group rank=" << pg->getRank() << std::endl;
-    process_group = pg;
+    registry.registerOpNArgs(op_name, n_args);
+}
+
+void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg) { process_group = pg; }
+
+void start_forward()
+{
+    // std::cout << "start_forward" << std::endl;
+}
+
+void end_forward()
+{
+    // std::cout << "end_forward" << std::endl;
+}
+
+void start_backward(bool update)
+{
+    // std::cout << "start_backward update=" << update << std::endl;
+}
+
+void end_backward(bool update)
+{
+    // unused
 }
 
 at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
@@ -131,9 +180,10 @@ at::Tensor release_param(at::Tensor v, long ds_id)
     return v;
 }
 
-at::Tensor wait_allgather(at::Tensor v, long ds_id, long n_args)
+at::Tensor wait_allgather(at::Tensor v, long ds_id, const std::string& user, long n_args)
 {
-    // std::cout << "wait_allgather ds_id=" << ds_id << " n_args=" << n_args << std::endl;
+    // std::cout << "wait_allgather ds_id=" << ds_id << " user=" << user << " n_args=" << n_args
+    //           << std::endl;
 
     return v;
 }
@@ -165,7 +215,7 @@ TORCH_LIBRARY(native_z3, m)
     m.def("test_call(Tensor a) -> Tensor");
     m.def("allgather_param(Tensor a, int id) -> Tensor");
     m.def("release_param(Tensor a, int id) -> Tensor");
-    m.def("wait_allgather(Tensor a, int id, int n_args) -> Tensor");
+    m.def("wait_allgather(Tensor a, int id, str user, int n_args) -> Tensor");
     m.def("reduce_grad(Tensor a, int id) -> Tensor");
 }
 
@@ -192,4 +242,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("test_call", &test_call, "Test function");
     m.def("register_param", &register_param, "Register a parameter");
     m.def("set_process_group", &set_process_group, "Set the process group");
+    m.def("register_op_n_args", &register_op_n_args, "Register the number of arguments for an op");
+    m.def("start_forward", &start_forward, "Start forward pass");
+    m.def("end_forward", &end_forward, "End forward pass");
+    m.def("start_backward", &start_backward, "Start backward pass");
+    m.def("end_backward", &end_backward, "End backward pass");
 }

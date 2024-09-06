@@ -1897,7 +1897,26 @@ class DeepSpeedEngine(Module):
         if self.fp16_auto_cast():
             inputs = self._cast_inputs_half(inputs)
 
+        if hasattr(self, "nz3"):
+            self.nz3.start_forward()
+
         loss = self.module(*inputs, **kwargs)
+
+        if hasattr(self, "nz3"):
+            self.nz3.end_forward()
+
+            def bwd_hook(grad):
+                self.nz3.start_backward(self.is_gradient_accumulation_boundary())
+                return grad
+
+            def set_hook(v):
+                if torch.is_tensor(v) and v.grad_fn is not None:
+                    v.register_hook(bwd_hook)
+                return v
+
+            # `loss` can be any nested structure
+            from torch.utils._pytree import tree_map
+            loss = tree_map(set_hook, loss)
 
         if self.zero_optimization_partition_weights() and not self.is_compiled:
             # Disable automated discovery of external parameters
@@ -3684,11 +3703,11 @@ class DeepSpeedEngine(Module):
             assert self.zero_optimization_stage() == ZeroStageEnum.weights, "Only stage3 support for schedule"
 
             from deepspeed.ops.op_builder import NativeZ3Builder
-            nz3 = NativeZ3Builder().load()
-            nz3.set_process_group(self.data_parallel_group)
+            self.nz3 = NativeZ3Builder().load()
+            self.nz3.set_process_group(self.data_parallel_group)
             for p in self.module.parameters():
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
-                nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
+                self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             for m in self.module.modules():
                 m._parameters = m._original_parameters

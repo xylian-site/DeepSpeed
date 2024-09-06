@@ -27,6 +27,7 @@ pid = os.getpid()
 gathered_params = {}
 param_map = {}
 z3_optimizer = None
+nz3 = None
 
 
 def add_allgather(graph: Graph, node: Node, ds_id: int):
@@ -45,11 +46,11 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
                            name=f"release_ds_param_{release_node.target}_{ds_id}")
 
 
-def add_wait_allgather(graph: Graph, node: Node, ds_id: int, n_args: int):
+def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: int):
     return add_postprocess(graph,
                            node,
                            torch.ops.native_z3.wait_allgather,
-                           extra_args=[ds_id, n_args],
+                           extra_args=[ds_id, user, n_args],
                            name=f"wait_allgather_ds_param_{ds_id}")
 
 
@@ -89,9 +90,10 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dic
         ]
         for user in user_nodes[pn]:
             n_node_args = len([arg for arg in user.args if isinstance(arg, Node)])
+            nz3.register_op_n_args(user.name, n_node_args)
             for arg in user.args:
                 if isinstance(arg, Node):
-                    add_wait_allgather(graph, arg, ds_ids[pn.name], n_node_args)
+                    add_wait_allgather(graph, arg, ds_ids[pn.name], user.name, n_node_args)
 
     return allgather_nodes, release_nodes
 
@@ -123,6 +125,9 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
 
 
 def make_stage3_backend(dump_graphs=False):
+    from deepspeed.ops.op_builder import NativeZ3Builder
+    global nz3
+    nz3 = NativeZ3Builder().load()
 
     def stage3_backend(gm: GraphModule, sample_inputs):
         # n_params = len(list(gm.named_parameters()))

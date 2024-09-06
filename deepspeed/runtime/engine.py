@@ -3687,7 +3687,8 @@ class DeepSpeedEngine(Module):
             nz3 = NativeZ3Builder().load()
             nz3.set_process_group(self.data_parallel_group)
             for p in self.module.parameters():
-                nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, p.ds_persist)
+                grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
+                nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             for m in self.module.modules():
                 m._parameters = m._original_parameters

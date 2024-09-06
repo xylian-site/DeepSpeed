@@ -11,20 +11,30 @@
 
 class DSParam {
 public:
-    DSParam(long id, std::vector<int64_t> ds_shape, at::Tensor ds_tensor, bool persistent)
-        : id_(id), shape_(std::move(ds_shape)), ds_tensor_(ds_tensor), persistent_(persistent)
+    DSParam(long id,
+            std::vector<int64_t> ds_shape,
+            at::Tensor ds_tensor,
+            at::Tensor grad_buffer,
+            bool persistent)
+        : id_(id),
+          shape_(std::move(ds_shape)),
+          ds_tensor_(ds_tensor),
+          grad_buffer_(grad_buffer),
+          persistent_(persistent)
     {
     }
 
     long getId() const { return id_; }
     std::vector<int64_t> getShape() const { return shape_; }
     at::Tensor getDSTensor() const { return ds_tensor_; }
+    at::Tensor getGradBuffer() const { return grad_buffer_; }
     bool isPersistent() const { return persistent_; }
 
 private:
     long id_;
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
+    at::Tensor grad_buffer_;
     bool persistent_;
 };
 
@@ -36,9 +46,10 @@ public:
     void registerParam(long ds_id,
                        const std::vector<int64_t>& ds_shape,
                        at::Tensor ds_tensor,
+                       at::Tensor grad_buffer,
                        bool persistent)
     {
-        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, persistent));
+        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
     }
 
     void registerGatheredParam(long ds_id, at::Tensor ds_tensor)
@@ -76,10 +87,11 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 void register_param(long ds_id,
                     const std::vector<int64_t>& ds_shape,
                     at::Tensor ds_tensor,
+                    at::Tensor grad_buffer,
                     bool persistent)
 {
     // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
-    registry.registerParam(ds_id, ds_shape, ds_tensor, persistent);
+    registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
 void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
@@ -132,8 +144,7 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     handle->wait();
     grad_buf /= world_size;
 
-    // TODO
-    // Copy or accumulate to __param_id_to_grad_partition[param.ds_id]
+    param.getGradBuffer().copy_(grad_buf);
 
     if (!param.isPersistent()) { registry.unregisterGatheredParam(ds_id); }
 

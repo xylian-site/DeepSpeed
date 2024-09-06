@@ -11,19 +11,21 @@
 
 class DSParam {
 public:
-    DSParam(long id, std::vector<int64_t> ds_shape, at::Tensor ds_tensor)
-        : id_(id), shape_(std::move(ds_shape)), ds_tensor_(ds_tensor)
+    DSParam(long id, std::vector<int64_t> ds_shape, at::Tensor ds_tensor, bool persistent)
+        : id_(id), shape_(std::move(ds_shape)), ds_tensor_(ds_tensor), persistent_(persistent)
     {
     }
 
     long getId() const { return id_; }
     std::vector<int64_t> getShape() const { return shape_; }
     at::Tensor getDSTensor() const { return ds_tensor_; }
+    bool isPersistent() const { return persistent_; }
 
 private:
     long id_;
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
+    bool persistent_;
 };
 
 class DSParamRegistry {
@@ -31,15 +33,26 @@ public:
     DSParamRegistry() {}
     ~DSParamRegistry() {}
 
-    void registerParam(long ds_id, const std::vector<int64_t>& ds_shape, at::Tensor ds_tensor)
+    void registerParam(long ds_id,
+                       const std::vector<int64_t>& ds_shape,
+                       at::Tensor ds_tensor,
+                       bool persistent)
     {
-        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor));
+        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, persistent));
+    }
+
+    void registerPersistentParam(long ds_id, at::Tensor ds_tensor)
+    {
+        persistent_params_.emplace(ds_id, ds_tensor);
     }
 
     const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
+    const at::Tensor& getPersistentParam(long ds_id) const { return persistent_params_.at(ds_id); }
+    bool hasPersistentParam(long ds_id) const { return persistent_params_.count(ds_id) > 0; }
 
 private:
     std::unordered_map<long, DSParam> params_;
+    std::unordered_map<long, at::Tensor> persistent_params_;
 };
 
 static DSParamRegistry registry = DSParamRegistry();
@@ -58,10 +71,13 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
     return result;
 }
 
-void register_param(long ds_id, const std::vector<int64_t>& ds_shape, at::Tensor ds_tensor)
+void register_param(long ds_id,
+                    const std::vector<int64_t>& ds_shape,
+                    at::Tensor ds_tensor,
+                    bool persistent)
 {
     // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
-    registry.registerParam(ds_id, ds_shape, ds_tensor);
+    registry.registerParam(ds_id, ds_shape, ds_tensor, persistent);
 }
 
 void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
@@ -75,14 +91,20 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     // std::cout << "allgather_param ds_id=" << ds_id << std::endl;
 
     const DSParam& param = registry.getParam(ds_id);
-    at::Tensor output_buf = torch::empty(param.getShape(), param.getDSTensor().options());
-    std::vector<at::Tensor> outputs = {output_buf};
-    std::vector<at::Tensor> inputs = {param.getDSTensor()};
-    c10::intrusive_ptr<c10d::Work> handle =
-        process_group->allgather_into_tensor_coalesced(outputs, inputs);
-    handle->wait();  // necessary
 
-    return output_buf;
+    if (!param.isPersistent() || !registry.hasPersistentParam(ds_id)) {
+        at::Tensor output_buf = torch::empty(param.getShape(), param.getDSTensor().options());
+        std::vector<at::Tensor> outputs = {output_buf};
+        std::vector<at::Tensor> inputs = {param.getDSTensor()};
+        c10::intrusive_ptr<c10d::Work> handle =
+            process_group->allgather_into_tensor_coalesced(outputs, inputs);
+        handle->wait();  // necessary
+        if (param.isPersistent()) { registry.registerPersistentParam(ds_id, output_buf); }
+
+        return output_buf;
+    }
+
+    return registry.getPersistentParam(ds_id);
 }
 
 at::Tensor release_param(at::Tensor v, long ds_id)

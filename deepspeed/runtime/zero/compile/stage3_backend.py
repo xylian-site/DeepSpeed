@@ -15,7 +15,6 @@ from torch._functorch.aot_autograd import aot_module_simplified
 
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
-from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
 from .fx import add_postprocess
 from .schedule import schedule
@@ -30,25 +29,7 @@ param_map = {}
 z3_optimizer = None
 
 
-def make_reduce_func(name: str):
-
-    def reduce_grad(*x):
-        if name in param_map:
-            param = param_map[name]
-            if param.ds_status != ZeroParamStatus.AVAILABLE:
-                param.all_gather(param_list=[param])
-            param.grad = x[0]
-            z3_optimizer.reduce_ready_partitions_and_remove_grads(param)
-            param.partition(param_list=[param], has_been_updated=False)
-            return None
-        if len(x) == 1:
-            x = x[0]
-        return x
-
-    return reduce_grad
-
-
-def add_allgather(graph: Graph, node: Node, ds_id):
+def add_allgather(graph: Graph, node: Node, ds_id: int):
     return add_postprocess(graph,
                            node,
                            torch.ops.native_z3.allgather_param,
@@ -56,7 +37,7 @@ def add_allgather(graph: Graph, node: Node, ds_id):
                            name=f"allgather_ds_param_{node.target}")
 
 
-def add_release(graph: Graph, node: Node, release_node: Node, ds_id):
+def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
     return add_postprocess(graph,
                            node,
                            torch.ops.native_z3.release_param,
@@ -64,8 +45,12 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id):
                            name=f"release_ds_param_{release_node.target}")
 
 
-def add_reduce(graph: Graph, grad_node: Node, param_name: str):
-    return add_postprocess(graph, grad_node, make_reduce_func(param_name), name=f"reduce_ds_param_{param_name}")
+def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
+    return add_postprocess(graph,
+                           grad_node,
+                           torch.ops.native_z3.reduce_grad,
+                           extra_args=[ds_id],
+                           name=f"reduce_ds_param_{param_name}")
 
 
 def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dict[str, int]):
@@ -93,11 +78,11 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dic
 
 def add_gather_and_reduce(gm: GraphModule, param_manager: DSGraphParamManager):
     for pn in param_manager.param_nodes_bw:
-        n = add_allgather(gm.graph, pn, ds_id=param_manager.ds_ids[pn.name])
+        n = add_allgather(gm.graph, pn, param_manager.ds_ids[pn.name])
         param_manager.add_allgather_node(pn.name, n, bw=True)
 
     for pn in param_manager.param_nodes:
-        rn = add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name)
+        rn = add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name, param_manager.ds_ids[pn.name])
         param_manager.add_release_node(pn.name, rn, bw=True)
 
 

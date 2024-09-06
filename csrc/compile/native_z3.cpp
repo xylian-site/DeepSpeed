@@ -131,6 +131,13 @@ at::Tensor release_param(at::Tensor v, long ds_id)
     return v;
 }
 
+at::Tensor wait_allgather(at::Tensor v, long ds_id, long n_args)
+{
+    // std::cout << "wait_allgather ds_id=" << ds_id << " n_args=" << n_args << std::endl;
+
+    return v;
+}
+
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 {
     int world_size = process_group->getSize();
@@ -158,6 +165,7 @@ TORCH_LIBRARY(native_z3, m)
     m.def("test_call(Tensor a) -> Tensor");
     m.def("allgather_param(Tensor a, int id) -> Tensor");
     m.def("release_param(Tensor a, int id) -> Tensor");
+    m.def("wait_allgather(Tensor a, int id, int n_args) -> Tensor");
     m.def("reduce_grad(Tensor a, int id) -> Tensor");
 }
 
@@ -166,6 +174,7 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
     m.impl("test_call", &test_call);
     m.impl("allgather_param", &allgather_param);
     m.impl("release_param", &release_param);
+    m.impl("wait_allgather", &wait_allgather);
     m.impl("reduce_grad", &reduce_grad);
 }
 
@@ -174,6 +183,7 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
     m.impl("test_call", &test_call);
     m.impl("allgather_param", &allgather_param);
     m.impl("release_param", &release_param);
+    m.impl("wait_allgather", &wait_allgather);
     m.impl("reduce_grad", &reduce_grad);
 }
 

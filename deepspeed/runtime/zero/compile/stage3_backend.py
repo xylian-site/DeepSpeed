@@ -13,7 +13,7 @@ from functorch.compile import make_boxed_func
 import torch._dynamo
 from torch._functorch.aot_autograd import aot_module_simplified
 
-from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
+from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params, ops_reuse_inputs
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
 from .fx import add_postprocess
@@ -34,7 +34,7 @@ def add_allgather(graph: Graph, node: Node, ds_id: int):
                            node,
                            torch.ops.native_z3.allgather_param,
                            extra_args=[ds_id],
-                           name=f"allgather_ds_param_{node.target}")
+                           name=f"allgather_ds_param_{node.target}_{ds_id}")
 
 
 def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
@@ -42,7 +42,15 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
                            node,
                            torch.ops.native_z3.release_param,
                            extra_args=[ds_id],
-                           name=f"release_ds_param_{release_node.target}")
+                           name=f"release_ds_param_{release_node.target}_{ds_id}")
+
+
+def add_wait_allgather(graph: Graph, node: Node, ds_id: int, n_args: int):
+    return add_postprocess(graph,
+                           node,
+                           torch.ops.native_z3.wait_allgather,
+                           extra_args=[ds_id, n_args],
+                           name=f"wait_allgather_ds_param_{ds_id}")
 
 
 def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
@@ -58,20 +66,32 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dic
     add_dependency_on_params(graph, param_nodes)
 
     nx_graph = fx_to_nx(graph)
-    user_nodes = {}
+    last_user_nodes = {}
     for pn in param_nodes:
         dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
-        user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+        last_user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
 
     allgather_nodes = {}
     for pn in param_nodes:
         allgather_nodes[pn] = add_allgather(graph, pn, ds_ids[pn.name])
 
     release_nodes = {}
-    for v, nodes in user_nodes.items():
+    for pn, nodes in last_user_nodes.items():
         for node in nodes:
-            assert v not in release_nodes
-            release_nodes[v] = add_release(graph, node, v, ds_ids[v.name])
+            assert pn not in release_nodes
+            release_nodes[pn] = add_release(graph, node, pn, ds_ids[pn.name])
+
+    user_nodes = {}
+    for pn in param_nodes:
+        user_nodes[pn] = [
+            n for n in graph.nodes
+            if hasattr(n, "required_inputs") and pn in n.required_inputs and n.target not in ops_reuse_inputs
+        ]
+        for user in user_nodes[pn]:
+            n_node_args = len([arg for arg in user.args if isinstance(arg, Node)])
+            for arg in user.args:
+                if isinstance(arg, Node):
+                    add_wait_allgather(graph, arg, ds_ids[pn.name], n_node_args)
 
     return allgather_nodes, release_nodes
 

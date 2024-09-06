@@ -11,9 +11,19 @@
 #include <stdio.h>
 #include <torch/extension.h>
 
+namespace n3z {
+
+template <typename K, typename V>
+static bool hasKey(const std::unordered_map<K, V>& map, const K& key)
+{
+    return map.find(key) != map.end();
+}
+
 at::Tensor test_call(at::Tensor param);
 void register_param(long ds_id,
                     const std::vector<int64_t>& ds_shape,
                     at::Tensor ds_tensor,
                     at::Tensor grad_buffer,
                     bool persistent);
+
+}  // namespace n3z

@@ -173,8 +173,8 @@ def make_stage3_backend(dump_graphs=False):
             add_gather_and_reduce(gm, param_manager)
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
-            # gm.graph = schedule(gm.graph, param_manager, bw=True)
-            # dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
+            gm.graph = schedule(gm.graph, param_manager, bw=True)
+            dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
 
             gm.recompile()
             return make_boxed_func(gm.forward)

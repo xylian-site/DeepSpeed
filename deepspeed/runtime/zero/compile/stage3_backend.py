@@ -46,11 +46,11 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
                            name=f"release_ds_param_{release_node.target}_{ds_id}")
 
 
-def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: int):
+def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
     return add_postprocess(graph,
                            node,
                            torch.ops.native_z3.wait_allgather,
-                           extra_args=[ds_id, user, n_args],
+                           extra_args=[ds_id, user, n_args, bwd],
                            name=f"wait_allgather_ds_param_{ds_id}")
 
 
@@ -62,8 +62,26 @@ def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
                            name=f"reduce_ds_param_{param_name}")
 
 
-def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dict[str, int]):
+def _add_wait_allgather(graph: Graph, param_nodes: List[Node], ds_ids: Dict[str, int], bwd: bool):
+    user_nodes = {}
+    for pn in param_nodes:
+        user_nodes[pn] = [
+            n for n in graph.nodes
+            if hasattr(n, "required_inputs") and pn in n.required_inputs and n.target not in ops_reuse_inputs
+        ]
+        for user in user_nodes[pn]:
+            n_node_args = len([arg for arg in user.args if isinstance(arg, Node)])
+            nz3.register_op_n_args(user.name, n_node_args, bwd)
+            for arg in user.args:
+                if isinstance(arg, Node):
+                    add_wait_allgather(graph, arg, ds_ids[pn.name], user.name, n_node_args, bwd)
+
+
+def add_gather_and_release(gm: GraphModule, param_manager: DSGraphParamManager):
     graph = gm.graph
+    param_nodes = param_manager.param_nodes
+    ds_ids = param_manager.ds_ids
+
     add_dependency_on_params(graph, param_nodes)
 
     nx_graph = fx_to_nx(graph)
@@ -82,30 +100,30 @@ def add_gather_and_release(gm: GraphModule, param_nodes: List[Node], ds_ids: Dic
             assert pn not in release_nodes
             release_nodes[pn] = add_release(graph, node, pn, ds_ids[pn.name])
 
-    user_nodes = {}
-    for pn in param_nodes:
-        user_nodes[pn] = [
-            n for n in graph.nodes
-            if hasattr(n, "required_inputs") and pn in n.required_inputs and n.target not in ops_reuse_inputs
-        ]
-        for user in user_nodes[pn]:
-            n_node_args = len([arg for arg in user.args if isinstance(arg, Node)])
-            nz3.register_op_n_args(user.name, n_node_args)
-            for arg in user.args:
-                if isinstance(arg, Node):
-                    add_wait_allgather(graph, arg, ds_ids[pn.name], user.name, n_node_args)
+    _add_wait_allgather(graph, param_nodes, ds_ids, False)
 
-    return allgather_nodes, release_nodes
+    for pn, an in allgather_nodes.items():
+        param_manager.add_allgather_node(pn.name, an)
+    for pn, rn in release_nodes.items():
+        param_manager.add_release_node(pn.name, rn)
 
 
 def add_gather_and_reduce(gm: GraphModule, param_manager: DSGraphParamManager):
-    for pn in param_manager.param_nodes_bw:
+    graph = gm.graph
+    param_nodes_bw = param_manager.param_nodes_bw
+    ds_ids = param_manager.ds_ids
+
+    add_dependency_on_params(graph, param_nodes_bw)
+
+    for pn in param_nodes_bw:
         n = add_allgather(gm.graph, pn, param_manager.ds_ids[pn.name])
         param_manager.add_allgather_node(pn.name, n, bw=True)
 
     for pn in param_manager.param_nodes:
         rn = add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name, param_manager.ds_ids[pn.name])
         param_manager.add_release_node(pn.name, rn, bw=True)
+
+    _add_wait_allgather(graph, param_nodes_bw, ds_ids, True)
 
 
 graph_counts = defaultdict(int)
@@ -130,26 +148,15 @@ def make_stage3_backend(dump_graphs=False):
     nz3 = NativeZ3Builder().load()
 
     def stage3_backend(gm: GraphModule, sample_inputs):
-        # n_params = len(list(gm.named_parameters()))
-        # for name, param in gm.named_parameters():
-        #     print(f"stage3_backend 1 param: {name} {param.shape} {param.ds_id}")
         param_ds_ids = [param.ds_id for _, param in gm.named_parameters()]
 
         def fw(gm, sample_inputs):
             global param_manager
             param_manager = DSGraphParamManager(gm.graph, sample_inputs, param_ds_ids)
 
-            # for param in sample_inputs:
-            #     print(f"stage3_backend 2 input: {name} {param.shape}")
-
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
-            allgather_nodes, release_nodes = add_gather_and_release(gm, param_manager.param_nodes,
-                                                                    param_manager.ds_ids)
-            for pn, an in allgather_nodes.items():
-                param_manager.add_allgather_node(pn.name, an)
-            for pn, rn in release_nodes.items():
-                param_manager.add_release_node(pn.name, rn)
+            add_gather_and_release(gm, param_manager)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
             gm.graph = schedule(gm.graph, param_manager)

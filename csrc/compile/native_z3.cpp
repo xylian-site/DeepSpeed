@@ -40,30 +40,10 @@ private:
     bool persistent_;
 };
 
-class DSParamRegistry {
+class GraphOpStates {
 public:
-    DSParamRegistry() {}
-    ~DSParamRegistry() {}
-
-    void registerParam(long ds_id,
-                       const std::vector<int64_t>& ds_shape,
-                       at::Tensor ds_tensor,
-                       at::Tensor grad_buffer,
-                       bool persistent)
-    {
-        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
-    }
-
-    void registerGatheredParam(long ds_id, at::Tensor ds_tensor)
-    {
-        gathered_params_.emplace(ds_id, ds_tensor);
-    }
-
-    void unregisterGatheredParam(long ds_id) { gathered_params_.erase(ds_id); }
-
-    const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
-    const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
-    bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
+    GraphOpStates() {}
+    ~GraphOpStates() {}
 
     void registerOpNArgs(const std::string& op_name, long n_args)
     {
@@ -102,6 +82,36 @@ public:
         return args_counter_.at(op_name) == 0;
     }
 
+private:
+    std::unordered_map<std::string, long> op_n_args_;
+    std::unordered_map<std::string, long> args_counter_;
+};
+
+class DSParamRegistry {
+public:
+    DSParamRegistry() {}
+    ~DSParamRegistry() {}
+
+    void registerParam(long ds_id,
+                       const std::vector<int64_t>& ds_shape,
+                       at::Tensor ds_tensor,
+                       at::Tensor grad_buffer,
+                       bool persistent)
+    {
+        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
+    }
+
+    void registerGatheredParam(long ds_id, at::Tensor ds_tensor)
+    {
+        gathered_params_.emplace(ds_id, ds_tensor);
+    }
+
+    void unregisterGatheredParam(long ds_id) { gathered_params_.erase(ds_id); }
+
+    const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
+    const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
+    bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
+
     void addAllgatherHandle(long ds_id, c10::intrusive_ptr<c10d::Work> handle)
     {
         allgather_handles_[ds_id] = handle;
@@ -117,12 +127,12 @@ private:
     std::unordered_map<long, DSParam> params_;
     std::unordered_map<long, at::Tensor> gathered_params_;
     std::unordered_map<long, c10::intrusive_ptr<c10d::Work>> allgather_handles_;
-    std::unordered_map<std::string, long> op_n_args_;
-    std::unordered_map<std::string, long> args_counter_;
 };
 
 static DSParamRegistry registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
+static GraphOpStates op_states_fwd = GraphOpStates();
+static GraphOpStates op_states_bwd = GraphOpStates();
 
 at::Tensor test_call(at::Tensor param)
 {
@@ -147,10 +157,10 @@ void register_param(long ds_id,
     registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
-void register_op_n_args(const std::string& op_name, long n_args)
+void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
 {
-    // std::cout << "register_op_n_args " << op_name << " " << n_args << std::endl;
-    registry.registerOpNArgs(op_name, n_args);
+    GraphOpStates& op_states = is_backward ? op_states_bwd : op_states_fwd;
+    op_states.registerOpNArgs(op_name, n_args);
 }
 
 void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg) { process_group = pg; }
@@ -158,7 +168,7 @@ void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg) { process_grou
 void start_forward()
 {
     // std::cout << "start_forward" << std::endl;
-    registry.resetArgCounter();
+    op_states_fwd.resetArgCounter();
 }
 
 void end_forward()
@@ -169,6 +179,7 @@ void end_forward()
 void start_backward(bool update)
 {
     // std::cout << "start_backward update=" << update << std::endl;
+    op_states_bwd.resetArgCounter();
 }
 
 void end_backward(bool update)
@@ -207,11 +218,17 @@ at::Tensor release_param(at::Tensor v, long ds_id)
     return v;
 }
 
-at::Tensor wait_allgather(at::Tensor v, long ds_id, const std::string& user, long n_args)
+at::Tensor wait_allgather(at::Tensor v,
+                          long ds_id,
+                          const std::string& user,
+                          long n_args,
+                          bool is_backward)
 {
-    registry.decrementArgCounter(user);
+    GraphOpStates& op_states = is_backward ? op_states_bwd : op_states_fwd;
 
-    if (registry.isArgCounterZero(user)) {
+    op_states.decrementArgCounter(user);
+
+    if (op_states.isArgCounterZero(user)) {
         auto handle = registry.getAllgatherHandle(ds_id);
         handle->wait();
     }
@@ -248,7 +265,7 @@ TORCH_LIBRARY(native_z3, m)
     m.def("test_call(Tensor a) -> Tensor");
     m.def("allgather_param(Tensor a, int id) -> Tensor");
     m.def("release_param(Tensor a, int id) -> Tensor");
-    m.def("wait_allgather(Tensor a, int id, str user, int n_args) -> Tensor");
+    m.def("wait_allgather(Tensor a, int id, str user, int n_args, bool bwd) -> Tensor");
     m.def("reduce_grad(Tensor a, int id) -> Tensor");
 }
 

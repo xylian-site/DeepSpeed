@@ -7,6 +7,8 @@
 
 #define USE_C10D_NCCL
 
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 
 namespace n3z {
@@ -133,6 +135,7 @@ static DSParamRegistry registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
 static GraphOpStates op_states_bwd = GraphOpStates();
+static at::cuda::CUDAStream reduce_stream = at::cuda::getStreamFromPool(true);
 
 at::Tensor test_call(at::Tensor param)
 {
@@ -246,10 +249,12 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     std::vector<at::Tensor> inputs = {grad_tensor};
     c10::intrusive_ptr<c10d::Work> handle =
         process_group->reduce_scatter_tensor_coalesced(outputs, inputs);
-    handle->wait();
-    grad_buf /= world_size;
-
-    param.getGradBuffer().copy_(grad_buf);
+    {
+        c10::cuda::CUDAStreamGuard guard(reduce_stream);
+        handle->wait();
+        grad_buf /= world_size;
+        param.getGradBuffer().copy_(grad_buf);
+    }
 
     if (!param.isPersistent()) { registry.unregisterGatheredParam(ds_id); }
 

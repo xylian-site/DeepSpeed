@@ -210,6 +210,14 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     return output_buf;
 }
 
+at::Tensor allgather_param_meta(at::Tensor param_tensor, long ds_id)
+{
+    const DSParam& param = registry.getParam(ds_id);
+    auto options = param.getDSTensor().options().device(c10::kMeta);
+    at::Tensor output_buf = torch::empty(param.getShape(), options);
+    return output_buf;
+}
+
 at::Tensor release_param(at::Tensor v, long ds_id)
 {
     const DSParam& param = registry.getParam(ds_id);
@@ -220,6 +228,8 @@ at::Tensor release_param(at::Tensor v, long ds_id)
 
     return v;
 }
+
+at::Tensor release_param_meta(at::Tensor v, long ds_id) { return v; }
 
 at::Tensor wait_allgather(at::Tensor v,
                           long ds_id,
@@ -236,6 +246,15 @@ at::Tensor wait_allgather(at::Tensor v,
         handle->wait();
     }
 
+    return v;
+}
+
+at::Tensor wait_allgather_meta(at::Tensor v,
+                               long ds_id,
+                               const std::string& user,
+                               long n_args,
+                               bool is_backward)
+{
     return v;
 }
 
@@ -260,6 +279,8 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 
     return at::Tensor();
 }
+
+at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long ds_id) { return at::Tensor(); }
 
 }  // namespace n3z
 
@@ -290,6 +311,14 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
+}
+
+TORCH_LIBRARY_IMPL(native_z3, Meta, m)
+{
+    m.impl("allgather_param", &n3z::allgather_param_meta);
+    m.impl("release_param", &n3z::release_param_meta);
+    m.impl("wait_allgather", &n3z::wait_allgather_meta);
+    m.impl("reduce_grad", &n3z::reduce_grad_meta);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)

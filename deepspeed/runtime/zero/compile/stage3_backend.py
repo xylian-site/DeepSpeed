@@ -19,6 +19,7 @@ from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_
 from .fx import add_postprocess
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
+from .profile import ProfilingInterpreter
 
 import os
 
@@ -156,6 +157,7 @@ def make_stage3_backend(dump_graphs=False):
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
             add_gather_and_release(gm, param_manager)
+            ProfilingInterpreter(gm).run(*sample_inputs)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
             # gm.graph = schedule(gm.graph, param_manager)

@@ -14,7 +14,7 @@ def get_output_node(graph: Graph):
     raise ValueError("No output node found")
 
 
-def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any], extra_args: List[int] = [], name=None):
+def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any], extra_args: List[int] = [], name=None, meta={}):
     # https://github.com/pytorch/examples/blob/main/fx/wrap_output_dynamically.py
     with graph.inserting_after(node):
         args = (node, )
@@ -29,4 +29,8 @@ def add_postprocess(graph: Graph, node: Node, fn: Callable[..., Any], extra_args
                 users[u] = (node, new_node)
         for u, (old_in, new_in) in users.items():
             u.replace_input_with(old_in, new_in)
+
+    for k, v in meta.items():
+        new_node.meta[k] = v
+
     return new_node

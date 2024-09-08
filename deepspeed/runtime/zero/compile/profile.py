@@ -3,29 +3,38 @@
 
 # DeepSpeed Team
 
-from collections import defaultdict
-from typing import Any, Dict, List
+import time
+from typing import Any
+import statistics
 
 import torch
 from torch.utils._pytree import tree_map
-from torch.fx import Node, GraphModule, Interpreter
+from torch.fx import GraphModule, Interpreter
 
+import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
+
+from .util import is_comm_op
 
 
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
-    def __init__(self, gm: GraphModule, iteration: int = 10):
+    def __init__(self, gm: GraphModule, iteration: int = 10, warmup: int = 5):
         super().__init__(gm)
-        self.runtimes_ms: Dict[Node, List[float]] = defaultdict(list)
+
+        assert iteration > 0
+        assert warmup >= 0
+        assert warmup < iteration
         self.iteration = iteration
+        self.warmup = warmup
 
     def run_node(self, n: torch.fx.Node) -> Any:
         fake_ret = super().run_node(n)
 
         if n.op in {"placeholder", "output"}:
-            self.runtimes_ms[n].append(0)
+            n.meta["device_time"] = 0.0
+            n.meta["wall_time"] = 0.0
         else:
             accelerator = get_accelerator()
             start_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
@@ -44,14 +53,24 @@ class ProfilingInterpreter(Interpreter):
 
             args = tree_map(to_device, args)
             kwargs = tree_map(to_device, kwargs)
+            walltimes = []
+
+            if is_comm_op(n):
+                dist.barrier()
 
             for i in range(self.iteration):
+                start = time.time()
                 start_events[i].record()
                 getattr(self, n.op)(n.target, args, kwargs)
                 end_events[i].record()
+                walltimes.append(time.time() - start)
+
+            if is_comm_op(n):
+                dist.barrier()
 
             accelerator.synchronize()
-            self.runtimes_ms[n] = [s.elapsed_time(e) for s, e in zip(start_events, end_events)]
+            n.meta["device_time"] = statistics.mean([s.elapsed_time(e)
+                                                     for s, e in zip(start_events, end_events)][self.warmup:])
+            n.meta["wall_time"] = statistics.mean(walltimes[self.warmup:]) * 1000
 
-        # print(f"Node {n} took {self.runtimes_ms[n]} ms to run")
         return fake_ret

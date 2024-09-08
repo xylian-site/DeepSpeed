@@ -36,7 +36,13 @@ def add_allgather(graph: Graph, node: Node, ds_id: int):
                            node,
                            torch.ops.native_z3.allgather_param,
                            extra_args=[ds_id],
-                           name=f"allgather_ds_param_{node.target}_{ds_id}")
+                           name=f"allgather_ds_param_{node.target}_{ds_id}",
+                           meta={
+                               "param_name": node.name,
+                               "ds_id": ds_id,
+                               "tensor_meta": node.meta["tensor_meta"],
+                               "comm": True
+                           })
 
 
 def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
@@ -44,7 +50,13 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
                            node,
                            torch.ops.native_z3.release_param,
                            extra_args=[ds_id],
-                           name=f"release_ds_param_{release_node.target}_{ds_id}")
+                           name=f"release_ds_param_{release_node.target}_{ds_id}",
+                           meta={
+                               "param_name": node.name,
+                               "ds_id": ds_id,
+                               "tensor_meta": node.meta["tensor_meta"],
+                               "comm": False
+                           })
 
 
 def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
@@ -52,7 +64,13 @@ def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: 
                            node,
                            torch.ops.native_z3.wait_allgather,
                            extra_args=[ds_id, user, n_args, bwd],
-                           name=f"wait_allgather_ds_param_{ds_id}")
+                           name=f"wait_allgather_ds_param_{ds_id}",
+                           meta={
+                               "param_name": node.name,
+                               "ds_id": ds_id,
+                               "tensor_meta": node.meta["tensor_meta"],
+                               "comm": False
+                           })
 
 
 def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
@@ -60,7 +78,12 @@ def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
                            grad_node,
                            torch.ops.native_z3.reduce_grad,
                            extra_args=[ds_id],
-                           name=f"reduce_ds_param_{param_name}")
+                           name=f"reduce_ds_param_{param_name}",
+                           meta={
+                               "grad_name": grad_node.name,
+                               "ds_id": ds_id,
+                               "comm": True
+                           })
 
 
 def _add_wait_allgather(graph: Graph, param_manager: DSGraphParamManager, bwd: bool):

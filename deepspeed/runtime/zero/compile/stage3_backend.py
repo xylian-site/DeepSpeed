@@ -20,6 +20,7 @@ from .fx import add_postprocess
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
+from .list_schedule import list_schedule
 
 import os
 
@@ -82,25 +83,23 @@ def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
                            meta={
                                "grad_name": grad_node.name,
                                "ds_id": ds_id,
+                               "tensor_meta": grad_node.meta["tensor_meta"],
                                "comm": True
                            })
 
 
-def _add_wait_allgather(graph: Graph, param_manager: DSGraphParamManager, bwd: bool):
-    ds_ids = param_manager.ds_ids
-
-    def allgathered_param_args(node):
-        return [
-            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.native_z3.allgather_param
-        ]
+def _add_wait_allgather(graph: Graph, bwd: bool):
 
     for node in graph.nodes:
-        ag_args = allgathered_param_args(node)
+        ag_args = [
+            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.native_z3.allgather_param
+        ]
         if len(ag_args) > 0:
-            nz3.register_op_n_args(node.name, len(ag_args), bwd)
-            for arg in ag_args:
-                param_name = param_manager.allgather_param_name(arg, bw=bwd)
-                add_wait_allgather(graph, arg, ds_ids[param_name], node.name, len(ag_args), bwd)
+            assert len(ag_args) == 1, f"Node {node.name} takes multiple allgathered params"
+            nz3.register_op_n_args(node.name, len(node.args), bwd)
+            for arg in node.args:
+                ds_id = ag_args[0].meta["ds_id"]
+                add_wait_allgather(graph, arg, ds_id, node.name, len(node.args), bwd)
 
 
 def add_gather_and_release(gm: GraphModule, param_manager: DSGraphParamManager):
@@ -116,36 +115,25 @@ def add_gather_and_release(gm: GraphModule, param_manager: DSGraphParamManager):
         dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
         last_user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
 
-    allgather_nodes = {}
     for pn in param_nodes:
-        allgather_nodes[pn] = add_allgather(graph, pn, ds_ids[pn.name])
+        add_allgather(graph, pn, ds_ids[pn.name])
 
-    release_nodes = {}
     for pn, nodes in last_user_nodes.items():
         for node in nodes:
-            assert pn not in release_nodes
-            release_nodes[pn] = add_release(graph, node, pn, ds_ids[pn.name])
-
-    for pn, an in allgather_nodes.items():
-        param_manager.add_allgather_node(pn.name, an)
-    for pn, rn in release_nodes.items():
-        param_manager.add_release_node(pn.name, rn)
+            add_release(graph, node, pn, ds_ids[pn.name])
 
 
 def add_gather_and_reduce(gm: GraphModule, param_manager: DSGraphParamManager):
     graph = gm.graph
     param_nodes_bw = param_manager.param_nodes_bw
-    ds_ids = param_manager.ds_ids
 
     add_dependency_on_params(graph, param_nodes_bw)
 
     for pn in param_nodes_bw:
-        n = add_allgather(gm.graph, pn, param_manager.ds_ids[pn.name])
-        param_manager.add_allgather_node(pn.name, n, bw=True)
+        add_allgather(gm.graph, pn, param_manager.ds_ids[pn.name])
 
     for pn in param_manager.param_nodes:
-        rn = add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name, param_manager.ds_ids[pn.name])
-        param_manager.add_release_node(pn.name, rn, bw=True)
+        add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name, param_manager.ds_ids[pn.name])
 
 
 graph_counts = defaultdict(int)
@@ -184,7 +172,9 @@ def make_stage3_backend(dump_graphs=False):
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
             # gm.graph = schedule(gm.graph, param_manager)
-            _add_wait_allgather(gm.graph, param_manager, False)
+            list_schedule(gm.graph, param_manager, ProfilingInterpreter(gm), False)
+
+            _add_wait_allgather(gm.graph, False)
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
             gm.recompile()
@@ -199,7 +189,7 @@ def make_stage3_backend(dump_graphs=False):
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
             # gm.graph = schedule(gm.graph, param_manager, bw=True)
-            _add_wait_allgather(gm.graph, param_manager, True)
+            _add_wait_allgather(gm.graph, True)
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
 
             gm.recompile()

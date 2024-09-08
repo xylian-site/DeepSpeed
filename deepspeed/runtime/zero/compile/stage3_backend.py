@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 from collections import defaultdict
+from typing import List, Dict
 
 import torch
 from torch.fx import Node, Graph, GraphModule
@@ -21,6 +22,7 @@ from .fx import add_postprocess
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule
+from .util import get_param_nodes
 
 import os
 
@@ -102,11 +104,7 @@ def _add_wait_allgather(graph: Graph, bwd: bool):
                 add_wait_allgather(graph, arg, ds_id, node.name, len(node.args), bwd)
 
 
-def add_gather_and_release(gm: GraphModule, param_manager: DSGraphParamManager):
-    graph = gm.graph
-    param_nodes = param_manager.param_nodes
-    ds_ids = param_manager.ds_ids
-
+def add_gather_and_release(graph: Graph, param_manager: DSGraphParamManager, param_nodes: List[Node]):
     add_dependency_on_params(graph, param_nodes)
 
     nx_graph = fx_to_nx(graph)
@@ -116,24 +114,22 @@ def add_gather_and_release(gm: GraphModule, param_manager: DSGraphParamManager):
         last_user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
 
     for pn in param_nodes:
-        add_allgather(graph, pn, ds_ids[pn.name])
+        add_allgather(graph, pn, param_manager.ds_ids[pn.name])
 
     for pn, nodes in last_user_nodes.items():
         for node in nodes:
-            add_release(graph, node, pn, ds_ids[pn.name])
+            add_release(graph, node, pn, param_manager.ds_ids[pn.name])
 
 
-def add_gather_and_reduce(gm: GraphModule, param_manager: DSGraphParamManager):
-    graph = gm.graph
-    param_nodes_bw = param_manager.param_nodes_bw
-
+def add_gather_and_reduce(graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],
+                          param_name_to_grad: Dict[str, Node]):
     add_dependency_on_params(graph, param_nodes_bw)
 
-    for pn in param_nodes_bw:
-        add_allgather(gm.graph, pn, param_manager.ds_ids[pn.name])
+    for param_node_bw in param_nodes_bw:
+        add_allgather(graph, param_node_bw, param_manager.ds_ids[param_node_bw.name])
 
-    for pn in param_manager.param_nodes:
-        add_reduce(gm.graph, param_manager.get_grad_name(pn.name), pn.name, param_manager.ds_ids[pn.name])
+    for param_name in param_manager.param_names:
+        add_reduce(graph, param_name_to_grad[param_name], param_name, param_manager.ds_ids[param_name])
 
 
 graph_counts = defaultdict(int)
@@ -167,12 +163,12 @@ def make_stage3_backend(dump_graphs=False):
 
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
-            add_gather_and_release(gm, param_manager)
+            add_gather_and_release(gm.graph, param_manager, get_param_nodes(gm.graph, len(param_ds_ids)))
             ProfilingInterpreter(gm).run(*sample_inputs)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
             # gm.graph = schedule(gm.graph, param_manager)
-            list_schedule(gm.graph, param_manager, ProfilingInterpreter(gm), False)
+            list_schedule(gm.graph, param_manager, False)
 
             _add_wait_allgather(gm.graph, False)
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
@@ -181,11 +177,11 @@ def make_stage3_backend(dump_graphs=False):
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
-            param_manager.add_bw_graph(gm.graph)
+            param_nodes_bw, param_name_to_grad = param_manager.get_bwd_mapping(gm.graph)
 
             dump_graph(gm, f"backward_aot", skip=not dump_graphs)
 
-            add_gather_and_reduce(gm, param_manager)
+            add_gather_and_reduce(gm.graph, param_manager, param_nodes_bw, param_name_to_grad)
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
             # gm.graph = schedule(gm.graph, param_manager, bw=True)

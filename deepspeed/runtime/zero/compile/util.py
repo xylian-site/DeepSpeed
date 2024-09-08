@@ -5,9 +5,14 @@
 
 import functools
 import operator
+from typing import List
 
 import torch
-from torch.fx import Node
+from torch.fx import Node, Graph
+
+
+def get_param_nodes(graph: Graph, n_params: int) -> List[Node]:
+    return [n for n in graph.nodes if n.op == "placeholder"][:n_params]
 
 
 def is_comm_op(node: Node) -> bool:

@@ -1,10 +1,13 @@
-from typing import List, Tuple
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
 
-import torch
+# DeepSpeed Team
+
+from typing import List
+
 from torch.fx import Graph, Node
 
 from .graph_param import DSGraphParamManager
-from .profile import ProfilingInterpreter
 from .util import tensor_meta_size
 
 
@@ -13,7 +16,7 @@ def get_original_args_num(node: Node):
         or node.name.startswith("release_ds_param") \
         or node.name.startswith("wait_allgather_ds_param") \
         or node.name.startswith("reduce_ds_param"):
-        return 1       
+        return 1
 
     return len(node.args)
 
@@ -39,14 +42,14 @@ def create_mem_table(graph: Graph) -> dict:
         if node.name.startswith("allgather_ds_param"):
             mem_table[node.name] = tensor_meta_size(node.meta["tensor_meta"])
         elif node.name.startswith("release_ds_param") or node.name.startswith("reduce_ds_param"):
-            mem_table[node.name] = - tensor_meta_size(node.meta["tensor_meta"])
+            mem_table[node.name] = -tensor_meta_size(node.meta["tensor_meta"])
         else:
             mem_table[node.name] = 0
 
     return mem_table
 
 
-def list_schedule(graph: Graph, param_manager: DSGraphParamManager, profiler: ProfilingInterpreter, bwd: bool) -> List[Node]:
+def list_schedule(graph: Graph, param_manager: DSGraphParamManager, bwd: bool) -> List[Node]:
 
     mem_table = create_mem_table(graph)
 

@@ -17,7 +17,7 @@ import deepspeed.comm as dist
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
-from .fx import add_postprocess
+from .fx import add_postprocess, add_args_process
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
@@ -63,17 +63,17 @@ def add_release(graph: Graph, node: Node, release_node: Node, ds_id: int):
 
 
 def add_wait_allgather(graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
-    return add_postprocess(graph,
-                           node,
-                           torch.ops.native_z3.wait_allgather,
-                           extra_args=[ds_id, user, n_args, bwd],
-                           name=f"wait_allgather_ds_param_{ds_id}",
-                           meta={
-                               "param_name": node.name,
-                               "ds_id": ds_id,
-                               "tensor_meta": node.meta["tensor_meta"],
-                               "comm": False
-                           })
+    return add_args_process(graph,
+                            node,
+                            torch.ops.native_z3.wait_allgather,
+                            extra_args=[ds_id, user, n_args, bwd],
+                            name=f"wait_allgather_ds_param_{ds_id}",
+                            meta={
+                                "param_name": node.name,
+                                "ds_id": ds_id,
+                                "tensor_meta": node.meta["tensor_meta"],
+                                "comm": False
+                            })
 
 
 def add_reduce(graph: Graph, grad_node: Node, param_name: str, ds_id: int):
@@ -99,9 +99,8 @@ def _add_wait_allgather(graph: Graph, bwd: bool):
         if len(ag_args) > 0:
             assert len(ag_args) == 1, f"Node {node.name} takes multiple allgathered params"
             nz3.register_op_n_args(node.name, len(node.args), bwd)
-            for arg in node.args:
-                ds_id = ag_args[0].meta["ds_id"]
-                add_wait_allgather(graph, arg, ds_id, node.name, len(node.args), bwd)
+            ds_id = ag_args[0].meta["ds_id"]
+            add_wait_allgather(graph, node, ds_id, node.name, len(node.args), bwd)
 
 
 def add_gather_and_release(graph: Graph, param_manager: DSGraphParamManager, param_nodes: List[Node]):
@@ -171,8 +170,6 @@ def make_stage3_backend(dump_graphs=False):
 
             _add_wait_allgather(gm.graph, False)
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
-
-            # gm.graph.print_tabular()
 
             gm.recompile()
             return make_boxed_func(gm.forward)

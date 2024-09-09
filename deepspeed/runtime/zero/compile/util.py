@@ -16,7 +16,7 @@ def get_param_nodes(graph: Graph, n_params: int) -> List[Node]:
 
 
 def is_comm_op(node: Node) -> bool:
-    return hasattr(node.meta, "comm") and node.meta["comm"]
+    return "comm" in node.meta and node.meta["comm"]
 
 
 def dtype_to_elem_size(dtype: torch.dtype) -> int:

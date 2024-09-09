@@ -21,7 +21,7 @@ from .fx import add_postprocess
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
-from .list_schedule import list_schedule
+from .list_schedule import list_schedule, list_schedule2
 from .util import get_param_nodes
 
 import os
@@ -167,10 +167,12 @@ def make_stage3_backend(dump_graphs=False):
             ProfilingInterpreter(gm).run(*sample_inputs)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
-            gm.graph = list_schedule(gm.graph)
+            gm.graph = list_schedule2(gm.graph)
 
             _add_wait_allgather(gm.graph, False)
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
+
+            # gm.graph.print_tabular()
 
             gm.recompile()
             return make_boxed_func(gm.forward)
@@ -187,6 +189,8 @@ def make_stage3_backend(dump_graphs=False):
             gm.graph = list_schedule(gm.graph)
             _add_wait_allgather(gm.graph, True)
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
+
+            # gm.graph.print_tabular()
 
             gm.recompile()
             return make_boxed_func(gm.forward)

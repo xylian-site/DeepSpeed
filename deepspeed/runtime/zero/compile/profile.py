@@ -11,10 +11,7 @@ import torch
 from torch.utils._pytree import tree_map
 from torch.fx import GraphModule, Interpreter
 
-import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-
-from .util import is_comm_op
 
 
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
@@ -55,8 +52,8 @@ class ProfilingInterpreter(Interpreter):
             kwargs = tree_map(to_device, kwargs)
             walltimes = []
 
-            if is_comm_op(n):
-                dist.barrier()
+            # if is_comm_op(n):
+            #     dist.barrier()
 
             for i in range(self.iteration):
                 start = time.time()
@@ -65,8 +62,8 @@ class ProfilingInterpreter(Interpreter):
                 end_events[i].record()
                 walltimes.append(time.time() - start)
 
-            if is_comm_op(n):
-                dist.barrier()
+            # if is_comm_op(n):
+            #     dist.barrier()
 
             accelerator.synchronize()
             n.meta["device_time"] = statistics.mean([s.elapsed_time(e)

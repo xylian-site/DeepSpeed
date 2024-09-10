@@ -88,7 +88,6 @@ def list_schedule(graph: Graph) -> Graph:
 
     while len(unscheduled) > 0:
         next_node = choose_next_node(scheduled, unscheduled, mem_table)
-        print(f"Next node: {next_node} mem: {mem_table[next_node.name]}")
         scheduled.append(next_node)
         unscheduled.remove(next_node)
 

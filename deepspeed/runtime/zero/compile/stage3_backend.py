@@ -21,7 +21,7 @@ from .fx import add_postprocess, add_args_process
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
-from .list_schedule import list_schedule, list_schedule2
+from .list_schedule import list_schedule2
 from .util import get_param_nodes
 
 import os
@@ -122,10 +122,8 @@ def add_gather_and_release(graph: Graph, param_manager: DSGraphParamManager, par
 
 def add_gather_and_reduce(graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],
                           param_name_to_grad: Dict[str, Node]):
-    add_dependency_on_params(graph, param_nodes_bw)
 
-    for param_node_bw in param_nodes_bw:
-        add_allgather(graph, param_node_bw, param_manager.ds_ids[param_node_bw.name])
+    add_gather_and_release(graph, param_manager, param_nodes_bw)
 
     for param_name in param_manager.param_names:
         add_reduce(graph, param_name_to_grad[param_name], param_name, param_manager.ds_ids[param_name])
@@ -183,12 +181,9 @@ def make_stage3_backend(dump_graphs=False):
             ProfilingInterpreter(gm).run(*sample_inputs)
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
-            gm.graph = list_schedule(gm.graph)
+            gm.graph = list_schedule2(gm.graph)
             _add_wait_allgather(gm.graph, True)
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
-
-            # gm.graph.print_tabular()
-
             gm.recompile()
             return make_boxed_func(gm.forward)
 

@@ -268,14 +268,15 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     std::vector<at::Tensor> inputs = {grad_tensor};
     c10::intrusive_ptr<c10d::Work> handle =
         process_group->reduce_scatter_tensor_coalesced(outputs, inputs);
-    {
-        c10::cuda::CUDAStreamGuard guard(reduce_stream);
-        handle->wait();
-        grad_buf /= world_size;
-        param.getGradBuffer().copy_(grad_buf);
-    }
-
-    if (!param.isPersistent()) { registry.unregisterGatheredParam(ds_id); }
+    // {
+    //     c10::cuda::CUDAStreamGuard guard(reduce_stream);
+    //     handle->wait();
+    //     grad_buf /= world_size;
+    //     param.getGradBuffer().copy_(grad_buf);
+    // }
+    handle->wait();
+    grad_buf /= world_size;
+    param.getGradBuffer().copy_(grad_buf);
 
     return at::Tensor();
 }

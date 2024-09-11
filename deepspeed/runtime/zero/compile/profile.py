@@ -8,13 +8,27 @@ from typing import Any
 import statistics
 
 import torch
-from torch.utils._pytree import tree_map
+from torch.utils._pytree import tree_map, tree_all
 from torch.fx import GraphModule, Interpreter
 from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from .util import is_comm_op
+
+
+def _can_be_materialized(v):
+    return isinstance(v, torch.Tensor) and v.is_floating_point()
+
+
+def _materialize(t, device):
+    if _can_be_materialized(t):
+        return torch.randn(t.shape, dtype=t.dtype, layout=t.layout, device=device)
+    return t
+
+
+def _can_all_args_be_materialized(v):
+    return tree_all(lambda x: not torch.is_tensor(x) or _can_be_materialized(x), v)
 
 
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
@@ -42,18 +56,19 @@ class ProfilingInterpreter(Interpreter):
 
             device = torch.device(accelerator.current_device())
 
-            def to_device(t):
-                if isinstance(t, torch.Tensor):
-                    return t.to(device)
-                return t
+            def materialize(t):
+                return _materialize(t, device)
 
             with maybe_disable_fake_tensor_mode():
                 args, kwargs = self.fetch_args_kwargs_from_env(n)
                 assert isinstance(args, tuple)
                 assert isinstance(kwargs, dict)
 
-                args = tree_map(to_device, args)
-                kwargs = tree_map(to_device, kwargs)
+                # Args should be all fake tensors or all real tensors
+                if _can_all_args_be_materialized(args):
+                    args = tree_map(materialize, args)
+                if _can_all_args_be_materialized(kwargs):
+                    kwargs = tree_map(materialize, kwargs)
                 walltimes = []
 
                 if is_comm_op(n):

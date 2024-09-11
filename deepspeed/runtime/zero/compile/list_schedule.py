@@ -3,6 +3,7 @@
 
 # DeepSpeed Team
 
+from collections import defaultdict
 from typing import List, Dict
 from copy import copy
 
@@ -12,19 +13,25 @@ from torch.utils._pytree import tree_iter
 from .util import tensor_meta_size
 
 
-def init_schdule(graph: Graph):
+def init_schedule(graph: Graph):
     mem_table = create_mem_table(graph)
 
     scheduled = []
     unscheduled = []
+    edges = defaultdict(list)
     for node in graph.nodes:
         # print(f"Node: {node} args: {node.args}")
         if len(node.args) == 0:
             scheduled.append(node)
         else:
             unscheduled.append(node)
+        for a in node.args:
+            for elem_a in tree_iter(a):
+                if isinstance(elem_a, Node):
+                    if node not in edges[elem_a]:
+                        edges[elem_a].append(node)
 
-    return scheduled, unscheduled, mem_table
+    return scheduled, unscheduled, edges, mem_table
 
 
 def make_graph_from_schedule(scheduled: List[Node]):
@@ -84,7 +91,7 @@ def create_mem_table(graph: Graph) -> Dict[str, int]:
 
 def list_schedule(graph: Graph) -> Graph:
 
-    scheduled, unscheduled, mem_table = init_schdule(graph)
+    scheduled, unscheduled, mem_table = init_schedule(graph)
 
     while len(unscheduled) > 0:
         next_node = choose_next_node(scheduled, unscheduled, mem_table)
@@ -97,54 +104,80 @@ def list_schedule(graph: Graph) -> Graph:
 ###############################
 
 
-def schedule_without_allgather(scheduled: List[Node], unscheduled: List[Node]):
+def get_new_runnable_nodes_with(scheduled: List[Node], edges: Dict[Node, List[Node]], new_scheduled: Node):
+    scheduled = set(scheduled)
+    new_runnables = []
+    for node in edges[new_scheduled]:
+        args = node.args[:get_original_args_num(node)]
+        if all(arg in scheduled for arg in filter_args(node) if arg != new_scheduled):
+            new_runnables.append(node)
+
+    return new_runnables
+
+
+def _do_schedule_without_allgather(scheduled: List[Node], unscheduled: List[Node], edges: Dict[Node, List[Node]],
+                                   non_ag_runnable: List[Node]):
+
+    while len(non_ag_runnable) > 0:
+        next_node = non_ag_runnable.pop()
+
+        new_runnables = get_new_runnable_nodes_with(scheduled, edges, next_node)
+        non_ag_runnable += [n for n in new_runnables if not n.name.startswith("allgather_ds_param")]
+
+        scheduled.append(next_node)
+        unscheduled.remove(next_node)
+
+    return scheduled, unscheduled
+
+
+def schedule_without_allgather(scheduled: List[Node], unscheduled: List[Node], edges: Dict[Node, List[Node]]):
     runnable = get_runnable_nodes(scheduled, unscheduled)
     non_ag_runnable = [n for n in runnable if not n.name.startswith("allgather_ds_param")]
 
     tmp_scheduled = copy(scheduled)
     tmp_unscheduled = copy(unscheduled)
 
-    while len(non_ag_runnable) > 0:
-        next_node = non_ag_runnable[0]
-        tmp_scheduled.append(next_node)
-        tmp_unscheduled.remove(next_node)
+    return _do_schedule_without_allgather(tmp_scheduled, tmp_unscheduled, edges, non_ag_runnable)
 
-        runnable = get_runnable_nodes(tmp_scheduled, tmp_unscheduled)
-        non_ag_runnable = [n for n in runnable if not n.name.startswith("allgather_ds_param")]
 
-    return tmp_scheduled, tmp_unscheduled
+def try_schedule_with_new_allgather(scheduled: List[Node], unscheduled: List[Node], edges: Dict[Node, List[Node]],
+                                    new_scheduled: Node):
+    new_runnables = get_new_runnable_nodes_with(scheduled, edges, new_scheduled)
+    non_ag_runnable = [n for n in new_runnables if not n.name.startswith("allgather_ds_param")]
+
+    tmp_scheduled = copy(scheduled)
+    tmp_unscheduled = copy(unscheduled)
+
+    tmp_scheduled.append(new_scheduled)
+    tmp_unscheduled.remove(new_scheduled)
+
+    return _do_schedule_without_allgather(tmp_scheduled, tmp_unscheduled, edges, non_ag_runnable)
 
 
 def list_schedule2(graph: Graph) -> Graph:
 
-    scheduled, unscheduled, mem_table = init_schdule(graph)
-
-    tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled)
+    scheduled, unscheduled, edges, mem_table = init_schedule(graph)
+    tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled, edges)
 
     while len(tmp_unscheduled) > 0:
 
         runnable = get_runnable_nodes(tmp_scheduled, tmp_unscheduled)
-
         ag_with_unblock_time = []
+
         for ag_node in runnable:
-            ag_scheduled = copy(tmp_scheduled)
-            ag_unscheduled = copy(tmp_unscheduled)
-            ag_scheduled.append(ag_node)
-            ag_unscheduled.remove(ag_node)
-            ag_scheduled, ag_unscheduled = schedule_without_allgather(ag_scheduled, ag_unscheduled)
+            ag_scheduled, ag_unscheduled = try_schedule_with_new_allgather(tmp_scheduled, tmp_unscheduled, edges,
+                                                                           ag_node)
             unblock_time = sum(n.meta["device_time"] for n in ag_scheduled[len(tmp_scheduled) + 1:])
-            ag_with_unblock_time.append((ag_node, unblock_time))
+            ag_with_unblock_time.append((ag_node, unblock_time, ag_scheduled, ag_unscheduled))
 
         ag_with_unblock_time = sorted(ag_with_unblock_time, key=lambda x: x[1], reverse=True)
         best_ag_node = ag_with_unblock_time[0][0]
+        best_ag_scheduled = ag_with_unblock_time[0][2]
 
-        new_scheduled_without_allgahter = tmp_scheduled[len(scheduled):]
-        scheduled.append(best_ag_node)
-        unscheduled.remove(best_ag_node)
-        for n in new_scheduled_without_allgahter:
-            scheduled.append(n)
-            unscheduled.remove(n)
-
-        tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled)
+        tmp_scheduled.append(best_ag_node)
+        tmp_unscheduled.remove(best_ag_node)
+        for n in best_ag_scheduled[len(tmp_scheduled):]:
+            tmp_scheduled.append(n)
+            tmp_unscheduled.remove(n)
 
     return make_graph_from_schedule(tmp_scheduled)

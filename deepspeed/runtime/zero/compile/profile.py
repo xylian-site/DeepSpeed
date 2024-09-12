@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 import time
+import types
 from typing import Any
 import statistics
 
@@ -34,7 +35,7 @@ def _can_all_args_be_materialized(v):
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
-    def __init__(self, gm: GraphModule, iteration: int = 10, warmup: int = 5):
+    def __init__(self, gm: GraphModule, nz3: types.ModuleType, iteration: int = 10, warmup: int = 5):
         super().__init__(gm)
 
         assert iteration > 0
@@ -42,6 +43,14 @@ class ProfilingInterpreter(Interpreter):
         assert warmup < iteration
         self.iteration = iteration
         self.warmup = warmup
+        self.nz3 = nz3
+
+    def run(self, *args) -> Any:
+
+        self.nz3.enable_profiling(True)
+        return_val = super().run(*args)
+        self.nz3.enable_profiling(False)
+        return return_val
 
     def run_node(self, n: torch.fx.Node) -> Any:
         fake_ret = super().run_node(n)

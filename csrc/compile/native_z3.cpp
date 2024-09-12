@@ -136,6 +136,7 @@ static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
 static GraphOpStates op_states_bwd = GraphOpStates();
 static at::cuda::CUDAStream reduce_stream = at::cuda::getStreamFromPool(true);
+static bool profile = false;
 
 at::Tensor test_call(at::Tensor param)
 {
@@ -149,6 +150,8 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
     for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
     return result;
 }
+
+void enable_profiling(bool enable) { profile = enable; }
 
 void register_param(long ds_id,
                     const std::vector<int64_t>& ds_shape,
@@ -203,15 +206,23 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     std::vector<at::Tensor> inputs = {param.getDSTensor()};
     c10::intrusive_ptr<c10d::Work> handle =
         process_group->allgather_into_tensor_coalesced(outputs, inputs);
-    registry.addAllgatherHandle(ds_id, handle);
 
-    registry.registerGatheredParam(ds_id, output_buf);
+    if (!profile) {
+        registry.addAllgatherHandle(ds_id, handle);
+        registry.registerGatheredParam(ds_id, output_buf);
+    } else {
+        // nccl calls run on a separate stream.
+        // Events created in the profiler don't capture the time.
+        handle->wait();
+    }
 
     return output_buf;
 }
 
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long ds_id)
 {
+    // std::cout << "allgather_param_meta ds_id=" << ds_id << std::endl;
+
     const DSParam& param = registry.getParam(ds_id);
     auto options = param.getDSTensor().options().device(c10::kMeta);
     at::Tensor output_buf = torch::empty(param.getShape(), options);
@@ -220,6 +231,14 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long ds_id)
 
 at::Tensor release_param(at::Tensor v, long ds_id)
 {
+    // std::cout << "release_param ds_id=" << ds_id << std::endl;
+
+    if (profile and !registry.hasGatheredParam(ds_id)) {
+        // Profiler runs this function multiple times.
+        // We need to check if the gathered param is already released.
+        return v;
+    }
+
     const DSParam& param = registry.getParam(ds_id);
     if (!param.isPersistent()) {
         at::Tensor gathered_param = registry.getGatheredParam(ds_id);
@@ -330,6 +349,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("test_call", &n3z::test_call, "Test function");
     m.def("register_param", &n3z::register_param, "Register a parameter");
+    m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
     m.def("set_process_group", &n3z::set_process_group, "Set the process group");
     m.def("register_op_n_args",
           &n3z::register_op_n_args,

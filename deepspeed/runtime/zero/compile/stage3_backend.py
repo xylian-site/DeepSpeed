@@ -161,7 +161,7 @@ def make_stage3_backend(dump_graphs=False):
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
             add_gather_and_release(gm.graph, param_manager, get_param_nodes(gm.graph, len(param_ds_ids)))
-            ProfilingInterpreter(gm).run(*sample_inputs)
+            ProfilingInterpreter(gm, nz3).run(*sample_inputs)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
             gm.graph = list_schedule2(gm.graph)
@@ -178,7 +178,7 @@ def make_stage3_backend(dump_graphs=False):
             dump_graph(gm, f"backward_aot", skip=not dump_graphs)
 
             add_gather_and_reduce(gm.graph, param_manager, param_nodes_bw, param_name_to_grad)
-            ProfilingInterpreter(gm).run(*sample_inputs)
+            ProfilingInterpreter(gm, nz3).run(*sample_inputs)
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
             gm.graph = list_schedule2(gm.graph)

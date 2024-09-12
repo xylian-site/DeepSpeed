@@ -222,7 +222,11 @@ at::Tensor release_param(at::Tensor v, long ds_id)
 {
     const DSParam& param = registry.getParam(ds_id);
     if (!param.isPersistent()) {
-        // This just removes the reference to the tensor
+        at::Tensor gathered_param = registry.getGatheredParam(ds_id);
+        const auto options = gathered_param.options();
+        at::Tensor empty_buffer = torch::empty({0}, options);
+        gathered_param.set_data(empty_buffer);
+
         registry.unregisterGatheredParam(ds_id);
     }
 

@@ -174,9 +174,18 @@ def list_schedule2(graph: Graph) -> Graph:
         best_ag_node = ag_with_unblock_time[0][0]
         best_ag_scheduled = ag_with_unblock_time[0][2]
 
-        tmp_scheduled.append(best_ag_node)
-        tmp_unscheduled.remove(best_ag_node)
-        for n in best_ag_scheduled[len(tmp_scheduled):]:
+        no_ag_runnables = tmp_scheduled[len(scheduled):]
+        after_ag_runnables = best_ag_scheduled[len(tmp_scheduled) + 1:]
+
+        scheduled.append(best_ag_node)
+        unscheduled.remove(best_ag_node)
+        for n in no_ag_runnables:
+            scheduled.append(n)
+            unscheduled.remove(n)
+
+        tmp_scheduled = copy(scheduled)
+        tmp_unscheduled = copy(unscheduled)
+        for n in after_ag_runnables:
             tmp_scheduled.append(n)
             tmp_unscheduled.remove(n)
 

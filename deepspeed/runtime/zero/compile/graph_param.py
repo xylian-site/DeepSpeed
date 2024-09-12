@@ -64,13 +64,17 @@ class DSGraphParamManager:
         return param_nodes_bw, param_name_to_grad
 
     @property
-    def param_names(self):
+    def param_names(self) -> List[str]:
         return self._param_names
 
     @property
-    def ds_ids(self):
+    def params(self) -> Dict[str, DSGraphParam]:
+        return self._params
+
+    @property
+    def ds_ids(self) -> Dict[str, int]:
         return self._ds_ids
 
-    def get_grad_name(self, param_name):
+    def get_grad_name(self, param_name) -> str:
         assert self._param_name_to_grad is not None, "Backward graph is not added yet"
         return self._param_name_to_grad[param_name]

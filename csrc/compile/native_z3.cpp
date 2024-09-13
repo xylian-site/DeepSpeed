@@ -7,8 +7,11 @@
 
 #define USE_C10D_NCCL
 
+#include <ATen/cuda/CUDAEvent.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
+#include <torch/csrc/cuda/nccl.h>
+#include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 
 namespace n3z {
@@ -131,11 +134,16 @@ private:
     std::unordered_map<long, c10::intrusive_ptr<c10d::Work>> allgather_handles_;
 };
 
-static DSParamRegistry registry = DSParamRegistry();
+DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
 static GraphOpStates op_states_bwd = GraphOpStates();
-static at::cuda::CUDAStream reduce_stream = at::cuda::getStreamFromPool(true);
+
+static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
+static ncclComm_t ncclComm;
+static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events;
+static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events;
+
 static bool profile = false;
 
 at::Tensor test_call(at::Tensor param)
@@ -153,6 +161,20 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 
 void enable_profiling(bool enable) { profile = enable; }
 
+ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
+{
+    switch (scalar_type) {
+        case at::kFloat: return ncclFloat;
+        case at::kHalf: return ncclHalf;
+        case at::kDouble: return ncclDouble;
+        case at::kBFloat16: return ncclBfloat16;
+        case at::kLong: return ncclInt64;
+        case at::kInt: return ncclInt;
+        case at::kChar: return ncclInt8;
+        default: throw std::runtime_error("Unsupported scalar type");
+    }
+}
+
 void register_param(long ds_id,
                     const std::vector<int64_t>& ds_shape,
                     at::Tensor ds_tensor,
@@ -160,7 +182,7 @@ void register_param(long ds_id,
                     bool persistent)
 {
     // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
-    registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
+    param_registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
 void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
@@ -169,7 +191,28 @@ void register_op_n_args(const std::string& op_name, long n_args, bool is_backwar
     op_states.registerOpNArgs(op_name, n_args);
 }
 
-void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg) { process_group = pg; }
+void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
+{
+    process_group = pg;
+
+    ncclUniqueId ncclID;
+    ncclGetUniqueId(&ncclID);
+
+    // ProcessGroup doesn't have an API to get the CUDA stream for comm calls.
+    // So we create a NCCL communicator and call NCCL APIs directly.
+    auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t*>(&ncclID),
+                                    reinterpret_cast<uint8_t*>(&ncclID) + NCCL_UNIQUE_ID_BYTES);
+    auto device = torch::Device(torch::kCUDA);
+    at::Tensor tensor = torch::from_blob(vec.data(), {static_cast<long>(vec.size())}, torch::kUInt8)
+                            .to(torch::Device(torch::kCUDA));
+    std::vector<at::Tensor> bcast_input = {tensor};
+
+    process_group->broadcast(bcast_input, c10d::BroadcastOptions())->wait();
+
+    // create a new nccl communicator
+    std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
+    ncclCommInitRank(&ncclComm, process_group->getSize(), ncclID, process_group->getRank());
+}
 
 void start_forward()
 {
@@ -197,23 +240,45 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
 {
     // std::cout << "allgather_param ds_id=" << ds_id << std::endl;
 
-    const DSParam& param = registry.getParam(ds_id);
+    const DSParam& param = param_registry.getParam(ds_id);
 
-    if (registry.hasGatheredParam(ds_id)) { return registry.getGatheredParam(ds_id); }
+    if (param_registry.hasGatheredParam(ds_id)) { return param_registry.getGatheredParam(ds_id); }
 
-    at::Tensor output_buf = torch::empty(param.getShape(), param.getDSTensor().options());
-    std::vector<at::Tensor> outputs = {output_buf};
-    std::vector<at::Tensor> inputs = {param.getDSTensor()};
-    c10::intrusive_ptr<c10d::Work> handle =
-        process_group->allgather_into_tensor_coalesced(outputs, inputs);
+    const at::Tensor& ds_tensor = param.getDSTensor();
+    at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
 
-    if (!profile) {
-        registry.addAllgatherHandle(ds_id, handle);
-        registry.registerGatheredParam(ds_id, output_buf);
-    } else {
+    const auto comp_done_event =
+        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+    ag_comp_done_events[ds_id] = comp_done_event;
+    comp_done_event->record();
+
+    // at::cuda::device_synchronize();
+    comp_done_event->block(comm_stream);
+    ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
+                                        output_buf.data_ptr(),
+                                        ds_tensor.numel(),
+                                        get_nccl_data_type(ds_tensor.scalar_type()),
+                                        ncclComm,
+                                        comm_stream);
+
+    if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
+
+    const auto comm_done_event =
+        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+    ag_comm_done_events[ds_id] = comm_done_event;
+    comm_done_event->record(comm_stream);
+
+    // at::cuda::stream_synchronize(comm_stream);
+
+    if (profile) {
         // nccl calls run on a separate stream.
         // Events created in the profiler don't capture the time.
-        handle->wait();
+
+        comm_stream.synchronize();
+        // handle->wait();
+    } else {
+        // param_registry.addAllgatherHandle(ds_id, handle);
+        param_registry.registerGatheredParam(ds_id, output_buf);
     }
 
     return output_buf;
@@ -223,7 +288,7 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long ds_id)
 {
     // std::cout << "allgather_param_meta ds_id=" << ds_id << std::endl;
 
-    const DSParam& param = registry.getParam(ds_id);
+    const DSParam& param = param_registry.getParam(ds_id);
     auto options = param.getDSTensor().options().device(c10::kMeta);
     at::Tensor output_buf = torch::empty(param.getShape(), options);
     return output_buf;
@@ -233,20 +298,20 @@ at::Tensor release_param(at::Tensor v, long ds_id)
 {
     // std::cout << "release_param ds_id=" << ds_id << std::endl;
 
-    if (profile and !registry.hasGatheredParam(ds_id)) {
+    if (profile and !param_registry.hasGatheredParam(ds_id)) {
         // Profiler runs this function multiple times.
         // We need to check if the gathered param is already released.
         return v;
     }
 
-    const DSParam& param = registry.getParam(ds_id);
+    const DSParam& param = param_registry.getParam(ds_id);
     if (!param.isPersistent()) {
-        at::Tensor gathered_param = registry.getGatheredParam(ds_id);
+        at::Tensor gathered_param = param_registry.getGatheredParam(ds_id);
         const auto options = gathered_param.options();
         at::Tensor empty_buffer = torch::empty({0}, options);
         gathered_param.set_data(empty_buffer);
 
-        registry.unregisterGatheredParam(ds_id);
+        param_registry.unregisterGatheredParam(ds_id);
     }
 
     return v;
@@ -265,8 +330,10 @@ at::Tensor wait_allgather(at::Tensor v,
     op_states.decrementArgCounter(user);
 
     if (op_states.isArgCounterZero(user)) {
-        auto handle = registry.getAllgatherHandle(ds_id);
-        handle->wait();
+        // auto handle = param_registry.getAllgatherHandle(ds_id);
+        // handle->wait();
+
+        ag_comm_done_events[ds_id]->block(at::cuda::getDefaultCUDAStream());
     }
 
     return v;
@@ -284,7 +351,7 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 {
     int world_size = process_group->getSize();
-    const DSParam& param = registry.getParam(ds_id);
+    const DSParam& param = param_registry.getParam(ds_id);
 
     at::Tensor grad_buf = torch::empty_like(param.getDSTensor());
     std::vector<at::Tensor> outputs = {grad_buf};

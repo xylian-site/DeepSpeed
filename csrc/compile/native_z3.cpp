@@ -191,7 +191,7 @@ void register_op_n_args(const std::string& op_name, long n_args, bool is_backwar
     op_states.registerOpNArgs(op_name, n_args);
 }
 
-void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
+void init_comm(c10::intrusive_ptr<c10d::ProcessGroup> pg)
 {
     process_group = pg;
 
@@ -212,6 +212,12 @@ void set_process_group(c10::intrusive_ptr<c10d::ProcessGroup> pg)
     // create a new nccl communicator
     std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
     ncclCommInitRank(&ncclComm, process_group->getSize(), ncclID, process_group->getRank());
+}
+
+void cleanup_comm()
+{
+    ncclCommDestroy(ncclComm);
+    process_group = nullptr;
 }
 
 void start_forward()
@@ -417,7 +423,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("test_call", &n3z::test_call, "Test function");
     m.def("register_param", &n3z::register_param, "Register a parameter");
     m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
-    m.def("set_process_group", &n3z::set_process_group, "Set the process group");
+    m.def("init_comm", &n3z::init_comm, "Set the process group");
+    m.def("cleanup_comm", &n3z::cleanup_comm, "Cleanup the process group");
     m.def("register_op_n_args",
           &n3z::register_op_n_args,
           "Register the number of arguments for an op");

@@ -88,8 +88,8 @@ public:
     }
 
 private:
-    std::unordered_map<std::string, long> op_n_args_;
-    std::unordered_map<std::string, long> args_counter_;
+    std::unordered_map<std::string, size_t> op_n_args_;
+    std::unordered_map<std::string, size_t> args_counter_;
 };
 
 class DSParamRegistry {
@@ -114,6 +114,7 @@ public:
     void unregisterGatheredParam(long ds_id) { gathered_params_.erase(ds_id); }
 
     const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
+    const size_t getNumParams() const { return params_.size(); }
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
 
@@ -134,15 +135,24 @@ private:
     std::unordered_map<long, c10::intrusive_ptr<c10d::Work>> allgather_handles_;
 };
 
-DSParamRegistry param_registry = DSParamRegistry();
+static DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
 static GraphOpStates op_states_bwd = GraphOpStates();
+static size_t reduce_counter;
 
 static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
+static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t ncclComm;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events;
+static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events;
+static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comm_done_events;
+
+static std::unordered_map<at::ScalarType, at::Tensor> reduce_in_buffers;
+static std::unordered_map<at::ScalarType, at::Tensor> reduce_out_buffers;
+static auto rs_done_event =
+    std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
 
 static bool profile = false;
 
@@ -235,6 +245,7 @@ void start_backward(bool update)
 {
     // std::cout << "start_backward update=" << update << std::endl;
     op_states_bwd.resetArgCounter();
+    reduce_counter = param_registry.getNumParams();
 }
 
 void end_backward(bool update)
@@ -258,7 +269,6 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     ag_comp_done_events[ds_id] = comp_done_event;
     comp_done_event->record();
 
-    // at::cuda::device_synchronize();
     comp_done_event->block(comm_stream);
     ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
                                         output_buf.data_ptr(),
@@ -274,16 +284,12 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     ag_comm_done_events[ds_id] = comm_done_event;
     comm_done_event->record(comm_stream);
 
-    // at::cuda::stream_synchronize(comm_stream);
-
     if (profile) {
         // nccl calls run on a separate stream.
         // Events created in the profiler don't capture the time.
 
         comm_stream.synchronize();
-        // handle->wait();
     } else {
-        // param_registry.addAllgatherHandle(ds_id, handle);
         param_registry.registerGatheredParam(ds_id, output_buf);
     }
 
@@ -336,9 +342,6 @@ at::Tensor wait_allgather(at::Tensor v,
     op_states.decrementArgCounter(user);
 
     if (op_states.isArgCounterZero(user)) {
-        // auto handle = param_registry.getAllgatherHandle(ds_id);
-        // handle->wait();
-
         ag_comm_done_events[ds_id]->block(at::cuda::getDefaultCUDAStream());
     }
 
@@ -354,25 +357,78 @@ at::Tensor wait_allgather_meta(at::Tensor v,
     return v;
 }
 
+at::Tensor getOrExtendBuffer(std::unordered_map<at::ScalarType, at::Tensor>& buffers,
+                             at::ScalarType scalar_type,
+                             const at::Tensor& tensor)
+{
+    int64_t numel = tensor.numel();
+
+    std::vector<int64_t> shape = {numel};
+    if (!hasKey(buffers, scalar_type)) {
+        buffers[scalar_type] = torch::empty(shape, at::kCUDA);
+    } else {
+        at::Tensor& buffer = buffers.at(scalar_type);
+        if (buffer.numel() < numel) {
+            buffer = torch::empty(shape, at::kCUDA);
+            buffers[scalar_type] = buffer;
+        }
+    }
+    return buffers.at(scalar_type);
+}
+
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 {
     int world_size = process_group->getSize();
     const DSParam& param = param_registry.getParam(ds_id);
 
-    at::Tensor grad_buf = torch::empty_like(param.getDSTensor());
-    std::vector<at::Tensor> outputs = {grad_buf};
-    std::vector<at::Tensor> inputs = {grad_tensor};
-    c10::intrusive_ptr<c10d::Work> handle =
-        process_group->reduce_scatter_tensor_coalesced(outputs, inputs);
-    // {
-    //     c10::cuda::CUDAStreamGuard guard(reduce_stream);
-    //     handle->wait();
-    //     grad_buf /= world_size;
-    //     param.getGradBuffer().copy_(grad_buf);
-    // }
-    handle->wait();
-    grad_buf /= world_size;
-    param.getGradBuffer().copy_(grad_buf);
+    const auto comp_done_event =
+        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+    rs_comp_done_events[ds_id] = comp_done_event;
+    auto comp_stream = at::cuda::getCurrentCUDAStream();
+
+    at::Tensor reduce_in_buffer =
+        getOrExtendBuffer(reduce_in_buffers, grad_tensor.scalar_type(), grad_tensor);
+    reduce_in_buffer = reduce_in_buffer.index(
+        {torch::indexing::Slice(0, grad_tensor.numel(), torch::indexing::None)});
+    at::Tensor reduce_out_buffer =
+        getOrExtendBuffer(reduce_out_buffers, grad_tensor.scalar_type(), param.getDSTensor());
+    reduce_out_buffer = reduce_out_buffer.index(
+        {torch::indexing::Slice(0, param.getDSTensor().numel(), torch::indexing::None)});
+    rs_done_event->block(comp_stream);
+
+    reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
+
+    comp_done_event->record(comp_stream);
+    comp_done_event->block(comm_stream);
+
+    ncclResult_t result = ncclReduceScatter(reduce_in_buffer.contiguous().data_ptr(),
+                                            reduce_out_buffer.data_ptr(),
+                                            reduce_out_buffer.numel(),
+                                            get_nccl_data_type(grad_tensor.scalar_type()),
+                                            ncclAvg,
+                                            ncclComm,
+                                            comm_stream);
+    if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+
+    {
+        c10::cuda::CUDAStreamGuard guard(comm_stream);
+        param.getGradBuffer().copy_(reduce_out_buffer, true);
+    }
+
+    rs_done_event->record(comm_stream);
+
+    if (profile) { at::cuda::device_synchronize(); }
+
+    reduce_counter--;
+
+    if (reduce_counter == 0) {
+        // This looks duplicated but it's necessary to ensure the copy is done.
+        // The backward hook has start_backward() might not be called when backward starting.
+        reduce_counter = param_registry.getNumParams();
+
+        // This synchronization ensures all of reduce calls are done before optimizer's step.
+        at::cuda::stream_synchronize(comm_stream);
+    }
 
     return at::Tensor();
 }

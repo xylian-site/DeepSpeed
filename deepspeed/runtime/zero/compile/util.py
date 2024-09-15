@@ -39,7 +39,7 @@ def tensor_meta_size(tensor_meta) -> int:
         elem_size = 4
     elif dtype == torch.float64:
         elem_size = 8
-    elif dtype == torch.float16:
+    elif dtype == torch.float16 or dtype == torch.bfloat16:
         elem_size = 2
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")

@@ -20,7 +20,7 @@ class NativeZ3Builder(TorchCPUOpBuilder):
         return f'deepspeed.ops.compile.{self.NAME}_op'
 
     def sources(self):
-        return ['csrc/compile/native_z3.cpp']
+        return ['csrc/compile/native_z3.cpp', 'csrc/compile/util.cpp']
 
     def libraries_args(self):
         args = super().libraries_args()

@@ -414,26 +414,6 @@ at::Tensor wait_allgather_meta(at::Tensor v,
     return v;
 }
 
-at::Tensor getOrExtendBuffer(std::unordered_map<at::ScalarType, at::Tensor>& buffers,
-                             at::ScalarType scalar_type,
-                             const at::Tensor& tensor)
-{
-    int64_t numel = tensor.numel();
-    const auto options = at::TensorOptions().dtype(scalar_type).device(at::kCUDA);
-
-    std::vector<int64_t> shape = {numel};
-    if (!hasKey(buffers, scalar_type)) {
-        buffers[scalar_type] = torch::empty(shape, options);
-    } else {
-        at::Tensor& buffer = buffers.at(scalar_type);
-        if (buffer.numel() < numel) {
-            buffer = torch::empty(shape, options);
-            buffers[scalar_type] = buffer;
-        }
-    }
-    return buffers.at(scalar_type);
-}
-
 void flushReduceBucket(at::ScalarType scalar_type)
 {
     if (!hasKey(reduce_tasks, scalar_type)) { return; }
@@ -480,9 +460,7 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     auto reduce_bucket = reduce_buckets.at(scalar_type);
 
     auto comp_stream = at::cuda::getCurrentCUDAStream();
-    auto comp_done_event =
-        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
-    rs_comp_done_events[ds_id] = comp_done_event;
+    rs_comp_done_events[ds_id] = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
 
     if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
         flushReduceBucket(scalar_type);
@@ -502,7 +480,7 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
         reduce_tasks[scalar_type].emplace_back(ds_id, reduce_in_buffer);
     }
 
-    comp_done_event->record(comp_stream);
+    rs_comp_done_events[ds_id]->record(comp_stream);
 
     reduce_counter--;
 

@@ -362,14 +362,15 @@ at::Tensor getOrExtendBuffer(std::unordered_map<at::ScalarType, at::Tensor>& buf
                              const at::Tensor& tensor)
 {
     int64_t numel = tensor.numel();
+    const auto options = at::TensorOptions().dtype(scalar_type).device(at::kCUDA);
 
     std::vector<int64_t> shape = {numel};
     if (!hasKey(buffers, scalar_type)) {
-        buffers[scalar_type] = torch::empty(shape, at::kCUDA);
+        buffers[scalar_type] = torch::empty(shape, options);
     } else {
         at::Tensor& buffer = buffers.at(scalar_type);
         if (buffer.numel() < numel) {
-            buffer = torch::empty(shape, at::kCUDA);
+            buffer = torch::empty(shape, options);
             buffers[scalar_type] = buffer;
         }
     }

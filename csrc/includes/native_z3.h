@@ -75,6 +75,8 @@ std::string tensorPtrToString(void* ptr,
 
 std::string tensorToString(const at::Tensor& t, size_t max_elem = 20, size_t max_str_len = 100);
 
+std::string tensorDimToString(const at::Tensor& t);
+
 at::Tensor test_call(at::Tensor param);
 void register_param(long ds_id,
                     const std::vector<int64_t>& ds_shape,

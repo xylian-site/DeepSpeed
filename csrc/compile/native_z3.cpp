@@ -135,6 +135,18 @@ private:
     std::unordered_map<long, c10::intrusive_ptr<c10d::Work>> allgather_handles_;
 };
 
+class ReduceTask {
+public:
+    ReduceTask(long ds_id, at::Tensor send_buf) : ds_id_(ds_id), send_buf_(std::move(send_buf)) {}
+
+    long getDSId() const { return ds_id_; }
+    at::Tensor getSendBuf() const { return send_buf_; }
+
+private:
+    long ds_id_;
+    at::Tensor send_buf_;
+};
+
 static DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
@@ -153,6 +165,12 @@ static std::unordered_map<at::ScalarType, at::Tensor> reduce_in_buffers;
 static std::unordered_map<at::ScalarType, at::Tensor> reduce_out_buffers;
 static auto rs_done_event =
     std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+
+static bool use_reduce_bucket = true;
+static int64_t reduce_bucket_size = 5000000;
+static std::unordered_map<at::ScalarType, size_t> reduce_bucket_offsets;
+static std::unordered_map<at::ScalarType, at::Tensor> reduce_buckets;
+static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
 
 static bool profile = false;
 
@@ -377,62 +395,158 @@ at::Tensor getOrExtendBuffer(std::unordered_map<at::ScalarType, at::Tensor>& buf
     return buffers.at(scalar_type);
 }
 
+at::Tensor getBufferFromBucket(at::ScalarType scalar_type, int64_t numel)
+{
+    if (!hasKey(reduce_buckets, scalar_type)) {
+        const auto options = at::TensorOptions().dtype(scalar_type).device(at::kCUDA);
+        reduce_buckets[scalar_type] = torch::empty({reduce_bucket_size}, options);
+        reduce_bucket_offsets[scalar_type] = 0;
+    }
+
+    if (numel > reduce_bucket_size) {
+        throw std::runtime_error("Buffer size exceeds the reduce bucket size");
+    }
+
+    size_t offset = reduce_bucket_offsets[scalar_type];
+    if (offset + numel > reduce_bucket_size) {
+        throw std::runtime_error("Buffer size exceeds the reduce bucket size");
+    }
+
+    reduce_bucket_offsets[scalar_type] += numel;
+    return reduce_buckets[scalar_type].index({torch::indexing::Slice(offset, offset + numel)});
+}
+
+void flushReduceBucket(at::ScalarType scalar_type)
+{
+    if (!hasKey(reduce_tasks, scalar_type)) { return; }
+
+    ncclGroupStart();
+    for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
+        auto recv_buf = param_registry.getParam(t.getDSId()).getGradBuffer();
+        ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
+                                                recv_buf.data_ptr(),
+                                                recv_buf.numel(),
+                                                get_nccl_data_type(scalar_type),
+                                                ncclAvg,
+                                                ncclComm,
+                                                nullptr);
+        if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+    }
+    ncclGroupEnd();
+
+    for (auto& it : reduce_bucket_offsets) { it.second = 0; }
+    reduce_tasks.clear();
+}
+
+bool shouldFlushBucket(at::ScalarType scalar_type, int64_t numel)
+{
+    return reduce_bucket_offsets[scalar_type] > 0 &&
+           reduce_bucket_offsets[scalar_type] + numel > reduce_bucket_size;
+}
+
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 {
     int world_size = process_group->getSize();
     const DSParam& param = param_registry.getParam(ds_id);
+    const auto scalar_type = grad_tensor.scalar_type();
 
-    const auto comp_done_event =
-        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
-    rs_comp_done_events[ds_id] = comp_done_event;
-    auto comp_stream = at::cuda::getCurrentCUDAStream();
-
-    at::Tensor reduce_in_buffer =
-        getOrExtendBuffer(reduce_in_buffers, grad_tensor.scalar_type(), grad_tensor);
-    reduce_in_buffer = reduce_in_buffer.index(
-        {torch::indexing::Slice(0, grad_tensor.numel(), torch::indexing::None)});
-    at::Tensor reduce_out_buffer =
-        getOrExtendBuffer(reduce_out_buffers, grad_tensor.scalar_type(), param.getDSTensor());
-    reduce_out_buffer = reduce_out_buffer.index(
-        {torch::indexing::Slice(0, param.getDSTensor().numel(), torch::indexing::None)});
-    rs_done_event->block(comp_stream);
-
-    reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
-
-    comp_done_event->record(comp_stream);
-    comp_done_event->block(comm_stream);
-
-    ncclResult_t result = ncclReduceScatter(reduce_in_buffer.contiguous().data_ptr(),
-                                            reduce_out_buffer.data_ptr(),
-                                            reduce_out_buffer.numel(),
-                                            get_nccl_data_type(grad_tensor.scalar_type()),
-                                            ncclAvg,
-                                            ncclComm,
-                                            comm_stream);
-    if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
-
-    {
-        c10::cuda::CUDAStreamGuard guard(comm_stream);
-        param.getGradBuffer().copy_(reduce_out_buffer, true);
+    if (shouldFlushBucket(scalar_type, grad_tensor.numel())) {
+        flushReduceBucket(scalar_type);
+    } else if (grad_tensor.numel() < reduce_bucket_size) {
+        at::Tensor reduce_in_buffer =
+            getBufferFromBucket(grad_tensor.scalar_type(), grad_tensor.numel());
+        reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
+        reduce_tasks[scalar_type].emplace_back(ds_id, grad_tensor);
     }
 
-    rs_done_event->record(comm_stream);
+    reduce_counter--;
+
+    if (reduce_counter == 0) { flushReduceBucket(scalar_type); }
+
+    if (grad_tensor.numel() >= reduce_bucket_size) {
+        auto recv_buf = param.getGradBuffer();
+        ncclResult_t result = ncclReduceScatter(grad_tensor.data_ptr(),
+                                                recv_buf.data_ptr(),
+                                                recv_buf.numel(),
+                                                get_nccl_data_type(scalar_type),
+                                                ncclAvg,
+                                                ncclComm,
+                                                nullptr);
+        if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+    }
 
     if (profile) { at::cuda::device_synchronize(); }
-
-    reduce_counter--;
 
     if (reduce_counter == 0) {
         // This looks duplicated but it's necessary to ensure the copy is done.
         // The backward hook has start_backward() might not be called when backward starting.
         reduce_counter = param_registry.getNumParams();
-
-        // This synchronization ensures all of reduce calls are done before optimizer's step.
-        at::cuda::stream_synchronize(comm_stream);
     }
 
     return at::Tensor();
 }
+
+// at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
+// {
+//     // lazy init of contiguous_grad_buf
+//     if (reduce_bucket.numel() == 0) {
+//         reduce_bucket = torch::empty({reduce_bucket_size}, grad_tensor.options());
+//     }
+
+//     int world_size = process_group->getSize();
+//     const DSParam& param = param_registry.getParam(ds_id);
+
+//     const auto comp_done_event =
+//         std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+//     rs_comp_done_events[ds_id] = comp_done_event;
+//     auto comp_stream = at::cuda::getCurrentCUDAStream();
+
+//     at::Tensor reduce_in_buffer =
+//         getOrExtendBuffer(reduce_in_buffers, grad_tensor.scalar_type(), grad_tensor);
+//     reduce_in_buffer = reduce_in_buffer.index(
+//         {torch::indexing::Slice(0, grad_tensor.numel(), torch::indexing::None)});
+//     at::Tensor reduce_out_buffer =
+//         getOrExtendBuffer(reduce_out_buffers, grad_tensor.scalar_type(), param.getDSTensor());
+//     reduce_out_buffer = reduce_out_buffer.index(
+//         {torch::indexing::Slice(0, param.getDSTensor().numel(), torch::indexing::None)});
+//     rs_done_event->block(comp_stream);
+
+//     reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
+
+//     comp_done_event->record(comp_stream);
+//     comp_done_event->block(comm_stream);
+
+//     ncclResult_t result = ncclReduceScatter(reduce_in_buffer.contiguous().data_ptr(),
+//                                             reduce_out_buffer.data_ptr(),
+//                                             reduce_out_buffer.numel(),
+//                                             get_nccl_data_type(grad_tensor.scalar_type()),
+//                                             ncclAvg,
+//                                             ncclComm,
+//                                             comm_stream);
+//     if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+
+//     {
+//         c10::cuda::CUDAStreamGuard guard(comm_stream);
+//         param.getGradBuffer().copy_(reduce_out_buffer, true);
+//     }
+
+//     rs_done_event->record(comm_stream);
+
+//     if (profile) { at::cuda::device_synchronize(); }
+
+//     reduce_counter--;
+
+//     if (reduce_counter == 0) {
+//         // This looks duplicated but it's necessary to ensure the copy is done.
+//         // The backward hook has start_backward() might not be called when backward starting.
+//         reduce_counter = param_registry.getNumParams();
+
+//         // This synchronization ensures all of reduce calls are done before optimizer's step.
+//         at::cuda::stream_synchronize(comm_stream);
+//     }
+
+//     return at::Tensor();
+// }
 
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long ds_id) { return at::Tensor(); }
 

@@ -147,6 +147,50 @@ private:
     at::Tensor send_buf_;
 };
 
+class ReduceBucket {
+public:
+    ReduceBucket(int64_t size, at::ScalarType scalar_type) : size_(size), scalar_type_(scalar_type)
+    {
+        buffer_ = torch::empty({size}, at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
+        offset_ = 0;
+    }
+
+    int64_t getSize() const { return size_; }
+    int64_t getOffset() const { return offset_; }
+    at::Tensor getBuffer() const { return buffer_; }
+    at::ScalarType getScalarType() const { return scalar_type_; }
+
+    void reserve(int64_t size)
+    {
+        if (size > size_) {
+            buffer_ =
+                torch::empty({size}, at::TensorOptions().dtype(scalar_type_).device(at::kCUDA));
+            size_ = size;
+        }
+    }
+
+    at::Tensor allocate(int64_t numel)
+    {
+        if (offset_ + numel > size_) {
+            throw std::runtime_error("Buffer size exceeds the reduce bucket size");
+        }
+
+        at::Tensor result = buffer_.index({torch::indexing::Slice(offset_, offset_ + numel)});
+        offset_ += numel;
+        return result;
+    }
+
+    bool shouldFlush(int64_t numel) { return offset_ > 0 && offset_ + numel > size_; }
+
+    void reset() { offset_ = 0; }
+
+private:
+    int64_t size_;
+    int64_t offset_;
+    at::Tensor buffer_;
+    at::ScalarType scalar_type_;
+};
+
 static DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
@@ -161,16 +205,12 @@ static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_do
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comm_done_events;
 
-static std::unordered_map<at::ScalarType, at::Tensor> reduce_in_buffers;
-static std::unordered_map<at::ScalarType, at::Tensor> reduce_out_buffers;
-static auto rs_done_event =
-    std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+static auto rs_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
 
 static bool use_reduce_bucket = true;
 static const int64_t initial_reduce_bucket_size = 5 * 1024 * 1024;
-static std::unordered_map<at::ScalarType, int64_t> reduce_bucket_sizes;
-static std::unordered_map<at::ScalarType, size_t> reduce_bucket_offsets;
-static std::unordered_map<at::ScalarType, at::Tensor> reduce_buckets;
+static std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> reduce_buckets;
+
 static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
 
 static bool profile = false;
@@ -283,8 +323,7 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     const at::Tensor& ds_tensor = param.getDSTensor();
     at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
 
-    const auto comp_done_event =
-        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+    const auto comp_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
     ag_comp_done_events[ds_id] = comp_done_event;
     comp_done_event->record();
 
@@ -298,8 +337,7 @@ at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
 
     if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
 
-    const auto comm_done_event =
-        std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
+    const auto comm_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
     ag_comm_done_events[ds_id] = comm_done_event;
     comm_done_event->record(comm_stream);
 
@@ -396,28 +434,6 @@ at::Tensor getOrExtendBuffer(std::unordered_map<at::ScalarType, at::Tensor>& buf
     return buffers.at(scalar_type);
 }
 
-at::Tensor getBufferFromBucket(at::ScalarType scalar_type, int64_t numel)
-{
-    if (!hasKey(reduce_buckets, scalar_type)) {
-        const auto options = at::TensorOptions().dtype(scalar_type).device(at::kCUDA);
-        reduce_buckets[scalar_type] = torch::empty({initial_reduce_bucket_size}, options);
-        reduce_bucket_offsets[scalar_type] = 0;
-        reduce_bucket_sizes[scalar_type] = initial_reduce_bucket_size;
-    }
-
-    if (numel > reduce_bucket_sizes[scalar_type]) {
-        throw std::runtime_error("Buffer size exceeds the reduce bucket size");
-    }
-
-    size_t offset = reduce_bucket_offsets[scalar_type];
-    if (offset + numel > reduce_bucket_sizes[scalar_type]) {
-        throw std::runtime_error("Buffer size exceeds the reduce bucket size");
-    }
-
-    reduce_bucket_offsets[scalar_type] += numel;
-    return reduce_buckets[scalar_type].index({torch::indexing::Slice(offset, offset + numel)});
-}
-
 void flushReduceBucket(at::ScalarType scalar_type)
 {
     if (!hasKey(reduce_tasks, scalar_type)) { return; }
@@ -443,19 +459,16 @@ void flushReduceBucket(at::ScalarType scalar_type)
 
     rs_done_event->record(comm_stream);
 
-    reduce_bucket_offsets[scalar_type] = 0;
+    reduce_buckets[scalar_type]->reset();
     reduce_tasks[scalar_type].clear();
 }
 
-bool shouldFlushBucket(at::ScalarType scalar_type, int64_t numel)
+void lazyInitReduceBucket(at::ScalarType scalar_type)
 {
-    if (!hasKey(reduce_bucket_sizes, scalar_type)) {
-        reduce_bucket_sizes[scalar_type] = initial_reduce_bucket_size;
-        reduce_bucket_offsets[scalar_type] = 0;
+    if (!hasKey(reduce_buckets, scalar_type)) {
+        reduce_buckets[scalar_type] =
+            std::make_shared<ReduceBucket>(initial_reduce_bucket_size, scalar_type);
     }
-
-    return reduce_bucket_offsets[scalar_type] > 0 &&
-           reduce_bucket_offsets[scalar_type] + numel > reduce_bucket_sizes[scalar_type];
 }
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
@@ -463,27 +476,26 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     int world_size = process_group->getSize();
     const DSParam& param = param_registry.getParam(ds_id);
     const auto scalar_type = grad_tensor.scalar_type();
+    lazyInitReduceBucket(scalar_type);
+    auto reduce_bucket = reduce_buckets.at(scalar_type);
 
     auto comp_stream = at::cuda::getCurrentCUDAStream();
     auto comp_done_event =
         std::shared_ptr<at::cuda::CUDAEvent>(new at::cuda::CUDAEvent(cudaEventDisableTiming));
     rs_comp_done_events[ds_id] = comp_done_event;
 
-    if (shouldFlushBucket(scalar_type, grad_tensor.numel())) {
+    if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
         flushReduceBucket(scalar_type);
 
-        if (grad_tensor.numel() > reduce_bucket_sizes[scalar_type]) {
+        if (grad_tensor.numel() > reduce_bucket->getSize()) {
             // extend buckets
             at::cuda::stream_synchronize(comm_stream);
-            reduce_bucket_sizes[scalar_type] = grad_tensor.numel();
-            reduce_buckets[scalar_type] =
-                torch::empty({reduce_bucket_sizes[scalar_type]}, grad_tensor.options());
+            reduce_bucket->reserve(grad_tensor.numel());
         }
     }
 
-    if (grad_tensor.numel() <= reduce_bucket_sizes[scalar_type]) {
-        at::Tensor reduce_in_buffer =
-            getBufferFromBucket(grad_tensor.scalar_type(), grad_tensor.numel());
+    if (grad_tensor.numel() <= reduce_bucket->getSize()) {
+        at::Tensor reduce_in_buffer = reduce_buckets.at(scalar_type)->allocate(grad_tensor.numel());
 
         rs_done_event->block(comp_stream);
         reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));

@@ -191,6 +191,62 @@ private:
     at::ScalarType scalar_type_;
 };
 
+class DoubleBufferedReduceBucket {
+public:
+    DoubleBufferedReduceBucket(int64_t initial_bucket_size)
+        : initial_bucket_size_(initial_bucket_size)
+    {
+    }
+
+    void swap(at::ScalarType scalar_type, at::cuda::CUDAStream stream)
+    {
+        assert(hasKey(current_buffer_, scalar_type));
+        assert(hasKey(shadow_buffer_, scalar_type));
+        assert(hasKey(current_buffer_events_, scalar_type));
+        assert(hasKey(shadow_buffer_events_, scalar_type));
+
+        current_buffer_.at(scalar_type)->reset();
+        current_buffer_events_.at(scalar_type)->record(stream);
+
+        auto tmp = current_buffer_.at(scalar_type);
+        current_buffer_[scalar_type] = shadow_buffer_.at(scalar_type);
+        shadow_buffer_[scalar_type] = tmp;
+
+        auto tmp_event = current_buffer_events_.at(scalar_type);
+        current_buffer_events_[scalar_type] = shadow_buffer_events_.at(scalar_type);
+        shadow_buffer_events_[scalar_type] = tmp_event;
+    }
+
+    std::shared_ptr<ReduceBucket> getBuffer(at::ScalarType scalar_type)
+    {
+        if (!hasKey(current_buffer_, scalar_type)) {
+            current_buffer_[scalar_type] =
+                std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
+            shadow_buffer_[scalar_type] =
+                std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
+            current_buffer_events_[scalar_type] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            shadow_buffer_events_[scalar_type] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+        }
+
+        return current_buffer_.at(scalar_type);
+    }
+
+    std::shared_ptr<at::cuda::CUDAEvent> getEvent(at::ScalarType scalar_type)
+    {
+        assert(hasKey(current_buffer_events_, scalar_type));
+        return current_buffer_events_.at(scalar_type);
+    }
+
+private:
+    int64_t initial_bucket_size_;
+    std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> current_buffer_;
+    std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> shadow_buffer_;
+    std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> current_buffer_events_;
+    std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> shadow_buffer_events_;
+};
+
 static DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
@@ -205,11 +261,8 @@ static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_do
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comm_done_events;
 
-static auto rs_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-
-static bool use_reduce_bucket = true;
 static const int64_t initial_reduce_bucket_size = 5 * 1024 * 1024;
-static std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> reduce_buckets;
+static auto reduce_buckets = DoubleBufferedReduceBucket(initial_reduce_bucket_size);
 
 static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
 
@@ -437,18 +490,8 @@ void flushReduceBucket(at::ScalarType scalar_type)
     }
     ncclGroupEnd();
 
-    rs_done_event->record(comm_stream);
-
-    reduce_buckets[scalar_type]->reset();
+    reduce_buckets.swap(scalar_type, comm_stream);
     reduce_tasks[scalar_type].clear();
-}
-
-void lazyInitReduceBucket(at::ScalarType scalar_type)
-{
-    if (!hasKey(reduce_buckets, scalar_type)) {
-        reduce_buckets[scalar_type] =
-            std::make_shared<ReduceBucket>(initial_reduce_bucket_size, scalar_type);
-    }
 }
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
@@ -456,14 +499,16 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     int world_size = process_group->getSize();
     const DSParam& param = param_registry.getParam(ds_id);
     const auto scalar_type = grad_tensor.scalar_type();
-    lazyInitReduceBucket(scalar_type);
-    auto reduce_bucket = reduce_buckets.at(scalar_type);
+    std::shared_ptr<ReduceBucket> reduce_bucket = reduce_buckets.getBuffer(scalar_type);
 
     auto comp_stream = at::cuda::getCurrentCUDAStream();
     rs_comp_done_events[ds_id] = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
 
     if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
         flushReduceBucket(scalar_type);
+
+        // reduce_bucket might be swapped in flushReduceBucket.
+        reduce_bucket = reduce_buckets.getBuffer(scalar_type);
 
         if (grad_tensor.numel() > reduce_bucket->getSize()) {
             // extend buckets
@@ -473,9 +518,9 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
     }
 
     if (grad_tensor.numel() <= reduce_bucket->getSize()) {
-        at::Tensor reduce_in_buffer = reduce_buckets.at(scalar_type)->allocate(grad_tensor.numel());
+        at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
 
-        rs_done_event->block(comp_stream);
+        reduce_buckets.getEvent(scalar_type)->block(comp_stream);
         reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
         reduce_tasks[scalar_type].emplace_back(ds_id, reduce_in_buffer);
     }

@@ -1908,7 +1908,10 @@ class DeepSpeedEngine(Module):
             self.nz3.end_forward()
 
             def bwd_hook(grad):
-                self.nz3.start_backward(self.is_gradient_accumulation_boundary())
+                # Make sure that we all start_backward once
+                if not self.nz3.backward_started:
+                    self.nz3.start_backward(self.is_gradient_accumulation_boundary())
+                    self.nz3.backward_started = True
                 return grad
 
             def set_hook(v):
@@ -1918,6 +1921,7 @@ class DeepSpeedEngine(Module):
 
             # `loss` can be any nested structure
             from torch.utils._pytree import tree_map
+            self.nz3.backward_started = False
             loss = tree_map(set_hook, loss)
 
         if self.zero_optimization_partition_weights() and not self.is_compiled:

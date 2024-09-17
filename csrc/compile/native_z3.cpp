@@ -193,28 +193,31 @@ private:
 
 class DoubleBufferedReduceBucket {
 public:
-    DoubleBufferedReduceBucket(int64_t initial_bucket_size)
-        : initial_bucket_size_(initial_bucket_size)
+    DoubleBufferedReduceBucket(int64_t initial_bucket_size, bool enable_double_buffer)
+        : initial_bucket_size_(initial_bucket_size), enable_double_buffer_(enable_double_buffer)
     {
     }
 
     void swap(at::ScalarType scalar_type, at::cuda::CUDAStream stream)
     {
         assert(hasKey(current_buffer_, scalar_type));
-        assert(hasKey(shadow_buffer_, scalar_type));
         assert(hasKey(current_buffer_events_, scalar_type));
-        assert(hasKey(shadow_buffer_events_, scalar_type));
 
         current_buffer_.at(scalar_type)->reset();
         current_buffer_events_.at(scalar_type)->record(stream);
 
-        auto tmp = current_buffer_.at(scalar_type);
-        current_buffer_[scalar_type] = shadow_buffer_.at(scalar_type);
-        shadow_buffer_[scalar_type] = tmp;
+        if (enable_double_buffer_) {
+            assert(hasKey(shadow_buffer_, scalar_type));
+            assert(hasKey(shadow_buffer_events_, scalar_type));
 
-        auto tmp_event = current_buffer_events_.at(scalar_type);
-        current_buffer_events_[scalar_type] = shadow_buffer_events_.at(scalar_type);
-        shadow_buffer_events_[scalar_type] = tmp_event;
+            auto tmp = current_buffer_.at(scalar_type);
+            current_buffer_[scalar_type] = shadow_buffer_.at(scalar_type);
+            shadow_buffer_[scalar_type] = tmp;
+
+            auto tmp_event = current_buffer_events_.at(scalar_type);
+            current_buffer_events_[scalar_type] = shadow_buffer_events_.at(scalar_type);
+            shadow_buffer_events_[scalar_type] = tmp_event;
+        }
     }
 
     std::shared_ptr<ReduceBucket> getBuffer(at::ScalarType scalar_type)
@@ -222,12 +225,15 @@ public:
         if (!hasKey(current_buffer_, scalar_type)) {
             current_buffer_[scalar_type] =
                 std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
-            shadow_buffer_[scalar_type] =
-                std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
             current_buffer_events_[scalar_type] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-            shadow_buffer_events_[scalar_type] =
-                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+
+            if (enable_double_buffer_) {
+                shadow_buffer_[scalar_type] =
+                    std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
+                shadow_buffer_events_[scalar_type] =
+                    std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            }
         }
 
         return current_buffer_.at(scalar_type);
@@ -241,6 +247,7 @@ public:
 
 private:
     int64_t initial_bucket_size_;
+    bool enable_double_buffer_;
     std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> current_buffer_;
     std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> shadow_buffer_;
     std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> current_buffer_events_;
@@ -262,7 +269,9 @@ static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_do
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comm_done_events;
 
 static const int64_t initial_reduce_bucket_size = 5 * 1024 * 1024;
-static auto reduce_buckets = DoubleBufferedReduceBucket(initial_reduce_bucket_size);
+static bool enable_double_buffer = false;
+static auto reduce_buckets =
+    DoubleBufferedReduceBucket(initial_reduce_bucket_size, enable_double_buffer);
 
 static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
 

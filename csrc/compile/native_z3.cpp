@@ -258,22 +258,21 @@ static DSParamRegistry param_registry = DSParamRegistry();
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 static GraphOpStates op_states_fwd = GraphOpStates();
 static GraphOpStates op_states_bwd = GraphOpStates();
-static size_t reduce_counter;
+static size_t reduce_counter = 0;
+static bool param_updated = false;
 
 static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
-static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t ncclComm;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events;
 static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events;
-static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comm_done_events;
 
 static const int64_t initial_reduce_bucket_size = 5 * 1024 * 1024;
 static bool enable_double_buffer = false;
 static auto reduce_buckets =
     DoubleBufferedReduceBucket(initial_reduce_bucket_size, enable_double_buffer);
-
 static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
+static std::unordered_map<long, bool> has_acc_grad;
 
 static bool profile = false;
 
@@ -314,6 +313,7 @@ void register_param(long ds_id,
 {
     // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
     param_registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
+    has_acc_grad[ds_id] = false;
 }
 
 void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
@@ -367,11 +367,15 @@ void start_backward(bool update)
     // std::cout << "start_backward update=" << update << std::endl;
     op_states_bwd.resetArgCounter();
     reduce_counter = param_registry.getNumParams();
+
+    param_updated = update;
 }
 
-void end_backward(bool update)
+void end_backward()
 {
-    // unused
+    if (param_updated) {
+        for (auto& it : has_acc_grad) { it.second = false; }
+    }
 }
 
 at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
@@ -480,14 +484,35 @@ void flushReduceBucket(at::ScalarType scalar_type)
 {
     if (!hasKey(reduce_tasks, scalar_type)) { return; }
 
+    int64_t tmp_recv_numel = 0;
     for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
         auto comp_done_event = rs_comp_done_events.at(t.getDSId());
         comp_done_event->block(comm_stream);
+
+        assert(hasKey(has_acc_grad, t.getDSId()));
+        if (has_acc_grad.at(t.getDSId())) {
+            tmp_recv_numel += param_registry.getParam(t.getDSId()).getGradBuffer().numel();
+        }
+    }
+
+    at::Tensor tmp_recv_buf = at::Tensor();
+    if (tmp_recv_numel > 0) {
+        tmp_recv_buf = torch::empty({tmp_recv_numel},
+                                    at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
     }
 
     ncclGroupStart();
+    int64_t offset = 0;
     for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
         auto recv_buf = param_registry.getParam(t.getDSId()).getGradBuffer();
+
+        bool acc_grad = has_acc_grad.at(t.getDSId());
+
+        if (acc_grad) {
+            recv_buf =
+                tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
+        }
+
         ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
                                                 recv_buf.data_ptr(),
                                                 recv_buf.numel(),
@@ -496,8 +521,27 @@ void flushReduceBucket(at::ScalarType scalar_type)
                                                 ncclComm,
                                                 comm_stream);
         if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+
+        if (acc_grad) { offset += recv_buf.numel(); }
     }
     ncclGroupEnd();
+
+    {
+        at::cuda::CUDAStreamGuard guard(comm_stream);
+        int64_t offset = 0;
+        for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
+            bool acc_grad = has_acc_grad.at(t.getDSId());
+            auto current_grad = param_registry.getParam(t.getDSId()).getGradBuffer();
+
+            if (acc_grad) {
+                auto recv_buf = param_registry.getParam(t.getDSId()).getGradBuffer();
+                recv_buf.add_(tmp_recv_buf.index(
+                    {torch::indexing::Slice(offset, offset + recv_buf.numel())}));
+                offset += recv_buf.numel();
+            }
+            has_acc_grad[t.getDSId()] = true;
+        }
+    }
 
     reduce_buckets.swap(scalar_type, comm_stream);
     reduce_tasks[scalar_type].clear();
@@ -505,6 +549,8 @@ void flushReduceBucket(at::ScalarType scalar_type)
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 {
+    if (profile) { return at::Tensor(); }
+
     int world_size = process_group->getSize();
     const DSParam& param = param_registry.getParam(ds_id);
     const auto scalar_type = grad_tensor.scalar_type();
@@ -518,29 +564,25 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 
         // reduce_bucket might be swapped in flushReduceBucket.
         reduce_bucket = reduce_buckets.getBuffer(scalar_type);
-
-        if (grad_tensor.numel() > reduce_bucket->getSize()) {
-            // extend buckets
-            at::cuda::stream_synchronize(comm_stream);
-            reduce_bucket->reserve(grad_tensor.numel());
-        }
     }
 
-    if (grad_tensor.numel() <= reduce_bucket->getSize()) {
-        at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
-
-        reduce_buckets.getEvent(scalar_type)->block(comp_stream);
-        reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
-        reduce_tasks[scalar_type].emplace_back(ds_id, reduce_in_buffer);
+    if (grad_tensor.numel() > reduce_bucket->getSize()) {
+        // extend buckets
+        at::cuda::stream_synchronize(comm_stream);
+        reduce_bucket->reserve(grad_tensor.numel());
     }
+
+    at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
+
+    reduce_buckets.getEvent(scalar_type)->block(comp_stream);
+    reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
+    reduce_tasks[scalar_type].emplace_back(ds_id, reduce_in_buffer);
 
     rs_comp_done_events[ds_id]->record(comp_stream);
 
     reduce_counter--;
 
     if (reduce_counter == 0) { flushReduceBucket(scalar_type); }
-
-    if (profile) { at::cuda::device_synchronize(); }
 
     if (reduce_counter == 0) {
         // This looks duplicated but it's necessary to ensure the copy is done.
@@ -549,6 +591,8 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
 
         // This synchronization ensures all of reduce calls are done before optimizer's step.
         at::cuda::stream_synchronize(comm_stream);
+
+        end_backward();
     }
 
     return at::Tensor();

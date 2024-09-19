@@ -1907,12 +1907,19 @@ class DeepSpeedEngine(Module):
         if hasattr(self, "nz3"):
             self.nz3.end_forward()
 
+            # Simplified version of `_scale_loss_by_gas`
+            # Used only for a tensor
+            def _scale_loss(self, grad):
+                return grad.float() / self.gradient_accumulation_steps()
+
             def bwd_hook(grad):
-                # Make sure that we all start_backward once
+                # Make sure that we run start_backward only once
                 if not self.nz3.backward_started:
                     self.nz3.start_backward(self.is_gradient_accumulation_boundary())
                     self.nz3.backward_started = True
-                return grad
+                # When this hook is called multiple times, grad can be None
+                if grad is not None:
+                    return grad.float() / self.gradient_accumulation_steps()
 
             def set_hook(v):
                 if torch.is_tensor(v) and v.grad_fn is not None:

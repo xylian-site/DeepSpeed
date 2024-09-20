@@ -271,6 +271,15 @@ public:
           nccl_comm_(nccl_comm),
           comm_stream_(comm_stream)
     {
+        for (long ds_id : ds_ids_) {
+            has_acc_grad_[ds_id] = false;
+            ag_comm_done_events_[ds_id] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            ag_comp_done_events_[ds_id] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            rs_comp_done_events_[ds_id] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+        }
     }
     ~CustomOpExecutor() {}
 
@@ -302,8 +311,6 @@ public:
     at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
-        const auto comm_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-        ag_comm_done_events_[ds_id] = comm_done_event;
 
         if (param_registry_->hasGatheredParam(ds_id)) {
             return param_registry_->getGatheredParam(ds_id);
@@ -312,11 +319,8 @@ public:
         const at::Tensor& ds_tensor = param.getDSTensor();
         at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
 
-        const auto comp_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-        ag_comp_done_events_[ds_id] = comp_done_event;
-        comp_done_event->record();
-
-        comp_done_event->block(comm_stream_);
+        ag_comp_done_events_[ds_id]->record();
+        ag_comp_done_events_[ds_id]->block(comm_stream_);
         ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
                                             output_buf.data_ptr(),
                                             ds_tensor.numel(),
@@ -326,7 +330,7 @@ public:
 
         if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
 
-        comm_done_event->record(comm_stream_);
+        ag_comm_done_events_[ds_id]->record(comm_stream_);
 
         param_registry_->registerGatheredParam(ds_id, output_buf);
 
@@ -374,7 +378,6 @@ public:
         std::shared_ptr<ReduceBucket> reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
 
         auto comp_stream = at::cuda::getCurrentCUDAStream();
-        rs_comp_done_events_[ds_id] = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
 
         if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
             flushReduceBucket(scalar_type);
@@ -443,7 +446,6 @@ private:
             auto comp_done_event = rs_comp_done_events_.at(t.getDSId());
             comp_done_event->block(comm_stream_);
 
-            if (!hasKey(has_acc_grad_, t.getDSId())) { has_acc_grad_[t.getDSId()] = false; }
             if (has_acc_grad_.at(t.getDSId())) {
                 tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();
             }

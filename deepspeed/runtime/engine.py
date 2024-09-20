@@ -3769,7 +3769,6 @@ class DeepSpeedEngine(Module):
 
             deepspeed.runtime.zero.compile.stage3_backend.z3_optimizer = self.optimizer
             backend = make_stage3_backend(dump_graphs=dump_graphs)
-            compile_kwargs['fullgraph'] = True
 
         print(f"Compiling")
         self.module.compile(backend=backend, **compile_kwargs)

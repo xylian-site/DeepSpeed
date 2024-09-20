@@ -136,7 +136,7 @@ def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphPar
 
 
 graph_counts = defaultdict(int)
-param_manager = None
+param_manager = {}
 
 
 def dump_graph(graph: GraphModule, name: str, skip=False):
@@ -162,12 +162,14 @@ def make_stage3_backend(dump_graphs=False):
         param_ds_ids = [param.ds_id for _, param in gm.named_parameters()]
 
         def fw(gm, sample_inputs):
+
             global param_manager
-            param_manager = DSGraphParamManager(gm.graph, sample_inputs, param_ds_ids)
+            param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_ds_ids)
 
             dump_graph(gm, f"forward_aot", skip=not dump_graphs)
 
-            add_gather_and_release(graph_id, gm.graph, param_manager, get_param_nodes(gm.graph, len(param_ds_ids)))
+            add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
+                                   get_param_nodes(gm.graph, len(param_ds_ids)))
             ProfilingInterpreter(gm, nz3).run(*sample_inputs)
 
             dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
@@ -182,11 +184,12 @@ def make_stage3_backend(dump_graphs=False):
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
-            param_nodes_bw, param_name_to_grad = param_manager.get_bwd_mapping(gm.graph)
+            assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
+            param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
             dump_graph(gm, f"backward_aot", skip=not dump_graphs)
 
-            add_gather_and_reduce(graph_id, gm.graph, param_manager, param_nodes_bw, param_name_to_grad)
+            add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw, param_name_to_grad)
             ProfilingInterpreter(gm, nz3).run(*sample_inputs)
 
             dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)

@@ -414,7 +414,7 @@ class DeepSpeedEngine(Module):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):
             self.optimizer.destroy()
         if hasattr(self, 'nz3'):
-            self.nz3.cleanup_comm()
+            self.nz3.cleanup()
         debug_clear_module_and_param_names()
 
     def _get_model_parameters(self):
@@ -3717,7 +3717,7 @@ class DeepSpeedEngine(Module):
 
             from deepspeed.ops.op_builder import NativeZ3Builder
             self.nz3 = NativeZ3Builder().load()
-            self.nz3.init_comm(self.data_parallel_group)
+            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size())
             for p in self.module.parameters():
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
                 self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)

@@ -118,21 +118,9 @@ public:
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
 
-    void addAllgatherHandle(long ds_id, c10::intrusive_ptr<c10d::Work> handle)
-    {
-        allgather_handles_[ds_id] = handle;
-    }
-
-    c10::intrusive_ptr<c10d::Work> getAllgatherHandle(long ds_id) const
-    {
-        assert(hasKey(allgather_handles_, ds_id));
-        return allgather_handles_.at(ds_id);
-    }
-
 private:
     std::unordered_map<long, DSParam> params_;
     std::unordered_map<long, at::Tensor> gathered_params_;
-    std::unordered_map<long, c10::intrusive_ptr<c10d::Work>> allgather_handles_;
 };
 
 class ReduceTask {
@@ -254,43 +242,6 @@ private:
     std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> shadow_buffer_events_;
 };
 
-static DSParamRegistry param_registry = DSParamRegistry();
-static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
-static GraphOpStates op_states_fwd = GraphOpStates();
-static GraphOpStates op_states_bwd = GraphOpStates();
-static size_t reduce_counter = 0;
-static bool param_updated = false;
-
-static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
-static ncclComm_t ncclComm;
-static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events;
-static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events;
-static std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events;
-
-static const int64_t initial_reduce_bucket_size = 5 * 1024 * 1024;
-static bool enable_double_buffer = false;
-static auto reduce_buckets =
-    DoubleBufferedReduceBucket(initial_reduce_bucket_size, enable_double_buffer);
-static std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks;
-static std::unordered_map<long, bool> has_acc_grad;
-
-static bool profile = false;
-
-at::Tensor test_call(at::Tensor param)
-{
-    std::cout << "test_call " << param << std::endl;
-    return param;
-}
-
-std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
-{
-    std::vector<int64_t> result;
-    for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
-    return result;
-}
-
-void enable_profiling(bool enable) { profile = enable; }
-
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
 {
     switch (scalar_type) {
@@ -305,24 +256,296 @@ ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
     }
 }
 
-void register_param(long ds_id,
-                    const std::vector<int64_t>& ds_shape,
-                    at::Tensor ds_tensor,
-                    at::Tensor grad_buffer,
-                    bool persistent)
+class CustomOpExecutor {
+public:
+    CustomOpExecutor(c10::intrusive_ptr<c10d::ProcessGroup> process_group,
+                     std::shared_ptr<DSParamRegistry> param_registry,
+                     std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets,
+                     std::vector<long> ds_ids,
+                     ncclComm_t nccl_comm,
+                     at::cuda::CUDAStream comm_stream)
+        : process_group_(process_group),
+          param_registry_(std::move(param_registry)),
+          reduce_buckets_(std::move(reduce_buckets)),
+          ds_ids_(std::move(ds_ids)),
+          nccl_comm_(nccl_comm),
+          comm_stream_(comm_stream)
+    {
+    }
+    ~CustomOpExecutor() {}
+
+    void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
+    {
+        GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
+        op_states.registerOpNArgs(op_name, n_args);
+    }
+
+    void start_forward() { op_states_fwd_.resetArgCounter(); }
+
+    void end_forward() {}
+
+    void start_backward(bool update)
+    {
+        op_states_bwd_.resetArgCounter();
+        reduce_counter_ = ds_ids_.size();
+
+        param_updated_ = update;
+    }
+
+    void end_backward()
+    {
+        if (param_updated_) {
+            for (auto& it : has_acc_grad_) { it.second = false; }
+        }
+    }
+
+    at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
+    {
+        const DSParam& param = param_registry_->getParam(ds_id);
+        const auto comm_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+        ag_comm_done_events_[ds_id] = comm_done_event;
+
+        if (param_registry_->hasGatheredParam(ds_id)) {
+            return param_registry_->getGatheredParam(ds_id);
+        }
+
+        const at::Tensor& ds_tensor = param.getDSTensor();
+        at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
+
+        const auto comp_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+        ag_comp_done_events_[ds_id] = comp_done_event;
+        comp_done_event->record();
+
+        comp_done_event->block(comm_stream_);
+        ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
+                                            output_buf.data_ptr(),
+                                            ds_tensor.numel(),
+                                            get_nccl_data_type(ds_tensor.scalar_type()),
+                                            nccl_comm_,
+                                            comm_stream_);
+
+        if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
+
+        comm_done_event->record(comm_stream_);
+
+        param_registry_->registerGatheredParam(ds_id, output_buf);
+
+        return output_buf;
+    }
+
+    at::Tensor release_param(at::Tensor v, long ds_id)
+    {
+        const DSParam& param = param_registry_->getParam(ds_id);
+        if (!param.isPersistent()) {
+            at::Tensor gathered_param = param_registry_->getGatheredParam(ds_id);
+            const auto options = gathered_param.options();
+            at::Tensor empty_buffer = torch::empty({0}, options);
+            gathered_param.set_data(empty_buffer);
+
+            param_registry_->unregisterGatheredParam(ds_id);
+        }
+
+        return v;
+    }
+
+    at::Tensor wait_allgather(at::Tensor v,
+                              long ds_id,
+                              const std::string& user,
+                              long n_args,
+                              bool is_backward)
+    {
+        GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
+
+        op_states.decrementArgCounter(user);
+
+        if (op_states.isArgCounterZero(user)) {
+            assert(hasKey(ag_comm_done_events_, ds_id));
+            ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
+        }
+
+        return v;
+    }
+
+    at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
+    {
+        int world_size = process_group_->getSize();
+        const DSParam& param = param_registry_->getParam(ds_id);
+        const auto scalar_type = grad_tensor.scalar_type();
+        std::shared_ptr<ReduceBucket> reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
+
+        auto comp_stream = at::cuda::getCurrentCUDAStream();
+        rs_comp_done_events_[ds_id] = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+
+        if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
+            flushReduceBucket(scalar_type);
+
+            // reduce_bucket might be swapped in flushReduceBucket.
+            reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
+        }
+
+        if (grad_tensor.numel() > reduce_bucket->getSize()) {
+            // extend buckets
+            at::cuda::stream_synchronize(comm_stream_);
+            reduce_bucket->reserve(grad_tensor.numel());
+        }
+
+        at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
+
+        reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
+        reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
+        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
+
+        rs_comp_done_events_[ds_id]->record(comp_stream);
+
+        reduce_counter_--;
+
+        if (reduce_counter_ == 0) {
+            flushReduceBucket(scalar_type);
+
+            // This looks duplicated but it's necessary to ensure the copy is done.
+            // The backward hook has start_backward() might not be called when backward starting.
+            reduce_counter_ = ds_ids_.size();
+
+            // This synchronization ensures all of reduce calls are done before optimizer's step.
+            at::cuda::stream_synchronize(comm_stream_);
+
+            end_backward();
+        }
+
+        return at::Tensor();
+    }
+
+private:
+    c10::intrusive_ptr<c10d::ProcessGroup> process_group_;
+    std::shared_ptr<DSParamRegistry> param_registry_;
+    std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets_;
+    std::vector<long> ds_ids_;
+    ncclComm_t nccl_comm_;
+    at::cuda::CUDAStream comm_stream_;
+    GraphOpStates op_states_fwd_ = GraphOpStates();
+    GraphOpStates op_states_bwd_ = GraphOpStates();
+
+    std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events_;
+    std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events_;
+    std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events_;
+
+    size_t reduce_counter_ = 0;
+    bool param_updated_ = false;
+    std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks_;
+    std::unordered_map<long, bool> has_acc_grad_;
+
+    void flushReduceBucket(at::ScalarType scalar_type)
+    {
+        if (!hasKey(reduce_tasks_, scalar_type)) { return; }
+
+        int64_t tmp_recv_numel = 0;
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto comp_done_event = rs_comp_done_events_.at(t.getDSId());
+            comp_done_event->block(comm_stream_);
+
+            if (!hasKey(has_acc_grad_, t.getDSId())) { has_acc_grad_[t.getDSId()] = false; }
+            if (has_acc_grad_.at(t.getDSId())) {
+                tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();
+            }
+        }
+
+        at::Tensor tmp_recv_buf = at::Tensor();
+        if (tmp_recv_numel > 0) {
+            tmp_recv_buf = torch::empty({tmp_recv_numel},
+                                        at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
+        }
+
+        ncclGroupStart();
+        int64_t offset = 0;
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
+
+            bool acc_grad = has_acc_grad_.at(t.getDSId());
+
+            if (acc_grad) {
+                recv_buf =
+                    tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
+            }
+
+            ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
+                                                    recv_buf.data_ptr(),
+                                                    recv_buf.numel(),
+                                                    get_nccl_data_type(scalar_type),
+                                                    ncclAvg,
+                                                    nccl_comm_,
+                                                    comm_stream_);
+            if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+
+            if (acc_grad) { offset += recv_buf.numel(); }
+        }
+        ncclGroupEnd();
+
+        {
+            at::cuda::CUDAStreamGuard guard(comm_stream_);
+            int64_t offset = 0;
+            for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+                bool acc_grad = has_acc_grad_.at(t.getDSId());
+                auto current_grad = param_registry_->getParam(t.getDSId()).getGradBuffer();
+
+                if (acc_grad) {
+                    auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
+                    recv_buf.add_(tmp_recv_buf.index(
+                        {torch::indexing::Slice(offset, offset + recv_buf.numel())}));
+                    offset += recv_buf.numel();
+                }
+                has_acc_grad_[t.getDSId()] = true;
+            }
+        }
+
+        reduce_buckets_->swap(scalar_type, comm_stream_);
+        reduce_tasks_[scalar_type].clear();
+    }
+};
+
+static std::shared_ptr<DSParamRegistry> param_registry;
+static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
+static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors_;
+std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
+
+static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
+static ncclComm_t nccl_comm;
+static bool enable_double_buffer = false;
+static bool profile = false;
+
+std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 {
-    // std::cout << "register_param ds_id=" << ds_id << " shape=" << ds_shape << std::endl;
-    param_registry.registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
-    has_acc_grad[ds_id] = false;
+    std::vector<int64_t> result;
+    for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
+    return result;
 }
 
-void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
+void enable_profiling(bool enable) { profile = enable; }
+
+void register_graph_ops(long graph_id,
+                        const std::vector<long>& ds_ids,
+                        const std::vector<std::string>& op_names,
+                        const std::vector<long>& n_args)
 {
-    GraphOpStates& op_states = is_backward ? op_states_bwd : op_states_fwd;
-    op_states.registerOpNArgs(op_name, n_args);
+    std::shared_ptr<CustomOpExecutor> executor = std::make_shared<CustomOpExecutor>(
+        process_group, param_registry, reduce_buckets, ds_ids, nccl_comm, comm_stream);
+    assert(op_names.size() == n_args.size());
+    for (int i = 0; i < op_names.size(); i++) {
+        executor->register_op_n_args(op_names[i], n_args[i], false);
+    }
+    executors_[graph_id] = executor;
 }
 
-void init_comm(c10::intrusive_ptr<c10d::ProcessGroup> pg)
+void register_bwd_graph_ops(long graph_id,
+                            const std::vector<std::string>& op_names,
+                            const std::vector<long>& n_args)
+{
+    assert(hasKey(executors_, graph_id));
+    for (int i = 0; i < op_names.size(); i++) {
+        executors_[graph_id]->register_op_n_args(op_names[i], n_args[i], true);
+    }
+}
+
+void init(c10::intrusive_ptr<c10d::ProcessGroup> pg, int64_t initial_reduce_bucket_size)
 {
     process_group = pg;
 
@@ -342,136 +565,68 @@ void init_comm(c10::intrusive_ptr<c10d::ProcessGroup> pg)
 
     // create a new nccl communicator
     std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
-    ncclCommInitRank(&ncclComm, process_group->getSize(), ncclID, process_group->getRank());
+    ncclCommInitRank(&nccl_comm, process_group->getSize(), ncclID, process_group->getRank());
+
+    param_registry = std::make_shared<DSParamRegistry>();
+    reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
+                                                                  enable_double_buffer);
 }
 
-void cleanup_comm()
+void cleanup()
 {
-    ncclCommDestroy(ncclComm);
+    ncclCommDestroy(nccl_comm);
     process_group = nullptr;
 }
 
-void start_forward()
+void register_param(long ds_id,
+                    const std::vector<int64_t>& ds_shape,
+                    at::Tensor ds_tensor,
+                    at::Tensor grad_buffer,
+                    bool persistent)
 {
-    // std::cout << "start_forward" << std::endl;
-    op_states_fwd.resetArgCounter();
+    param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
-void end_forward()
+at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    // std::cout << "end_forward" << std::endl;
-}
-
-void start_backward(bool update)
-{
-    // std::cout << "start_backward update=" << update << std::endl;
-    op_states_bwd.resetArgCounter();
-    reduce_counter = param_registry.getNumParams();
-
-    param_updated = update;
-}
-
-void end_backward()
-{
-    if (param_updated) {
-        for (auto& it : has_acc_grad) { it.second = false; }
-    }
-}
-
-at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
-{
-    // std::cout << "allgather_param ds_id=" << ds_id << std::endl;
-
-    const DSParam& param = param_registry.getParam(ds_id);
-
-    if (param_registry.hasGatheredParam(ds_id)) { return param_registry.getGatheredParam(ds_id); }
-
-    const at::Tensor& ds_tensor = param.getDSTensor();
-    at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
-
-    const auto comp_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-    ag_comp_done_events[ds_id] = comp_done_event;
-    comp_done_event->record();
-
-    comp_done_event->block(comm_stream);
-    ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
-                                        output_buf.data_ptr(),
-                                        ds_tensor.numel(),
-                                        get_nccl_data_type(ds_tensor.scalar_type()),
-                                        ncclComm,
-                                        comm_stream);
-
-    if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
-
-    const auto comm_done_event = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-    ag_comm_done_events[ds_id] = comm_done_event;
-    comm_done_event->record(comm_stream);
-
     if (profile) {
-        // nccl calls run on a separate stream.
-        // Events created in the profiler don't capture the time.
-
-        comm_stream.synchronize();
-    } else {
-        param_registry.registerGatheredParam(ds_id, output_buf);
+        const DSParam& param = param_registry->getParam(ds_id);
+        const at::Tensor& ds_tensor = param.getDSTensor();
+        return torch::empty(param.getShape(), ds_tensor.options());
     }
 
-    return output_buf;
+    return executors_[graph_id]->allgather_param(param_tensor, ds_id);
 }
 
-at::Tensor allgather_param_meta(at::Tensor param_tensor, long ds_id)
+at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    // std::cout << "allgather_param_meta ds_id=" << ds_id << std::endl;
-
-    const DSParam& param = param_registry.getParam(ds_id);
+    const DSParam& param = param_registry->getParam(ds_id);
     auto options = param.getDSTensor().options().device(c10::kMeta);
     at::Tensor output_buf = torch::empty(param.getShape(), options);
     return output_buf;
 }
 
-at::Tensor release_param(at::Tensor v, long ds_id)
+at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
 {
-    // std::cout << "release_param ds_id=" << ds_id << std::endl;
-
-    if (profile and !param_registry.hasGatheredParam(ds_id)) {
-        // Profiler runs this function multiple times.
-        // We need to check if the gathered param is already released.
-        return v;
-    }
-
-    const DSParam& param = param_registry.getParam(ds_id);
-    if (!param.isPersistent()) {
-        at::Tensor gathered_param = param_registry.getGatheredParam(ds_id);
-        const auto options = gathered_param.options();
-        at::Tensor empty_buffer = torch::empty({0}, options);
-        gathered_param.set_data(empty_buffer);
-
-        param_registry.unregisterGatheredParam(ds_id);
-    }
-
+    if (!profile) { return executors_[graph_id]->release_param(v, ds_id); }
     return v;
 }
 
-at::Tensor release_param_meta(at::Tensor v, long ds_id) { return v; }
+at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
 
 at::Tensor wait_allgather(at::Tensor v,
+                          long graph_id,
                           long ds_id,
                           const std::string& user,
                           long n_args,
                           bool is_backward)
 {
-    GraphOpStates& op_states = is_backward ? op_states_bwd : op_states_fwd;
-
-    op_states.decrementArgCounter(user);
-
-    if (op_states.isArgCounterZero(user)) {
-        ag_comm_done_events[ds_id]->block(at::cuda::getDefaultCUDAStream());
-    }
-
+    executors_[graph_id]->wait_allgather(v, ds_id, user, n_args, is_backward);
     return v;
 }
 
 at::Tensor wait_allgather_meta(at::Tensor v,
+                               long graph_id,
                                long ds_id,
                                const std::string& user,
                                long n_args,
@@ -480,142 +635,51 @@ at::Tensor wait_allgather_meta(at::Tensor v,
     return v;
 }
 
-void flushReduceBucket(at::ScalarType scalar_type)
+at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
-    if (!hasKey(reduce_tasks, scalar_type)) { return; }
-
-    int64_t tmp_recv_numel = 0;
-    for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
-        auto comp_done_event = rs_comp_done_events.at(t.getDSId());
-        comp_done_event->block(comm_stream);
-
-        assert(hasKey(has_acc_grad, t.getDSId()));
-        if (has_acc_grad.at(t.getDSId())) {
-            tmp_recv_numel += param_registry.getParam(t.getDSId()).getGradBuffer().numel();
-        }
-    }
-
-    at::Tensor tmp_recv_buf = at::Tensor();
-    if (tmp_recv_numel > 0) {
-        tmp_recv_buf = torch::empty({tmp_recv_numel},
-                                    at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
-    }
-
-    ncclGroupStart();
-    int64_t offset = 0;
-    for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
-        auto recv_buf = param_registry.getParam(t.getDSId()).getGradBuffer();
-
-        bool acc_grad = has_acc_grad.at(t.getDSId());
-
-        if (acc_grad) {
-            recv_buf =
-                tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
-        }
-
-        ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
-                                                recv_buf.data_ptr(),
-                                                recv_buf.numel(),
-                                                get_nccl_data_type(scalar_type),
-                                                ncclAvg,
-                                                ncclComm,
-                                                comm_stream);
-        if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
-
-        if (acc_grad) { offset += recv_buf.numel(); }
-    }
-    ncclGroupEnd();
-
-    {
-        at::cuda::CUDAStreamGuard guard(comm_stream);
-        int64_t offset = 0;
-        for (const ReduceTask& t : reduce_tasks.at(scalar_type)) {
-            bool acc_grad = has_acc_grad.at(t.getDSId());
-            auto current_grad = param_registry.getParam(t.getDSId()).getGradBuffer();
-
-            if (acc_grad) {
-                auto recv_buf = param_registry.getParam(t.getDSId()).getGradBuffer();
-                recv_buf.add_(tmp_recv_buf.index(
-                    {torch::indexing::Slice(offset, offset + recv_buf.numel())}));
-                offset += recv_buf.numel();
-            }
-            has_acc_grad[t.getDSId()] = true;
-        }
-    }
-
-    reduce_buckets.swap(scalar_type, comm_stream);
-    reduce_tasks[scalar_type].clear();
-}
-
-at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
-{
-    if (profile) { return at::Tensor(); }
-
-    int world_size = process_group->getSize();
-    const DSParam& param = param_registry.getParam(ds_id);
-    const auto scalar_type = grad_tensor.scalar_type();
-    std::shared_ptr<ReduceBucket> reduce_bucket = reduce_buckets.getBuffer(scalar_type);
-
-    auto comp_stream = at::cuda::getCurrentCUDAStream();
-    rs_comp_done_events[ds_id] = std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-
-    if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
-        flushReduceBucket(scalar_type);
-
-        // reduce_bucket might be swapped in flushReduceBucket.
-        reduce_bucket = reduce_buckets.getBuffer(scalar_type);
-    }
-
-    if (grad_tensor.numel() > reduce_bucket->getSize()) {
-        // extend buckets
-        at::cuda::stream_synchronize(comm_stream);
-        reduce_bucket->reserve(grad_tensor.numel());
-    }
-
-    at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
-
-    reduce_buckets.getEvent(scalar_type)->block(comp_stream);
-    reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
-    reduce_tasks[scalar_type].emplace_back(ds_id, reduce_in_buffer);
-
-    rs_comp_done_events[ds_id]->record(comp_stream);
-
-    reduce_counter--;
-
-    if (reduce_counter == 0) { flushReduceBucket(scalar_type); }
-
-    if (reduce_counter == 0) {
-        // This looks duplicated but it's necessary to ensure the copy is done.
-        // The backward hook has start_backward() might not be called when backward starting.
-        reduce_counter = param_registry.getNumParams();
-
-        // This synchronization ensures all of reduce calls are done before optimizer's step.
-        at::cuda::stream_synchronize(comm_stream);
-
-        end_backward();
-    }
+    if (!profile) { executors_[graph_id]->reduce_grad(grad_tensor, ds_id); }
 
     return at::Tensor();
 }
 
-at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long ds_id) { return at::Tensor(); }
+at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
+{
+    return at::Tensor();
+}
+
+void start_forward()
+{
+    for (auto& it : executors_) { it.second->start_forward(); }
+}
+
+void end_forward()
+{
+    for (auto& it : executors_) { it.second->end_forward(); }
+}
+
+void start_backward(bool update)
+{
+    for (auto& it : executors_) { it.second->start_backward(update); }
+}
+
+void end_backward()
+{
+    for (auto& it : executors_) { it.second->end_backward(); }
+}
 
 }  // namespace n3z
 
 TORCH_LIBRARY(native_z3, m)
 {
-    // Note that "float" in the schema corresponds to the C++ double type
-    // and the Python float type.
-    m.def("test_call(Tensor a) -> Tensor");
-    m.def("allgather_param(Tensor a, int id) -> Tensor");
-    m.def("release_param(Tensor a, int id) -> Tensor");
-    m.def("wait_allgather(Tensor a, int id, str user, int n_args, bool bwd) -> Tensor");
-    m.def("reduce_grad(Tensor a, int id) -> Tensor");
+    m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
+    m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
+    m.def(
+        "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
+    m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 {
-    m.impl("test_call", &n3z::test_call);
     m.impl("allgather_param", &n3z::allgather_param);
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
@@ -624,7 +688,6 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 
 TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
 {
-    m.impl("test_call", &n3z::test_call);
     m.impl("allgather_param", &n3z::allgather_param);
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
@@ -641,14 +704,16 @@ TORCH_LIBRARY_IMPL(native_z3, Meta, m)
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("test_call", &n3z::test_call, "Test function");
     m.def("register_param", &n3z::register_param, "Register a parameter");
     m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
-    m.def("init_comm", &n3z::init_comm, "Set the process group");
-    m.def("cleanup_comm", &n3z::cleanup_comm, "Cleanup the process group");
-    m.def("register_op_n_args",
-          &n3z::register_op_n_args,
+    m.def("init", &n3z::init, "Set the process group");
+    m.def("cleanup", &n3z::cleanup, "Cleanup the process group");
+    m.def("register_graph_ops",
+          &n3z::register_graph_ops,
           "Register the number of arguments for an op");
+    m.def("register_bwd_graph_ops",
+          &n3z::register_bwd_graph_ops,
+          "Register the number of arguments for a backward op");
     m.def("start_forward", &n3z::start_forward, "Start forward pass");
     m.def("end_forward", &n3z::end_forward, "End forward pass");
     m.def("start_backward", &n3z::start_backward, "Start backward pass");

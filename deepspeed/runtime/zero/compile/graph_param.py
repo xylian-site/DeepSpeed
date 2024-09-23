@@ -4,7 +4,7 @@
 # DeepSpeed Team
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from functools import reduce
 
 import torch
@@ -32,21 +32,24 @@ class DSGraphParam:
 
 class DSGraphParamManager:
 
-    def __init__(self, fw_graph: Graph, sample_inputs: Any, ds_ids: List[int]):
+    def __init__(self, fw_graph: Graph, sample_inputs: Any, index_to_ds_ids: List[Tuple[int, int, int]]):
         self._fw_graph = fw_graph
         self._bw_graph = None
         self._params: Dict[str, DSGraphParam] = {}
         self._param_name_to_grad: Dict[str, Node] = {}
         self._ds_ids: Dict[str, int] = {}
 
-        param_nodes = get_param_nodes(fw_graph, len(ds_ids))
+        param_nodes = get_param_nodes(fw_graph, index_to_ds_ids)
         self._param_names = [pn.name for pn in param_nodes]
+        self._param_indices = [i for i, _, _ in index_to_ds_ids]
 
-        param_inputs = sample_inputs[:len(ds_ids)]
+        param_inputs = [sample_inputs[i] for i, _, _ in index_to_ds_ids]
+        ds_ids = [ds_id for _, ds_id, _ in index_to_ds_ids]
+        ds_shapes = [ds_shape for _, _, ds_shape in index_to_ds_ids]
 
-        for pn, pi, ds_id in zip(param_nodes, param_inputs, ds_ids):
+        for pn, pi, ds_id, ds_shape in zip(param_nodes, param_inputs, ds_ids, ds_shapes):
             self._params[pn.name] = DSGraphParam(name=pn.name,
-                                                 shape=pi.size(),
+                                                 shape=ds_shape,
                                                  dtype=pi.dtype,
                                                  device=pi.device,
                                                  node=pn,
@@ -60,7 +63,8 @@ class DSGraphParamManager:
 
         output_node = get_output_node(bw_graph)
         param_nodes_bw = [n for n in self._bw_graph.nodes if n.name in self.param_names]
-        param_name_to_grad = {param_name: grad for param_name, grad in zip(self.param_names, output_node.args[0])}
+        grad_outputs = [output_node.args[0][i] for i in self._param_indices]
+        param_name_to_grad = {param_name: grad for param_name, grad in zip(self.param_names, grad_outputs)}
         return param_nodes_bw, param_name_to_grad
 
     @property

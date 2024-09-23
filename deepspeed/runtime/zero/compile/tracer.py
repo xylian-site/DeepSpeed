@@ -11,6 +11,8 @@ import torch.utils._pytree as pytree
 
 aten = torch._ops.ops.aten
 ops_reuse_inputs = [aten.t.default]
+ops_no_release = [torch.ops.aten.sym_size.int]
+ops_no_wait = [torch.ops.aten.sym_size.int]
 
 
 def add_dependency_on_params(graph: Graph, param_nodes: List[Node]) -> None:

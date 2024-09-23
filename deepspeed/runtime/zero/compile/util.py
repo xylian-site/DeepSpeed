@@ -5,14 +5,19 @@
 
 import functools
 import operator
-from typing import List
+from typing import List, Tuple
 
 import torch
 from torch.fx import Node, Graph
 
 
-def get_param_nodes(graph: Graph, n_params: int) -> List[Node]:
-    return [n for n in graph.nodes if n.op == "placeholder"][:n_params]
+def get_input_nodes(graph: Graph) -> List[Node]:
+    return [n for n in graph.nodes if n.op == "placeholder"]
+
+
+def get_param_nodes(graph: Graph, index_to_ds_ids: List[Tuple[int, int]]) -> List[Node]:
+    all_input_nodes = get_input_nodes(graph)
+    return [all_input_nodes[i] for i, _, _ in index_to_ds_ids]
 
 
 def is_comm_op(node: Node) -> bool:

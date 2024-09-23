@@ -22,7 +22,8 @@ from .fx import add_postprocess, add_args_process
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
-from .util import get_param_nodes
+from .util import get_input_nodes, get_param_nodes
+from .tracer import ops_no_release, ops_no_wait
 
 import os
 
@@ -34,18 +35,20 @@ z3_optimizer = None
 nz3 = None
 
 
+def _make_node_meta(node: Node, ds_id: int, comm: bool):
+    meta = {"param_name": node.name, "ds_id": ds_id, "comm": comm}
+    if "tensor_meta" in node.meta:
+        meta["tensor_meta"] = node.meta["tensor_meta"]
+    return meta
+
+
 def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     return add_postprocess(graph,
                            node,
                            torch.ops.native_z3.allgather_param,
                            extra_args=[graph_id, ds_id],
                            name=f"allgather_ds_param_{node.target}_{ds_id}",
-                           meta={
-                               "param_name": node.name,
-                               "ds_id": ds_id,
-                               "tensor_meta": node.meta["tensor_meta"],
-                               "comm": True
-                           })
+                           meta=_make_node_meta(node, ds_id, True))
 
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
@@ -54,12 +57,7 @@ def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_
                            torch.ops.native_z3.release_param,
                            extra_args=[graph_id, ds_id],
                            name=f"release_ds_param_{release_node.target}_{ds_id}",
-                           meta={
-                               "param_name": node.name,
-                               "ds_id": ds_id,
-                               "tensor_meta": node.meta["tensor_meta"],
-                               "comm": False
-                           })
+                           meta=_make_node_meta(node, ds_id, False))
 
 
 def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
@@ -68,12 +66,7 @@ def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int, user
                             torch.ops.native_z3.wait_allgather,
                             extra_args=[graph_id, ds_id, user, n_args, bwd],
                             name=f"wait_allgather_ds_param_{ds_id}",
-                            meta={
-                                "param_name": node.name,
-                                "ds_id": ds_id,
-                                "tensor_meta": node.meta["tensor_meta"],
-                                "comm": False
-                            })
+                            meta=_make_node_meta(node, ds_id, False))
 
 
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
@@ -82,16 +75,12 @@ def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds
                            torch.ops.native_z3.reduce_grad,
                            extra_args=[graph_id, ds_id],
                            name=f"reduce_ds_param_{param_name}",
-                           meta={
-                               "grad_name": grad_node.name,
-                               "ds_id": ds_id,
-                               "tensor_meta": grad_node.meta["tensor_meta"],
-                               "comm": True
-                           })
+                           meta=_make_node_meta(grad_node, ds_id, True))
 
 
 def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
 
+    ds_ids = []
     ag_wait_nodes = []
 
     for node in graph.nodes:
@@ -99,14 +88,17 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
             arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.native_z3.allgather_param
         ]
         if len(ag_args) > 0:
+            if node.target in ops_no_wait:
+                continue
+
             assert len(ag_args) == 1, f"Node {node.name} takes multiple allgathered params"
-            # nz3.register_op_n_args(node.name, len(node.args), bwd)
             ag_wait_nodes.append(node)
 
             ds_id = ag_args[0].meta["ds_id"]
             add_wait_allgather(graph_id, graph, node, ds_id, node.name, len(node.args), bwd)
+            ds_ids.append(ds_id)
 
-    return ag_wait_nodes
+    return ds_ids, ag_wait_nodes
 
 
 def add_gather_and_release(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes: List[Node]):
@@ -123,7 +115,8 @@ def add_gather_and_release(graph_id: int, graph: Graph, param_manager: DSGraphPa
 
     for pn, nodes in last_user_nodes.items():
         for node in nodes:
-            add_release(graph_id, graph, node, pn, param_manager.ds_ids[pn.name])
+            if node.target not in ops_no_release:
+                add_release(graph_id, graph, node, pn, param_manager.ds_ids[pn.name])
 
 
 def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],
@@ -154,29 +147,45 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
 
 def make_stage3_backend(dump_graphs=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
-    global nz3
     nz3 = NativeZ3Builder().load()
 
     def stage3_backend(gm: GraphModule, sample_inputs):
         graph_id = id(gm.graph)
-        param_ds_ids = [param.ds_id for _, param in gm.named_parameters()]
+
+        if len(list(gm.named_parameters())) == 0:
+            param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(sample_inputs)
+                             if hasattr(input_val, 'ds_id')]
+        else:
+            # < v2.5
+            param_indices = [(i, param.ds_id, param.ds_shape) for i, (n, param) in enumerate(gm.named_parameters())]
 
         def fw(gm, sample_inputs):
-
-            global param_manager
-            param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_ds_ids)
-
-            dump_graph(gm, f"forward_aot", skip=not dump_graphs)
+            param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
 
             add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
-                                   get_param_nodes(gm.graph, len(param_ds_ids)))
-            ProfilingInterpreter(gm, nz3).run(*sample_inputs)
+                                   get_param_nodes(gm.graph, param_indices))
+            param_index_to_size = {v[0]: v[2] for v in param_indices}
 
-            dump_graph(gm, f"forward_aot_comm", skip=not dump_graphs)
+            # Remove symbolic shapes
+            validated_inputs = []
+            for i, input_val in enumerate(sample_inputs):
+                if i in param_index_to_size:
+                    validated_inputs.append(
+                        torch.empty(param_index_to_size[i], dtype=input_val.dtype, device=input_val.device))
+                else:
+                    validated_inputs.append(input_val)
+            validated_inputs = tuple(validated_inputs)
+
+            profiler = ProfilingInterpreter(nz3, gm)
+            profiler.run(*validated_inputs)
+
+            global env_values
+            env_values = profiler.env_values
+
             gm.graph = list_schedule2(gm.graph)
 
-            ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
-            nz3.register_graph_ops(graph_id, param_ds_ids, [n.name for n in ag_wait_nodes],
+            ds_ids, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
+            nz3.register_graph_ops(graph_id, ds_ids, [n.name for n in ag_wait_nodes],
                                    [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
@@ -187,14 +196,27 @@ def make_stage3_backend(dump_graphs=False):
             assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
             param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
-            dump_graph(gm, f"backward_aot", skip=not dump_graphs)
-
             add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw, param_name_to_grad)
-            ProfilingInterpreter(gm, nz3).run(*sample_inputs)
 
-            dump_graph(gm, f"backward_aot_comm", skip=not dump_graphs)
+            input_nodes = get_input_nodes(gm.graph)
+            assert len(input_nodes) == len(
+                sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
+
+            global env_values
+
+            name_to_env_value = {node.name: env_values[node] for node, _ in env_values.items()}
+            validated_inputs = []
+            for in_node, in_val in zip(input_nodes, sample_inputs):
+                if in_node.name in name_to_env_value:
+                    validated_inputs.append(name_to_env_value[in_node.name])
+                else:
+                    validated_inputs.append(in_val)
+            validated_inputs = tuple(validated_inputs)
+
+            ProfilingInterpreter(nz3, gm).run(*validated_inputs)
+
             gm.graph = list_schedule2(gm.graph)
-            ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
+            _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
             gm.recompile()

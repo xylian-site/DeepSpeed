@@ -669,6 +669,12 @@ void end_backward()
     for (auto& it : executors_) { it.second->end_backward(); }
 }
 
+at::Tensor test_call(at::Tensor a)
+{
+    std::cout << "test_call" << std::endl;
+    return a;
+}
+
 }  // namespace n3z
 
 TORCH_LIBRARY(native_z3, m)
@@ -678,6 +684,8 @@ TORCH_LIBRARY(native_z3, m)
     m.def(
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
+
+    m.def("test_call(Tensor a) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(native_z3, CPU, m)
@@ -686,6 +694,8 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
+
+    m.impl("test_call", &n3z::test_call);
 }
 
 TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
@@ -694,6 +704,8 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
+
+    m.impl("test_call", &n3z::test_call);
 }
 
 TORCH_LIBRARY_IMPL(native_z3, Meta, m)

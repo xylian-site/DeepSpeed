@@ -29,7 +29,6 @@ from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
-from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
 
 from deepspeed.runtime.fp16.fused_optimizer import FP16_Optimizer
@@ -3730,44 +3729,9 @@ class DeepSpeedEngine(Module):
                 hook.remove()
             self.optimizer._grad_acc_hooks.clear()
 
-            from torch._subclasses import FakeTensorMode
-            original_from_tensor = FakeTensorMode.from_tensor
-
-            def from_tensor_wrapper(self, tensor, *args, **kwargs):
-                if hasattr(tensor, 'ds_id'):
-                    tensor = torch.randn(tensor.ds_shape,
-                                         device=tensor.device,
-                                         dtype=tensor.dtype,
-                                         requires_grad=tensor.requires_grad)
-                return original_from_tensor(self, tensor, *args, **kwargs)
-
-            FakeTensorMode.from_tensor = from_tensor_wrapper
-
-            from torch._subclasses.fake_tensor import FakeCopyMode
-
-            class Z3FakeCopyMode(FakeCopyMode):
-
-                def __init__(self, fake_mode):
-                    super().__init__(fake_mode)
-                    self.param_map = {}
-
-                def __torch_function__(self, func, types, args=(), kwargs=None):
-                    if func == torch._C.TensorBase.clone:
-                        v = args[0]
-                        if args[0] in self.param_map:
-                            v = self.param_map[args[0]]
-                        return func(self.fake_mode.from_tensor(v, static_shapes=True), **kwargs)
-
-                    ret = super().__torch_function__(func, types, args, kwargs)
-
-                    if len(args) == 1 and isinstance(args[0], torch.nn.Parameter):
-                        self.param_map[ret] = args[0]
-
-                    return ret
-
-            torch._subclasses.fake_tensor.FakeCopyMode = Z3FakeCopyMode
-
-            deepspeed.runtime.zero.compile.stage3_backend.z3_optimizer = self.optimizer
+            from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
+            patch_fake_tensor()
+            from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
             backend = make_stage3_backend(dump_graphs=dump_graphs)
 
         print(f"Compiling")

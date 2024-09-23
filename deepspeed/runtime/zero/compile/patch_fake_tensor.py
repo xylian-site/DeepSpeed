@@ -32,8 +32,6 @@ def wrap_if_ds_param(t):
 
 
 def patch_fake_tensor():
-    print(f"patch_fake_tensor fake_legacy: {fake_legacy}")
-
     # dynamo tracer uses wrap_to_fake_tensor_and_record
     # Wrapping FakeTensorMode.from_tensor is not sufficient as dynamo generates SymbolicContext before calling from_tensor
     original_wrap_to_fake_tensor_and_record = wrap_to_fake_tensor_and_record

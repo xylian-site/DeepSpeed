@@ -17,7 +17,7 @@ import deepspeed.comm as dist
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
-from .fx import add_postprocess, add_args_process
+from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
@@ -149,11 +149,13 @@ def make_stage3_backend(dump_graphs=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
 
-    def stage3_backend(gm: GraphModule, sample_inputs):
+    env_values = {}
+
+    def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
 
         if len(list(gm.named_parameters())) == 0:
-            param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(sample_inputs)
+            param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
                              if hasattr(input_val, 'ds_id')]
         else:
             # < v2.5
@@ -164,23 +166,14 @@ def make_stage3_backend(dump_graphs=False):
 
             add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
                                    get_param_nodes(gm.graph, param_indices))
-            param_index_to_size = {v[0]: v[2] for v in param_indices}
-
-            # Remove symbolic shapes
-            validated_inputs = []
-            for i, input_val in enumerate(sample_inputs):
-                if i in param_index_to_size:
-                    validated_inputs.append(
-                        torch.empty(param_index_to_size[i], dtype=input_val.dtype, device=input_val.device))
-                else:
-                    validated_inputs.append(input_val)
-            validated_inputs = tuple(validated_inputs)
 
             profiler = ProfilingInterpreter(nz3, gm)
-            profiler.run(*validated_inputs)
+            real_outputs = profiler.run(*real_inputs)
 
-            global env_values
-            env_values = profiler.env_values
+            output_node = get_output_node(gm.graph)
+            nonlocal env_values
+            for n, v in zip(output_node.args[0], real_outputs):
+                env_values[n] = v
 
             gm.graph = list_schedule2(gm.graph)
 
@@ -202,15 +195,30 @@ def make_stage3_backend(dump_graphs=False):
             assert len(input_nodes) == len(
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
-            global env_values
+            def _materialize_fake(v):
+                from torch._subclasses.fake_tensor import is_fake
+                from torch.fx.node import map_aggregate
 
+                def convert(t):
+                    if is_fake(t):
+                        return torch.randn(t.shape,
+                                           dtype=t.dtype,
+                                           device=t.device,
+                                           layout=t.layout,
+                                           requires_grad=t.requires_grad,
+                                           pin_memory=t.is_pinned())
+                    return t
+
+                return map_aggregate(v, lambda x: convert(x))
+
+            nonlocal env_values
             name_to_env_value = {node.name: env_values[node] for node, _ in env_values.items()}
             validated_inputs = []
             for in_node, in_val in zip(input_nodes, sample_inputs):
                 if in_node.name in name_to_env_value:
                     validated_inputs.append(name_to_env_value[in_node.name])
                 else:
-                    validated_inputs.append(in_val)
+                    validated_inputs.append(_materialize_fake(in_val))
             validated_inputs = tuple(validated_inputs)
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)
@@ -223,7 +231,7 @@ def make_stage3_backend(dump_graphs=False):
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd
-        aot_mod = aot_module_simplified(gm, sample_inputs, fw_compiler=fw, bw_compiler=bw)
+        aot_mod = aot_module_simplified(gm, real_inputs, fw_compiler=fw, bw_compiler=bw)
         aot_mod = torch._dynamo.optimize()(aot_mod)
 
         return aot_mod

@@ -37,7 +37,11 @@ def patch_fake_tensor():
     original_wrap_to_fake_tensor_and_record = wrap_to_fake_tensor_and_record
 
     def wrap_to_fake_tensor_and_record_wrapper(t, *args, **kwargs):
-        return original_wrap_to_fake_tensor_and_record(wrap_if_ds_param(t), *args, **kwargs)
+        dummy_tensor = wrap_if_ds_param(t)
+        ret = original_wrap_to_fake_tensor_and_record(dummy_tensor, *args, **kwargs)
+        if tracing_context := torch._guards.TracingContext.try_get():
+            tracing_context.tensor_to_context[t] = tracing_context.tensor_to_context.pop(dummy_tensor)
+        return ret
 
     torch._dynamo.variables.builder.wrap_to_fake_tensor_and_record = wrap_to_fake_tensor_and_record_wrapper
 

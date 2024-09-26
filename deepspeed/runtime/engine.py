@@ -26,7 +26,7 @@ from deepspeed import comm as dist
 from deepspeed.runtime.utils import see_memory_usage, DummyOptim
 from .zero.offload_config import OffloadDeviceEnum
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
-from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus, InsertPostInitMethodToModuleSubClasses
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
@@ -3716,6 +3716,8 @@ class DeepSpeedEngine(Module):
 
             from deepspeed.ops.op_builder import NativeZ3Builder
             self.nz3 = NativeZ3Builder().load()
+
+            # Unset hooks
             self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size())
             for p in self.module.parameters():
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
@@ -3728,6 +3730,10 @@ class DeepSpeedEngine(Module):
             for hook in self.optimizer._grad_acc_hooks:
                 hook.remove()
             self.optimizer._grad_acc_hooks.clear()
+
+            # Unpatch linear
+            if hasattr(InsertPostInitMethodToModuleSubClasses, "linear_bk"):
+                torch.nn.functional.linear = InsertPostInitMethodToModuleSubClasses.linear_bk
 
             from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()

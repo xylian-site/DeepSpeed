@@ -43,39 +43,41 @@ def _make_node_meta(node: Node, ds_id: int, comm: bool):
 
 
 def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
-    return add_postprocess(graph,
-                           node,
-                           torch.ops.native_z3.allgather_param,
-                           extra_args=[graph_id, ds_id],
-                           name=f"allgather_ds_param_{node.target}_{ds_id}",
-                           meta=_make_node_meta(node, ds_id, True))
+    new_node = add_postprocess(graph,
+                               node,
+                               torch.ops.native_z3.allgather_param,
+                               extra_args=[graph_id, ds_id],
+                               name=f"allgather_ds_param_{node.target}_{ds_id}",
+                               meta=_make_node_meta(node, ds_id, True))
+    output_node = get_output_node(graph)
+    output_node.replace_input_with(new_node, node)
 
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
-    return add_postprocess(graph,
-                           node,
-                           torch.ops.native_z3.release_param,
-                           extra_args=[graph_id, ds_id],
-                           name=f"release_ds_param_{release_node.target}_{ds_id}",
-                           meta=_make_node_meta(node, ds_id, False))
+    add_postprocess(graph,
+                    node,
+                    torch.ops.native_z3.release_param,
+                    extra_args=[graph_id, ds_id],
+                    name=f"release_ds_param_{release_node.target}_{ds_id}",
+                    meta=_make_node_meta(node, ds_id, False))
 
 
 def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
-    return add_args_process(graph,
-                            node,
-                            torch.ops.native_z3.wait_allgather,
-                            extra_args=[graph_id, ds_id, user, n_args, bwd],
-                            name=f"wait_allgather_ds_param_{ds_id}",
-                            meta=_make_node_meta(node, ds_id, False))
+    add_args_process(graph,
+                     node,
+                     torch.ops.native_z3.wait_allgather,
+                     extra_args=[graph_id, ds_id, user, n_args, bwd],
+                     name=f"wait_allgather_ds_param_{ds_id}",
+                     meta=_make_node_meta(node, ds_id, False))
 
 
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
-    return add_postprocess(graph,
-                           grad_node,
-                           torch.ops.native_z3.reduce_grad,
-                           extra_args=[graph_id, ds_id],
-                           name=f"reduce_ds_param_{param_name}",
-                           meta=_make_node_meta(grad_node, ds_id, True))
+    add_postprocess(graph,
+                    grad_node,
+                    torch.ops.native_z3.reduce_grad,
+                    extra_args=[graph_id, ds_id],
+                    name=f"reduce_ds_param_{param_name}",
+                    meta=_make_node_meta(grad_node, ds_id, True))
 
 
 def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
@@ -149,10 +151,10 @@ def make_stage3_backend(dump_graphs=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
 
-    env_values = {}
-
     def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
+
+        env_values = {}
 
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)

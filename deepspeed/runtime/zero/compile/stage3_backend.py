@@ -5,15 +5,24 @@
 
 from collections import defaultdict
 from typing import List, Dict
+from weakref import WeakSet
 
 import torch
 from torch.fx import Node, Graph, GraphModule
+from torch.fx.node import map_aggregate, Argument
 from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
 import torch._dynamo
 from torch._functorch.aot_autograd import aot_module_simplified
 
+try:
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
+except ImportError:
+    # torch < v2.5
+    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+
 import deepspeed.comm as dist
+from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
 from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
@@ -154,7 +163,9 @@ def make_stage3_backend(dump_graphs=False):
     def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
 
-        env_values = {}
+        env_values: Dict[Node, Argument] = {}
+        device = torch.device(get_accelerator().current_device())
+        env_values_device_unchanged: WeakSet[torch.Tensor] = WeakSet()
 
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
@@ -172,10 +183,21 @@ def make_stage3_backend(dump_graphs=False):
             profiler = ProfilingInterpreter(nz3, gm)
             real_outputs = profiler.run(*real_inputs)
 
+            nonlocal env_values, device, env_values_device_unchanged
+
+            def to_cpu(v):
+                if torch.is_tensor(v):
+                    if v.device == device:
+                        with unset_fake_temporarily():
+                            return v.to('cpu')
+                    else:
+                        env_values_device_unchanged.add(v)
+                return v
+
             output_node = get_output_node(gm.graph)
-            nonlocal env_values
             for n, v in zip(output_node.args[0], real_outputs):
-                env_values[n] = v
+                # Save intermediate values on CPU for backward
+                env_values[n] = map_aggregate(v, lambda x: to_cpu(x))
 
             gm.graph = list_schedule2(gm.graph)
 
@@ -197,9 +219,15 @@ def make_stage3_backend(dump_graphs=False):
             assert len(input_nodes) == len(
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
+            nonlocal env_values, device, env_values_device_unchanged
+
+            def from_cpu(v):
+                if torch.is_tensor(v) and v not in env_values_device_unchanged:
+                    return v.to(device)
+                return v
+
             def _materialize_fake(v):
                 from torch._subclasses.fake_tensor import is_fake
-                from torch.fx.node import map_aggregate
 
                 def convert(t):
                     if is_fake(t):
@@ -213,17 +241,20 @@ def make_stage3_backend(dump_graphs=False):
 
                 return map_aggregate(v, lambda x: convert(x))
 
-            nonlocal env_values
             name_to_env_value = {node.name: env_values[node] for node, _ in env_values.items()}
             validated_inputs = []
             for in_node, in_val in zip(input_nodes, sample_inputs):
                 if in_node.name in name_to_env_value:
-                    validated_inputs.append(name_to_env_value[in_node.name])
+                    validated_inputs.append(map_aggregate(name_to_env_value[in_node.name], from_cpu))
                 else:
                     validated_inputs.append(_materialize_fake(in_val))
             validated_inputs = tuple(validated_inputs)
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)
+
+            # Not all graph calls bw(), so env_value might not be cleared
+            env_values.clear()
+            env_values_device_unchanged.clear()
 
             gm.graph = list_schedule2(gm.graph)
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)

@@ -3698,6 +3698,7 @@ class DeepSpeedEngine(Module):
                 backend=get_accelerator().get_compile_backend(),
                 compile_kwargs={},
                 schedule=False,
+                use_symmetric_memory=False,
                 dump_graphs=False) -> None:
         """Compile the module using the specified backend and kwargs.
         If a compiler_fn is set, it will be used instead of torch.compile().
@@ -3717,12 +3718,9 @@ class DeepSpeedEngine(Module):
             from deepspeed.ops.op_builder import NativeZ3Builder
             self.nz3 = NativeZ3Builder().load()
 
-            # Unset hooks
-            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size())
-            for p in self.module.parameters():
-                grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
-                self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
+            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), use_symmetric_memory)
 
+            # Unset hooks
             for m in self.module.modules():
                 m._parameters = m._original_parameters
             self.optimizer.parameter_offload._remove_module_hooks()
@@ -3734,6 +3732,15 @@ class DeepSpeedEngine(Module):
             # Unpatch linear
             if hasattr(InsertPostInitMethodToModuleSubClasses, "linear_bk"):
                 torch.nn.functional.linear = InsertPostInitMethodToModuleSubClasses.linear_bk
+
+            if use_symmetric_memory:
+                from torch.distributed._symmetric_memory import enable_symm_mem_for_group
+                group_name = self.data_parallel_group.group_name
+                enable_symm_mem_for_group(group_name)
+
+            for p in self.module.parameters():
+                grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
+                self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()

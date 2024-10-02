@@ -3734,9 +3734,8 @@ class DeepSpeedEngine(Module):
                 torch.nn.functional.linear = InsertPostInitMethodToModuleSubClasses.linear_bk
 
             if use_symmetric_memory:
-                from torch.distributed._symmetric_memory import enable_symm_mem_for_group
                 group_name = self.data_parallel_group.group_name
-                enable_symm_mem_for_group(group_name)
+                dist.enable_symm_mem_for_group(group_name)
 
             for p in self.module.parameters():
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]

@@ -11,6 +11,7 @@ import statistics
 import torch
 from torch.utils._pytree import tree_all
 from torch.fx import GraphModule, Interpreter
+from torch.fx.node import map_aggregate
 
 from torch._subclasses.fake_tensor import is_fake
 try:
@@ -28,6 +29,13 @@ def _all_real_if_tensor(args):
     return tree_all(lambda x: not torch.is_tensor(x) or not is_fake(x), args)
 
 
+def _to(v, device):
+    if torch.is_tensor(v):
+        with unset_fake_temporarily():
+            return v.to(device).detach()
+    return v
+
+
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
@@ -41,6 +49,7 @@ class ProfilingInterpreter(Interpreter):
         assert warmup < iteration
         self.iteration = iteration
         self.warmup = warmup
+        self.device = torch.device(get_accelerator().current_device())
 
     def run(self, *args) -> Any:
         """Run the graph with profiling enabled.
@@ -54,7 +63,7 @@ class ProfilingInterpreter(Interpreter):
             self.nz3.enable_profiling(True)
 
             with unset_fake_temporarily():
-                with get_accelerator().random().fork_rng(devices=[get_accelerator().current_device_name()]):
+                with get_accelerator().random().fork_rng(devices=[self.device]):
                     return_val = super().run(*args)
         except Exception as e:
             print(f"Profiling error {e}")
@@ -70,13 +79,15 @@ class ProfilingInterpreter(Interpreter):
             return super().run_node(n)
         else:
             accelerator = get_accelerator()
-            device = torch.device(accelerator.current_device())
             start_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
             end_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
 
             args, kwargs = self.fetch_args_kwargs_from_env(n)
             assert isinstance(args, tuple)
             assert isinstance(kwargs, dict)
+
+            args = map_aggregate(args, lambda x: _to(x, self.device))
+            kwargs = map_aggregate(kwargs, lambda x: _to(x, self.device))
 
             if is_comm_op(n):
                 dist.barrier()
@@ -98,9 +109,9 @@ class ProfilingInterpreter(Interpreter):
             wall_time = statistics.mean(walltimes[self.warmup:]) * 1000
 
             with unset_fake_temporarily():
-                vals_to_bcast = torch.tensor([device_time, wall_time], device=device)
+                vals_to_bcast = torch.tensor([device_time, wall_time], device=self.device)
                 dist.broadcast(vals_to_bcast, 0)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
 
-        return out
+        return map_aggregate(out, lambda x: _to(x, torch.device("cpu")))

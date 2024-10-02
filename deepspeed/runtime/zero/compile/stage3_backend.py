@@ -3,23 +3,17 @@
 
 # DeepSpeed Team
 
+import gc
 from collections import defaultdict
 from typing import List, Dict
-from weakref import WeakSet
 
 import torch
 from torch.fx import Node, Graph, GraphModule
-from torch.fx.node import map_aggregate, Argument
+from torch.fx.node import map_aggregate
 from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
 import torch._dynamo
 from torch._functorch.aot_autograd import aot_module_simplified
-
-try:
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-except ImportError:
-    # torch < v2.5
-    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
@@ -31,7 +25,7 @@ from .fx import add_postprocess, add_args_process, get_output_node
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
-from .util import get_input_nodes, get_param_nodes
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper
 from .tracer import ops_no_release, ops_no_wait
 
 import os
@@ -163,9 +157,7 @@ def make_stage3_backend(dump_graphs=False):
     def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
 
-        env_values: Dict[Node, Argument] = {}
-        device = torch.device(get_accelerator().current_device())
-        env_values_device_unchanged: WeakSet[torch.Tensor] = WeakSet()
+        offload_helper = NodeValueOffloadHelper(torch.device(get_accelerator().current_device()))
 
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
@@ -183,21 +175,12 @@ def make_stage3_backend(dump_graphs=False):
             profiler = ProfilingInterpreter(nz3, gm)
             real_outputs = profiler.run(*real_inputs)
 
-            nonlocal env_values, device, env_values_device_unchanged
-
-            def to_cpu(v):
-                if torch.is_tensor(v):
-                    if v.device == device:
-                        with unset_fake_temporarily():
-                            return v.to('cpu')
-                    else:
-                        env_values_device_unchanged.add(v)
-                return v
+            nonlocal offload_helper
 
             output_node = get_output_node(gm.graph)
             for n, v in zip(output_node.args[0], real_outputs):
                 # Save intermediate values on CPU for backward
-                env_values[n] = map_aggregate(v, lambda x: to_cpu(x))
+                offload_helper.offload(n.name, v)
 
             gm.graph = list_schedule2(gm.graph)
 
@@ -205,6 +188,9 @@ def make_stage3_backend(dump_graphs=False):
             nz3.register_graph_ops(graph_id, ds_ids, [n.name for n in ag_wait_nodes],
                                    [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
+
+            gc.collect()
+            get_accelerator().empty_cache()
 
             gm.recompile()
             return make_boxed_func(gm.forward)
@@ -219,21 +205,16 @@ def make_stage3_backend(dump_graphs=False):
             assert len(input_nodes) == len(
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
-            nonlocal env_values, device, env_values_device_unchanged
+            nonlocal offload_helper
 
-            def from_cpu(v):
-                if torch.is_tensor(v) and v not in env_values_device_unchanged:
-                    return v.to(device)
-                return v
-
-            def _materialize_fake(v):
+            def _materialize_fake(v, device=None):
                 from torch._subclasses.fake_tensor import is_fake
 
                 def convert(t):
                     if is_fake(t):
                         return torch.randn(t.shape,
                                            dtype=t.dtype,
-                                           device=t.device,
+                                           device=t.device if device is None else device,
                                            layout=t.layout,
                                            requires_grad=t.requires_grad,
                                            pin_memory=t.is_pinned())
@@ -241,20 +222,20 @@ def make_stage3_backend(dump_graphs=False):
 
                 return map_aggregate(v, lambda x: convert(x))
 
-            name_to_env_value = {node.name: env_values[node] for node, _ in env_values.items()}
             validated_inputs = []
             for in_node, in_val in zip(input_nodes, sample_inputs):
-                if in_node.name in name_to_env_value:
-                    validated_inputs.append(map_aggregate(name_to_env_value[in_node.name], from_cpu))
+                if offload_helper.has_value(in_node.name):
+                    validated_inputs.append(offload_helper.get_offloaded_value(in_node.name))
                 else:
-                    validated_inputs.append(_materialize_fake(in_val))
+                    validated_inputs.append(_materialize_fake(in_val, device=torch.device("cpu")))
             validated_inputs = tuple(validated_inputs)
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)
 
-            # Not all graph calls bw(), so env_value might not be cleared
-            env_values.clear()
-            env_values_device_unchanged.clear()
+            # Not all graph calls bw(), so offload_helper might not be cleared
+            offload_helper.clear()
+            gc.collect()
+            get_accelerator().empty_cache()
 
             gm.graph = list_schedule2(gm.graph)
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)

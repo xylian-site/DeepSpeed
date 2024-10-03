@@ -26,13 +26,11 @@ public:
             std::vector<int64_t> ds_shape,
             at::Tensor ds_tensor,
             at::Tensor grad_buffer,
-            c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem_buf,
             bool persistent)
         : id_(id),
           shape_(std::move(ds_shape)),
           ds_tensor_(ds_tensor),
           grad_buffer_(grad_buffer),
-          symm_mem_buf_(symm_mem_buf),
           persistent_(persistent)
     {
     }
@@ -41,10 +39,6 @@ public:
     std::vector<int64_t> getShape() const { return shape_; }
     at::Tensor getDSTensor() const { return ds_tensor_; }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
-    c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemBuf() const
-    {
-        return symm_mem_buf_;
-    }
     bool isPersistent() const { return persistent_; }
 
 private:
@@ -52,7 +46,6 @@ private:
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
     at::Tensor grad_buffer_;
-    c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem_buf_;
     bool persistent_;
 };
 
@@ -103,21 +96,19 @@ private:
     std::unordered_map<std::string, size_t> args_counter_;
 };
 
-c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(
-    int64_t size,
-    c10::ScalarType scalar_type)
+c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(int64_t size)
 {
     c10::Device device = c10::Device(c10::kCUDA, c10::cuda::current_device());
     std::vector<int64_t> sizes = {size};
     std::vector<int64_t> strides = {1};
     at::Tensor sym_mem_ws = c10d::symmetric_memory::empty_strided_p2p(
-        {size}, {1}, scalar_type, device, process_group->getGroupName(), std::nullopt);
+        {size}, {1}, c10::ScalarType::Byte, device, process_group->getGroupName(), std::nullopt);
     return c10d::symmetric_memory::rendezvous(sym_mem_ws);
 }
 
 class DSParamRegistry {
 public:
-    DSParamRegistry(bool use_symm_mem) : use_symm_mem_(use_symm_mem) {}
+    DSParamRegistry() {}
     ~DSParamRegistry() {}
 
     void registerParam(long ds_id,
@@ -126,13 +117,7 @@ public:
                        at::Tensor grad_buffer,
                        bool persistent)
     {
-        c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem_buf;
-        if (use_symm_mem_) {
-            symm_mem_buf = getSymmMemWorkspace(ds_tensor.numel(), ds_tensor.scalar_type());
-        }
-
-        params_.emplace(ds_id,
-                        DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, symm_mem_buf, persistent));
+        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
     }
 
     void registerGatheredParam(long ds_id, at::Tensor ds_tensor)
@@ -142,16 +127,17 @@ public:
 
     void unregisterGatheredParam(long ds_id) { gathered_params_.erase(ds_id); }
 
+    const std::unordered_map<long, DSParam>& getParams() const { return params_; }
+
     const DSParam& getParam(long ds_id) const { return params_.at(ds_id); }
     const size_t getNumParams() const { return params_.size(); }
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
-    bool useSymmMem() const { return use_symm_mem_; }
+    // bool useSymmMem() const { return use_symm_mem_; }
 
 private:
     std::unordered_map<long, DSParam> params_;
     std::unordered_map<long, at::Tensor> gathered_params_;
-    bool use_symm_mem_;
 };
 
 class ReduceTask {
@@ -368,7 +354,10 @@ public:
         return output_buf;
     }
 
-    at::Tensor allgather_param_symm_mem(at::Tensor param_tensor, long ds_id)
+    at::Tensor allgather_param_symm_mem(
+        at::Tensor param_tensor,
+        long ds_id,
+        c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
@@ -384,7 +373,6 @@ public:
 
         {
             at::cuda::CUDAStreamGuard guard(comm_stream_);
-            auto symm_mem = param.getSymmMemBuf();
             int world_size = process_group_->getSize();
             int rank = process_group_->getRank();
 
@@ -580,10 +568,12 @@ private:
 static std::shared_ptr<DSParamRegistry> param_registry;
 static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors_;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
+c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem;
 
 static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t nccl_comm;
 static bool enable_double_buffer = false;
+static bool use_symm_mem;
 static bool profile = false;
 
 std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
@@ -591,6 +581,18 @@ std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
     std::vector<int64_t> result;
     for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
     return result;
+}
+
+void lazy_init_symm_memory()
+{
+    if (use_symm_mem && !symm_mem) {
+        int64_t max_param_size = 0;
+        for (const auto& it : param_registry->getParams()) {
+            int64_t size = it.second.getDSTensor().numel() * it.second.getDSTensor().element_size();
+            if (size > max_param_size) { max_param_size = size; }
+        }
+        symm_mem = getSymmMemWorkspace(max_param_size);
+    }
 }
 
 void enable_profiling(bool enable) { profile = enable; }
@@ -621,7 +623,7 @@ void register_bwd_graph_ops(long graph_id,
 
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,
-          bool use_symm_mem)
+          bool _use_symm_mem)
 {
     process_group = pg;
 
@@ -643,9 +645,10 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
     std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
     ncclCommInitRank(&nccl_comm, process_group->getSize(), ncclID, process_group->getRank());
 
-    param_registry = std::make_shared<DSParamRegistry>(use_symm_mem);
+    param_registry = std::make_shared<DSParamRegistry>();
     reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
                                                                   enable_double_buffer);
+    use_symm_mem = _use_symm_mem;
 }
 
 void cleanup()
@@ -671,8 +674,8 @@ at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
         return torch::empty(param.getShape(), ds_tensor.options());
     }
 
-    if (param_registry->useSymmMem()) {
-        return executors_[graph_id]->allgather_param_symm_mem(param_tensor, ds_id);
+    if (use_symm_mem) {
+        return executors_[graph_id]->allgather_param_symm_mem(param_tensor, ds_id, symm_mem);
     }
     return executors_[graph_id]->allgather_param(param_tensor, ds_id);
 }
@@ -728,6 +731,7 @@ at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
 
 void start_forward()
 {
+    lazy_init_symm_memory();
     for (auto& it : executors_) { it.second->start_forward(); }
 }
 

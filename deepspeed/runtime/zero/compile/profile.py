@@ -5,7 +5,7 @@
 
 import time
 import types
-from typing import Any
+from typing import Any, Tuple
 import statistics
 
 import torch
@@ -36,6 +36,19 @@ def _to(v, device):
     return v
 
 
+def _args_to_key(v):
+
+    def _tensor_to_key(v) -> str:
+        if torch.is_tensor(v):
+            if v.numel() == 1:
+                return f"{v.dtype}{v.device}{v.item()}"
+            else:
+                return f"{v.dtype}{v.device}{v.shape}"
+        return str(v)
+
+    return map_aggregate(v, _tensor_to_key)
+
+
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
@@ -50,6 +63,7 @@ class ProfilingInterpreter(Interpreter):
         self.iteration = iteration
         self.warmup = warmup
         self.device = torch.device(get_accelerator().current_device())
+        self.cache: dict[Tuple, Any] = {}
 
     def run(self, *args) -> Any:
         """Run the graph with profiling enabled.
@@ -57,7 +71,6 @@ class ProfilingInterpreter(Interpreter):
         args: inputs to the graph. Tensors in the inpusts must be real tensors, not fake tensors. args can contain ds parameters.
         returns: The output of the graph. Tensor in the output is real tensors.
         """
-
         try:
             assert _all_real_if_tensor(args), "Inputs must be real tensors"
             self.nz3.enable_profiling(True)
@@ -77,34 +90,42 @@ class ProfilingInterpreter(Interpreter):
             n.meta["device_time"] = 0.0
             n.meta["wall_time"] = 0.0
             return super().run_node(n)
-        else:
-            accelerator = get_accelerator()
-            start_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
-            end_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
 
-            args, kwargs = self.fetch_args_kwargs_from_env(n)
-            assert isinstance(args, tuple)
-            assert isinstance(kwargs, dict)
+        accelerator = get_accelerator()
+        start_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
+        end_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
 
-            args = map_aggregate(args, lambda x: _to(x, self.device))
-            kwargs = map_aggregate(kwargs, lambda x: _to(x, self.device))
+        args, kwargs = self.fetch_args_kwargs_from_env(n)
+        assert isinstance(args, tuple)
+        assert isinstance(kwargs, dict)
 
-            if is_comm_op(n):
-                dist.barrier()
+        args = map_aggregate(args, lambda x: _to(x, self.device))
+        kwargs = map_aggregate(kwargs, lambda x: _to(x, self.device))
 
-            walltimes = []
-            for i in range(self.iteration):
-                start = time.time()
-                start_events[i].record()
-                out = getattr(self, n.op)(n.target, args, kwargs)
-                end_events[i].record()
-                walltimes.append(time.time() - start)
+        cache_key = (n.target, _args_to_key(args), _args_to_key(kwargs))
+        cache_hit = cache_key in self.cache
+        if cache_hit:
+            device_time, wall_time = self.cache[cache_key]
+            n.meta["device_time"] = device_time
+            n.meta["wall_time"] = wall_time
 
-            if is_comm_op(n):
-                dist.barrier()
+        if is_comm_op(n):
+            dist.barrier()
 
-            accelerator.synchronize()
+        walltimes = []
+        for i in range(1 if cache_hit else self.iteration):
+            start = time.time()
+            start_events[i].record()
+            out = getattr(self, n.op)(n.target, args, kwargs)
+            end_events[i].record()
+            walltimes.append(time.time() - start)
 
+        if is_comm_op(n):
+            dist.barrier()
+
+        accelerator.synchronize()
+
+        if not cache_hit:
             device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)][self.warmup:])
             wall_time = statistics.mean(walltimes[self.warmup:]) * 1000
 
@@ -113,5 +134,6 @@ class ProfilingInterpreter(Interpreter):
                 dist.broadcast(vals_to_bcast, 0)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
+                self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"])
 
         return map_aggregate(out, lambda x: _to(x, torch.device("cpu")))

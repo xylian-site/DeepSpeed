@@ -1,10 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
+# This file was copied from PyTorch and modified for DeepSpeed.
+
 from typing import Tuple, List
 import operator
 
 import torch
 from torch.fx import GraphModule, Graph, Node
 from torch._functorch.partitioners import is_sym_node, _is_primal, _is_fwd_seed_offset, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules
-
 
 _recompute_ops = {torch.ops.aten.t.default}
 
@@ -27,31 +33,24 @@ def _find_recompute_nodes(graph: Graph, ds_param_node: Node) -> List[Node]:
 
 def get_wrapped_partitioner(param_indices: List[Tuple[int, int, torch.Size]]):
 
-    def partition_recompute_ds_params(
-        joint_module: GraphModule, _joint_inputs, *, num_fwd_outputs
-    ) -> Tuple[GraphModule, GraphModule]:
+    def partition_recompute_ds_params(joint_module: GraphModule, _joint_inputs, *,
+                                      num_fwd_outputs) -> Tuple[GraphModule, GraphModule]:
         """
-        This is basically the same as the default_partition function, but 
+        This is basically the same as the default_partition function, but
         it doesn't save the gathered params and values computed from them.
         """
 
         primal_inputs = list(filter(_is_primal, joint_module.graph.nodes))
         fwd_seed_offset_inputs = list(filter(_is_fwd_seed_offset, joint_module.graph.nodes))
         inputs = primal_inputs + fwd_seed_offset_inputs
-        fwd_outputs, bwd_outputs = _extract_fwd_bwd_outputs(
-            joint_module, num_fwd_outputs=num_fwd_outputs
-        )
-        forward_only_graph = _extract_graph_with_inputs_outputs(
-            joint_module.graph, inputs, fwd_outputs, "forward"
-        )
-        forward_node_names = {
-            node.name for node in forward_only_graph.nodes if node.op != "output"
-        }
+        fwd_outputs, bwd_outputs = _extract_fwd_bwd_outputs(joint_module, num_fwd_outputs=num_fwd_outputs)
+        forward_only_graph = _extract_graph_with_inputs_outputs(joint_module.graph, inputs, fwd_outputs, "forward")
+        forward_node_names = {node.name for node in forward_only_graph.nodes if node.op != "output"}
         saved_values = []
         saved_sym_nodes = []
 
         fwd_inputs = list(filter(_is_primal, forward_only_graph.nodes))
-        ds_param_inputs= [fwd_inputs[arg_idx] for arg_idx, _, _ in param_indices]
+        ds_param_inputs = [fwd_inputs[arg_idx] for arg_idx, _, _ in param_indices]
         ds_param_input_names = {node.name for node in ds_param_inputs}
 
         ds_param_recompute_nodes = set()
@@ -70,13 +69,9 @@ def get_wrapped_partitioner(param_indices: List[Tuple[int, int, torch.Size]]):
                 assert all(user.target == operator.getitem for user in users)
                 saved_values.extend(users)
             else:
-                backward_usages = [
-                    n for n in node.users if n.name not in forward_node_names
-                ]
+                backward_usages = [n for n in node.users if n.name not in forward_node_names]
 
-                if "tensor_meta" in node.meta and all(
-                    is_sym_node(n) for n in backward_usages
-                ):
+                if "tensor_meta" in node.meta and all(is_sym_node(n) for n in backward_usages):
                     # If we have a tensor in the forward, where only its sizes/strides are needed in the backward,
                     # and not the actual tensor data,
                     # then it will be a lot cheaper to save only the sizes/strides, and not the actual tensor.
@@ -86,7 +81,6 @@ def get_wrapped_partitioner(param_indices: List[Tuple[int, int, torch.Size]]):
                     # then we would be obligated to clone the input before saving it to appease autograd.
                     # (This is how we originally found this bug).
                     saved_sym_nodes.extend(backward_usages)
-
 
                     if node.name in ds_param_input_names:
                         saved_values.append(node)

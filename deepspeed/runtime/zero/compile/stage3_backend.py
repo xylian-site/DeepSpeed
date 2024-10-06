@@ -27,6 +27,7 @@ from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper
 from .tracer import ops_no_release, ops_no_wait
+from .partitioner import get_wrapped_partitioner
 
 import os
 
@@ -245,7 +246,7 @@ def make_stage3_backend(dump_graphs=False):
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd
-        aot_mod = aot_module_simplified(gm, real_inputs, fw_compiler=fw, bw_compiler=bw)
+        aot_mod = aot_module_simplified(gm, real_inputs, fw_compiler=fw, bw_compiler=bw, partition_fn=get_wrapped_partitioner(param_indices))
         aot_mod = torch._dynamo.optimize()(aot_mod)
 
         return aot_mod

@@ -64,6 +64,7 @@ class ProfilingInterpreter(Interpreter):
         self.warmup = warmup
         self.device = torch.device(get_accelerator().current_device())
         self.cache: dict[Tuple, Any] = {}
+        self.distributed = dist.is_initialized()
 
     def run(self, *args) -> Any:
         """Run the graph with profiling enabled.
@@ -110,6 +111,7 @@ class ProfilingInterpreter(Interpreter):
             n.meta["wall_time"] = wall_time
 
         if is_comm_op(n):
+            assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
             dist.barrier()
 
         walltimes = []
@@ -131,7 +133,8 @@ class ProfilingInterpreter(Interpreter):
 
             with unset_fake_temporarily():
                 vals_to_bcast = torch.tensor([device_time, wall_time], device=self.device)
-                dist.broadcast(vals_to_bcast, 0)
+                if self.distributed:
+                    dist.broadcast(vals_to_bcast, 0)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"])

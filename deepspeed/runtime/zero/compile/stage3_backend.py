@@ -9,7 +9,6 @@ from typing import List, Dict
 
 import torch
 from torch.fx import Node, Graph, GraphModule
-from torch.fx.node import map_aggregate
 from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
 import torch._dynamo
@@ -57,12 +56,12 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     output_node.replace_input_with(new_node, node)
 
 
-def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
+def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int, count: int):
     add_postprocess(graph,
                     node,
                     torch.ops.native_z3.release_param,
-                    extra_args=[graph_id, ds_id],
-                    name=f"release_ds_param_{release_node.target}_{ds_id}",
+                    extra_args=[graph_id, ds_id, count],
+                    name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
                     meta=_make_node_meta(node, ds_id, False))
 
 
@@ -119,10 +118,16 @@ def add_gather_and_release(graph_id: int, graph: Graph, param_manager: DSGraphPa
     for pn in param_nodes:
         add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
 
+    release_counts = defaultdict(int)
+    to_add = []
     for pn, nodes in last_user_nodes.items():
         for node in nodes:
             if node.target not in ops_no_release:
-                add_release(graph_id, graph, node, pn, param_manager.ds_ids[pn.name])
+                to_add.append((node, pn, param_manager.ds_ids[pn.name]))
+                release_counts[pn.name] += 1
+
+    for node, pn, ds_id in to_add:
+        add_release(graph_id, graph, node, pn, ds_id, release_counts[pn.name])
 
 
 def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],
@@ -210,22 +215,6 @@ def make_stage3_backend(dump_graphs=False):
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
             nonlocal offload_helper
-
-            def _materialize_fake(v, device=None):
-                from torch._subclasses.fake_tensor import is_fake
-
-                def convert(t):
-                    if is_fake(t):
-                        return torch.randn(t.shape,
-                                           dtype=t.dtype,
-                                           device=t.device if device is None else device,
-                                           layout=t.layout,
-                                           requires_grad=t.requires_grad,
-                                           pin_memory=t.is_pinned())
-                    return t
-
-                return map_aggregate(v, lambda x: convert(x))
-
             validated_inputs = []
             for in_node, in_val in zip(input_nodes, sample_inputs):
                 if offload_helper.has_value(in_node.name):

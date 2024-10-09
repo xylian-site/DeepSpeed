@@ -10,7 +10,7 @@ import operator
 
 import torch
 from torch.fx import GraphModule, Graph, Node
-from torch._functorch.partitioners import is_sym_node, _is_primal, _is_fwd_seed_offset, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules
+from torch._functorch.partitioners import is_sym_node, _is_primal, _is_fwd_seed_offset, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules, has_recomputable_ops, min_cut_rematerialization_partition
 
 _recompute_ops = {torch.ops.aten.t.default}
 
@@ -39,6 +39,8 @@ def get_wrapped_partitioner(param_indices: List[Tuple[int, int, torch.Size]]):
         This is basically the same as the default_partition function, but
         it doesn't save the gathered params and values computed from them.
         """
+        if has_recomputable_ops(joint_module):
+            return min_cut_rematerialization_partition(joint_module, _joint_inputs, num_fwd_outputs=num_fwd_outputs)
 
         primal_inputs = list(filter(_is_primal, joint_module.graph.nodes))
         fwd_seed_offset_inputs = list(filter(_is_fwd_seed_offset, joint_module.graph.nodes))

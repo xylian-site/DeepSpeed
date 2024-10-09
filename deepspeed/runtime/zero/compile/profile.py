@@ -137,7 +137,7 @@ class ProfilingInterpreter(Interpreter):
             with unset_fake_temporarily():
                 vals_to_bcast = torch.tensor([device_time, wall_time], device=self.device)
                 if self.distributed:
-                    dist.broadcast(vals_to_bcast, 0)
+                    dist.all_reduce(vals_to_bcast, dist.ReduceOp.AVG)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"])

@@ -597,18 +597,20 @@ void lazy_init_symm_memory()
 
 void enable_profiling(bool enable) { profile = enable; }
 
+void register_graph(long graph_id, const std::vector<long>& ds_ids)
+{
+    executors_[graph_id] = std::make_shared<CustomOpExecutor>(
+        process_group, param_registry, reduce_buckets, ds_ids, nccl_comm, comm_stream);
+}
+
 void register_graph_ops(long graph_id,
-                        const std::vector<long>& ds_ids,
                         const std::vector<std::string>& op_names,
                         const std::vector<long>& n_args)
 {
-    std::shared_ptr<CustomOpExecutor> executor = std::make_shared<CustomOpExecutor>(
-        process_group, param_registry, reduce_buckets, ds_ids, nccl_comm, comm_stream);
     assert(op_names.size() == n_args.size());
     for (int i = 0; i < op_names.size(); i++) {
-        executor->register_op_n_args(op_names[i], n_args[i], false);
+        executors_[graph_id]->register_op_n_args(op_names[i], n_args[i], false);
     }
-    executors_[graph_id] = executor;
 }
 
 void register_bwd_graph_ops(long graph_id,
@@ -668,12 +670,6 @@ void register_param(long ds_id,
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    if (profile) {
-        const DSParam& param = param_registry->getParam(ds_id);
-        const at::Tensor& ds_tensor = param.getDSTensor();
-        return torch::empty(param.getShape(), ds_tensor.options());
-    }
-
     if (use_symm_mem) {
         return executors_[graph_id]->allgather_param_symm_mem(param_tensor, ds_id, symm_mem);
     }
@@ -690,8 +686,7 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
 
 at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
 {
-    if (!profile) { return executors_[graph_id]->release_param(v, ds_id); }
-    return v;
+    return executors_[graph_id]->release_param(v, ds_id);
 }
 
 at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
@@ -720,7 +715,6 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
     if (!profile) { executors_[graph_id]->reduce_grad(grad_tensor, ds_id); }
-
     return at::Tensor();
 }
 
@@ -803,6 +797,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
     m.def("init", &n3z::init, "Set the process group");
     m.def("cleanup", &n3z::cleanup, "Cleanup the process group");
+    m.def("register_graph", &n3z::register_graph, "Register graph with a list of ds parameter ids");
     m.def("register_graph_ops",
           &n3z::register_graph_ops,
           "Register the number of arguments for an op");

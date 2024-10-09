@@ -25,7 +25,7 @@ from .fx import add_postprocess, add_args_process, get_output_node
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
-from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake
 from .tracer import ops_no_release, ops_no_wait
 from .partitioner import get_wrapped_partitioner
 
@@ -169,25 +169,28 @@ def make_stage3_backend(dump_graphs=False):
 
         def fw(gm, sample_inputs):
             param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
+            original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
 
             add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
                                    get_param_nodes(gm.graph, param_indices))
 
+            nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
             profiler = ProfilingInterpreter(nz3, gm)
             real_outputs = profiler.run(*real_inputs)
 
             nonlocal offload_helper
 
             output_node = get_output_node(gm.graph)
+            mod_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
+            output_name_map = {n2: n1 for n1, n2 in zip(original_output_names, mod_output_names)}
             for n, v in zip(output_node.args[0], real_outputs):
                 # Save intermediate values on CPU for backward
-                offload_helper.offload(n.name, v)
+                offload_helper.offload(output_name_map[n.name], v)
 
             gm.graph = list_schedule2(gm.graph)
 
-            ds_ids, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
-            nz3.register_graph_ops(graph_id, ds_ids, [n.name for n in ag_wait_nodes],
-                                   [len(n.args) for n in ag_wait_nodes])
+            _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
+            nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
             gc.collect()
@@ -228,7 +231,7 @@ def make_stage3_backend(dump_graphs=False):
                 if offload_helper.has_value(in_node.name):
                     validated_inputs.append(offload_helper.get_offloaded_value(in_node.name))
                 else:
-                    validated_inputs.append(_materialize_fake(in_val, device=torch.device("cpu")))
+                    validated_inputs.append(materialize_fake(in_val, device=get_accelerator().current_device()))
             validated_inputs = tuple(validated_inputs)
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)

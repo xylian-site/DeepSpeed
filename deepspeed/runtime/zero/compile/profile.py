@@ -92,10 +92,6 @@ class ProfilingInterpreter(Interpreter):
             n.meta["wall_time"] = 0.0
             return super().run_node(n)
 
-        accelerator = get_accelerator()
-        start_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
-        end_events = [accelerator.Event(enable_timing=True) for _ in range(self.iteration)]
-
         args, kwargs = self.fetch_args_kwargs_from_env(n)
         assert isinstance(args, tuple)
         assert isinstance(kwargs, dict)
@@ -114,8 +110,14 @@ class ProfilingInterpreter(Interpreter):
             assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
             dist.barrier()
 
+        run_only_once = cache_hit or n.target == torch.ops.native_z3.release_param
+        iteration = 1 if run_only_once else self.iteration
+        accelerator = get_accelerator()
+        start_events = [accelerator.Event(enable_timing=True) for _ in range(iteration)]
+        end_events = [accelerator.Event(enable_timing=True) for _ in range(iteration)]
+
         walltimes = []
-        for i in range(1 if cache_hit else self.iteration):
+        for i in range(iteration):
             start = time.time()
             start_events[i].record()
             out = getattr(self, n.op)(n.target, args, kwargs)
@@ -128,8 +130,9 @@ class ProfilingInterpreter(Interpreter):
         accelerator.synchronize()
 
         if not cache_hit:
-            device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)][self.warmup:])
-            wall_time = statistics.mean(walltimes[self.warmup:]) * 1000
+            warmup = 0 if run_only_once else self.warmup
+            device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)][warmup:])
+            wall_time = statistics.mean(walltimes[warmup:]) * 1000
 
             with unset_fake_temporarily():
                 vals_to_bcast = torch.tensor([device_time, wall_time], device=self.device)

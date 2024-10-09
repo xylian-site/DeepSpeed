@@ -96,3 +96,20 @@ class NodeValueOffloadHelper:
     def clear(self) -> None:
         self.env_values.clear()
         self.env_values_device_unchanged.clear()
+
+
+def materialize_fake(v, device=None):
+    from torch._subclasses.fake_tensor import is_fake
+
+    def convert(t):
+        if is_fake(t):
+            with unset_fake_temporarily():
+                return torch.randn(t.shape,
+                                   dtype=t.dtype,
+                                   device=t.device if device is None else device,
+                                   layout=t.layout,
+                                   requires_grad=t.requires_grad,
+                                   pin_memory=t.is_pinned())
+        return t
+
+    return map_aggregate(v, lambda x: convert(x))

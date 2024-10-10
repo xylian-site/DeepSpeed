@@ -3718,6 +3718,10 @@ class DeepSpeedEngine(Module):
             from deepspeed.ops.op_builder import NativeZ3Builder
             self.nz3 = NativeZ3Builder().load()
 
+            if self.optimizer is not None and hasattr(self.optimizer,
+                                                      '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
+                self.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
+                get_accelerator().empty_cache()
             self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), use_symmetric_memory)
 
             # Unset hooks

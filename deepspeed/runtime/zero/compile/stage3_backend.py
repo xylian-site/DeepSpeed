@@ -220,7 +220,9 @@ def make_stage3_backend(dump_graphs=False):
                 if offload_helper.has_value(in_node.name):
                     validated_inputs.append(offload_helper.get_offloaded_value(in_node.name))
                 else:
-                    validated_inputs.append(materialize_fake(in_val, device=get_accelerator().current_device()))
+                    # Here we materialize the fake value on CPU to reduce the peak memory
+                    # The values are moved to the device memory in the profiler
+                    validated_inputs.append(materialize_fake(in_val, device="cpu"))
             validated_inputs = tuple(validated_inputs)
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)

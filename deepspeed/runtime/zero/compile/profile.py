@@ -32,7 +32,7 @@ def _all_real_if_tensor(args):
 def _to(v, device):
     if torch.is_tensor(v):
         with unset_fake_temporarily():
-            return v.to(device).detach()
+            v.data = v.to(device)
     return v
 
 

@@ -330,39 +330,9 @@ public:
         }
     }
 
-    at::Tensor allgather_param(at::Tensor param_tensor, long ds_id)
-    {
-        const DSParam& param = param_registry_->getParam(ds_id);
-
-        if (param_registry_->hasGatheredParam(ds_id)) {
-            return param_registry_->getGatheredParam(ds_id);
-        }
-
-        const at::Tensor& ds_tensor = param.getDSTensor();
-        at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
-
-        ag_comp_done_events_[ds_id]->record();
-        ag_comp_done_events_[ds_id]->block(comm_stream_);
-        ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
-                                            output_buf.data_ptr(),
-                                            ds_tensor.numel(),
-                                            get_nccl_data_type(ds_tensor.scalar_type()),
-                                            nccl_comm_,
-                                            comm_stream_);
-
-        if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
-
-        ag_comm_done_events_[ds_id]->record(comm_stream_);
-
-        param_registry_->registerGatheredParam(ds_id, output_buf);
-
-        return output_buf;
-    }
-
-    at::Tensor allgather_param_symm_mem(
-        at::Tensor param_tensor,
-        long ds_id,
-        c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    at::Tensor allgather_param(at::Tensor param_tensor,
+                               long ds_id,
+                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
@@ -376,7 +346,16 @@ public:
         ag_comp_done_events_[ds_id]->record();
         ag_comp_done_events_[ds_id]->block(comm_stream_);
 
-        {
+        if (symm_mem == nullptr) {
+            ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
+                                                output_buf.data_ptr(),
+                                                ds_tensor.numel(),
+                                                get_nccl_data_type(ds_tensor.scalar_type()),
+                                                nccl_comm_,
+                                                comm_stream_);
+
+            if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
+        } else {
             at::cuda::CUDAStreamGuard guard(comm_stream_);
             int world_size = process_group_->getSize();
             int rank = process_group_->getRank();
@@ -578,7 +557,7 @@ private:
 static std::shared_ptr<DSParamRegistry> param_registry;
 static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors_;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
-c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem;
+c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
 static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t nccl_comm;
@@ -667,6 +646,7 @@ void cleanup()
 {
     ncclCommDestroy(nccl_comm);
     process_group = nullptr;
+    symm_mem = nullptr;
 }
 
 void register_param(long ds_id,
@@ -680,10 +660,7 @@ void register_param(long ds_id,
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    if (use_symm_mem) {
-        return executors_[graph_id]->allgather_param_symm_mem(param_tensor, ds_id, symm_mem);
-    }
-    return executors_[graph_id]->allgather_param(param_tensor, ds_id);
+    return executors_[graph_id]->allgather_param(param_tensor, ds_id, symm_mem);
 }
 
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id)

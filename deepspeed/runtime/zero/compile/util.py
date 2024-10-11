@@ -104,12 +104,19 @@ def materialize_fake(v, device=None):
     def convert(t):
         if is_fake(t):
             with unset_fake_temporarily():
-                return torch.randn(t.shape,
-                                   dtype=t.dtype,
-                                   device=t.device if device is None else device,
-                                   layout=t.layout,
-                                   requires_grad=t.requires_grad,
-                                   pin_memory=t.is_pinned())
+                if t.is_floating_point():
+                    return torch.randn(t.shape,
+                                       dtype=t.dtype,
+                                       device=t.device if device is None else device,
+                                       layout=t.layout,
+                                       requires_grad=t.requires_grad,
+                                       pin_memory=t.is_pinned())
+                else:
+                    return torch.zeros(t.shape,
+                                       dtype=t.dtype,
+                                       device=t.device if device is None else device,
+                                       requires_grad=t.requires_grad)
+
         return t
 
     return map_aggregate(v, lambda x: convert(x))

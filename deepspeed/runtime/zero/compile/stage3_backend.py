@@ -11,6 +11,7 @@ import torch
 from torch.fx import Node, Graph, GraphModule
 from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
+import torch.utils._pytree as pytree
 import torch._dynamo
 from torch._functorch.aot_autograd import aot_module_simplified
 
@@ -164,6 +165,7 @@ def make_stage3_backend(dump_graphs=False):
         graph_id = id(gm.graph)
 
         offload_helper = NodeValueOffloadHelper(torch.device(get_accelerator().current_device()))
+        needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
@@ -183,14 +185,14 @@ def make_stage3_backend(dump_graphs=False):
             profiler = ProfilingInterpreter(nz3, gm)
             real_outputs = profiler.run(*real_inputs)
 
-            nonlocal offload_helper
-
-            output_node = get_output_node(gm.graph)
-            mod_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
-            output_name_map = {n2: n1 for n1, n2 in zip(original_output_names, mod_output_names)}
-            for n, v in zip(output_node.args[0], real_outputs):
-                # Save intermediate values on CPU for backward
-                offload_helper.offload(output_name_map[n.name], v)
+            if needs_backward:
+                nonlocal offload_helper
+                output_node = get_output_node(gm.graph)
+                mod_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
+                output_name_map = {n2: n1 for n1, n2 in zip(original_output_names, mod_output_names)}
+                for n, v in zip(output_node.args[0], real_outputs):
+                    # Save intermediate values on CPU for backward
+                    offload_helper.offload(output_name_map[n.name], v)
 
             gm.graph = list_schedule2(gm.graph)
 
@@ -227,7 +229,6 @@ def make_stage3_backend(dump_graphs=False):
 
             ProfilingInterpreter(nz3, gm).run(*validated_inputs)
 
-            # Not all graph calls bw(), so offload_helper might not be cleared
             offload_helper.clear()
             gc.collect()
             get_accelerator().empty_cache()

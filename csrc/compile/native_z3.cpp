@@ -663,6 +663,13 @@ at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
     return executors_[graph_id]->allgather_param(param_tensor, ds_id, symm_mem);
 }
 
+// for profiling
+void invalidate_gathered_param(long ds_id)
+{
+    param_registry->unregisterGatheredParam(ds_id);
+    param_registry->registerGatheredParam(ds_id, at::Tensor());
+}
+
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     const DSParam& param = param_registry->getParam(ds_id);
@@ -795,4 +802,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("end_forward", &n3z::end_forward, "End forward pass");
     m.def("start_backward", &n3z::start_backward, "Start backward pass");
     m.def("end_backward", &n3z::end_backward, "End backward pass");
+    m.def(
+        "invalidate_gathered_param", &n3z::invalidate_gathered_param, "Invalidate gathered param");
 }

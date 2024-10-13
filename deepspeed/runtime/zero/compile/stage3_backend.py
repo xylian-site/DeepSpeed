@@ -192,7 +192,9 @@ def make_stage3_backend(dump_graphs=False):
                 output_name_map = {n2: n1 for n1, n2 in zip(original_output_names, mod_output_names)}
                 for n, v in zip(output_node.args[0], real_outputs):
                     # Save intermediate values on CPU for backward
-                    offload_helper.offload(output_name_map[n.name], v)
+                    offload_helper.save(output_name_map[n.name], v, not hasattr(v, 'ds_id'))
+                    load_v = offload_helper.get_offloaded_value(output_name_map[n.name])
+
 
             gm.graph = list_schedule2(gm.graph)
 

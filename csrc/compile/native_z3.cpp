@@ -125,7 +125,11 @@ public:
         gathered_params_.emplace(ds_id, ds_tensor);
     }
 
-    void unregisterGatheredParam(long ds_id) { gathered_params_.erase(ds_id); }
+    void unregisterGatheredParam(long ds_id)
+    {
+        assert(hasKey(gathered_params_, ds_id));
+        gathered_params_.erase(ds_id);
+    }
 
     const std::unordered_map<long, DSParam>& getParams() const { return params_; }
 
@@ -391,9 +395,12 @@ public:
 
         if (!param.isPersistent() && release_counter_[ds_id] == 0) {
             at::Tensor gathered_param = param_registry_->getGatheredParam(ds_id);
-            const auto options = gathered_param.options();
-            at::Tensor empty_buffer = torch::empty({0}, options);
-            gathered_param.set_data(empty_buffer);
+
+            if (gathered_param.defined()) {  // gathered param is undefined while profiling
+                const auto options = gathered_param.options();
+                at::Tensor empty_buffer = torch::empty({0}, options);
+                gathered_param.set_data(empty_buffer);
+            }
 
             param_registry_->unregisterGatheredParam(ds_id);
         }
@@ -670,6 +677,15 @@ void invalidate_gathered_param(long ds_id)
     param_registry->registerGatheredParam(ds_id, at::Tensor());
 }
 
+void clear_all_gathered_params()
+{
+    for (const auto& it : param_registry->getParams()) {
+        if (param_registry->hasGatheredParam(it.first)) {
+            param_registry->unregisterGatheredParam(it.first);
+        }
+    }
+}
+
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     const DSParam& param = param_registry->getParam(ds_id);
@@ -804,4 +820,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("end_backward", &n3z::end_backward, "End backward pass");
     m.def(
         "invalidate_gathered_param", &n3z::invalidate_gathered_param, "Invalidate gathered param");
+    m.def(
+        "clear_all_gathered_params", &n3z::clear_all_gathered_params, "Clear all gathered params");
 }

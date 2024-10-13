@@ -7,7 +7,6 @@ import time
 import types
 from typing import Any, Tuple
 import statistics
-from dataclasses import dataclass
 
 import torch
 from torch.utils._pytree import tree_all
@@ -50,39 +49,6 @@ def _args_to_key(v):
     return map_aggregate(v, _tensor_to_key)
 
 
-@dataclass
-class AllGatheredParamWrapperValue:
-    sliced_param: torch.Tensor
-    meta_param: torch.Tensor
-    device: torch.device
-    rank: int
-    world_size: int
-    padded_size: int
-
-
-def _create_allgathered_param_wrapper(param: torch.Tensor, rank: int, world_size: int) -> AllGatheredParamWrapperValue:
-    # Create a tensor with the same size as the original tensor
-    meta_param = param.to("meta")
-
-    padded_size = (param.numel() + world_size - 1) // world_size * world_size
-    slice_size = padded_size // world_size
-    start_idx = min(rank * slice_size, param.numel())
-    end_idx = min((rank + 1) * slice_size, param.numel())
-    sliced_param = torch.empty(slice_size, dtype=param.dtype, device=param.device)
-    if start_idx < end_idx:
-        sliced_param.copy_(param.view(-1).narrow(0, start_idx, end_idx - start_idx))
-
-    return AllGatheredParamWrapperValue(sliced_param, meta_param, param.device, rank, world_size, padded_size)
-
-
-def _rebuild_param(allgathered_param: AllGatheredParamWrapperValue) -> torch.Tensor:
-    buffer = torch.empty([allgathered_param.padded_size],
-                         dtype=allgathered_param.sliced_param.dtype,
-                         device=allgathered_param.device)
-    dist.all_gather_into_tensor(buffer, allgathered_param.sliced_param)
-    return buffer.narrow(0, 0, allgathered_param.meta_param.numel()).view(allgathered_param.meta_param.shape)
-
-
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
@@ -116,6 +82,7 @@ class ProfilingInterpreter(Interpreter):
         except Exception as e:
             print(f"Profiling error {e}")
         finally:
+            self.nz3.clear_all_gathered_params()
             self.nz3.enable_profiling(False)
         return return_val
 
@@ -131,8 +98,8 @@ class ProfilingInterpreter(Interpreter):
         assert isinstance(kwargs, dict)
 
         def rebuild_param_if_necessary(v):
-            if isinstance(v, AllGatheredParamWrapperValue):
-                return _rebuild_param(v)
+            if hasattr(v, "ds_id"):
+                v.all_gather(param_list=[v])
             return v
 
         args = map_aggregate(args, lambda x: rebuild_param_if_necessary(x))
@@ -170,6 +137,13 @@ class ProfilingInterpreter(Interpreter):
 
         accelerator.synchronize()
 
+        def partition_param_if_necessary(v):
+            if hasattr(v, "ds_id") and not v.ds_persist:
+                v.partition(param_list=[v], has_been_updated=False)
+            return v
+
+        args = map_aggregate(args, lambda x: partition_param_if_necessary(x))
+
         if not cache_hit:
             warmup = 0 if run_only_once else self.warmup
             device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)][warmup:])
@@ -184,7 +158,9 @@ class ProfilingInterpreter(Interpreter):
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"])
 
         if n.target == torch.ops.native_z3.allgather_param:
-            self.nz3.invalidate_gathered_param(args[1])
-            out = _create_allgathered_param_wrapper(out, dist.get_rank(), dist.get_world_size())
+            out = args[0]
+            assert hasattr(out, "ds_id")
+            if not out.ds_persist:
+                self.nz3.invalidate_gathered_param(args[2])
 
         return out

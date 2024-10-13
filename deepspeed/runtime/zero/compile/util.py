@@ -81,8 +81,8 @@ class NodeValueOffloadHelper:
             return v.to(self.device).detach()
         return v
 
-    def offload(self, name: str, v: Argument) -> None:
-        self.env_values[name] = map_aggregate(v, lambda x: self._to_cpu(x))
+    def save(self, name: str, v: Argument, offload) -> None:
+        self.env_values[name] = map_aggregate(v, lambda x: self._to_cpu(x) if offload else x)
 
     def load(self, name: str) -> Argument:
         return map_aggregate(self.env_values[name], lambda x: self._from_cpu(x))

@@ -154,7 +154,7 @@ def try_schedule_with_new_allgather(scheduled: List[Node], unscheduled: List[Nod
     return _do_schedule_without_allgather(tmp_scheduled, tmp_unscheduled, edges, non_ag_runnable)
 
 
-def list_schedule2(graph: Graph) -> Graph:
+def list_schedule2(graph: Graph, available_mem: int, output_size: int) -> Graph:
 
     scheduled, unscheduled, edges, mem_table = init_schedule(graph)
     tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled, edges)

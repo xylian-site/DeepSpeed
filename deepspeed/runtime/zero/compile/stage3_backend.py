@@ -186,8 +186,8 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
             profiler = ProfilingInterpreter(nz3, gm)
             real_outputs = profiler.run(*real_inputs)
 
+            total_activation_size = 0
             if needs_backward:
-                total_activation_size = 0
                 nonlocal offload_helper
                 output_node = get_output_node(gm.graph)
                 mod_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
@@ -206,14 +206,14 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                             size = v.numel() * v.element_size()
                             ops_with_mem_str.append((
                                 size,
-                                f" Output {n.name} {size / total_activation_size * 100:.1f}% {v.shape} {v.dtype} {v.device} {size / 1024 / 1024:.2f} MB"
+                                f" fw output {n.name} {size / total_activation_size * 100:.1f}% {v.shape} {v.dtype} {v.device} {size / 1024 / 1024:.2f} MB"
                             ))
                         else:
-                            ops_with_mem_str.append((0, f" Output {n.name} {v}"))
+                            ops_with_mem_str.append((0, f" fw output {n.name} {v}"))
                     ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
                     print("\n".join([x[1] for x in ops_with_mem_str]))
 
-            gm.graph = list_schedule2(gm.graph)
+            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), total_activation_size)
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
             nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
@@ -246,13 +246,30 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                     validated_inputs.append(materialize_fake(in_val, device="cpu"))
             validated_inputs = tuple(validated_inputs)
 
-            ProfilingInterpreter(nz3, gm).run(*validated_inputs)
+            real_outputs = ProfilingInterpreter(nz3, gm).run(*validated_inputs)
+
+            output_size = sum(v.numel() * v.element_size() for v in real_outputs if torch.is_tensor(v))
+            if rank == 0 and debug_log:
+                print(f"Total backward grad size graph_id={graph_id} {output_size / 1024 / 1024:.2f} MB")
+                ops_with_mem_str = []
+                output_node = get_output_node(gm.graph)
+                for n, v in zip(output_node.args[0], real_outputs):
+                    if torch.is_tensor(v):
+                        size = v.numel() * v.element_size()
+                        ops_with_mem_str.append((
+                            size,
+                            f" bw output {n.name} {size / output_size * 100:.1f}% {v.shape} {v.dtype} {v.device} {size / 1024 / 1024:.2f} MB"
+                        ))
+                    elif v is not None:
+                        ops_with_mem_str.append((0, f" bw output {n.name} {v}"))
+                ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
+                print("\n".join([x[1] for x in ops_with_mem_str]))
 
             offload_helper.clear()
             gc.collect()
             get_accelerator().empty_cache()
 
-            gm.graph = list_schedule2(gm.graph)
+            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size)
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)

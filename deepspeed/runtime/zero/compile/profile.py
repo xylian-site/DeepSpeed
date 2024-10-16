@@ -5,7 +5,7 @@
 
 import time
 import types
-from typing import Any, Tuple
+from typing import Any, Tuple, Dict
 import statistics
 
 import torch
@@ -63,8 +63,9 @@ class ProfilingInterpreter(Interpreter):
         self.iteration = iteration
         self.warmup = warmup
         self.device = torch.device(get_accelerator().current_device())
-        self.cache: dict[Tuple, Any] = {}
+        self.cache: Dict[Tuple, Any] = {}
         self.distributed = dist.is_initialized()
+        self.allgather_mem: Dict[int, int] = {}
 
     def run(self, *args) -> Any:
         """Run the graph with profiling enabled.
@@ -91,6 +92,7 @@ class ProfilingInterpreter(Interpreter):
         if n.op in {"placeholder", "output"}:
             n.meta["device_time"] = 0.0
             n.meta["wall_time"] = 0.0
+            n.meta["memory"] = 0
             return super().run_node(n)
 
         args, kwargs = self.fetch_args_kwargs_from_env(n)
@@ -110,9 +112,10 @@ class ProfilingInterpreter(Interpreter):
         cache_key = (n.target, _args_to_key(args), _args_to_key(kwargs))
         cache_hit = cache_key in self.cache
         if cache_hit:
-            device_time, wall_time = self.cache[cache_key]
+            device_time, wall_time, mem = self.cache[cache_key]
             n.meta["device_time"] = device_time
             n.meta["wall_time"] = wall_time
+            n.meta["memory"] = mem
 
         if is_comm_op(n):
             assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
@@ -123,6 +126,8 @@ class ProfilingInterpreter(Interpreter):
         accelerator = get_accelerator()
         start_events = [accelerator.Event(enable_timing=True) for _ in range(iteration)]
         end_events = [accelerator.Event(enable_timing=True) for _ in range(iteration)]
+
+        alloc_mem = get_accelerator().memory_allocated()
 
         walltimes = []
         for i in range(iteration):
@@ -136,6 +141,7 @@ class ProfilingInterpreter(Interpreter):
             dist.barrier()
 
         accelerator.synchronize()
+        memory_increase = get_accelerator().memory_allocated() - alloc_mem
 
         def partition_param_if_necessary(v):
             if hasattr(v, "ds_id") and not v.ds_persist:
@@ -150,17 +156,25 @@ class ProfilingInterpreter(Interpreter):
             wall_time = statistics.mean(walltimes[warmup:]) * 1000
 
             with unset_fake_temporarily():
-                vals_to_bcast = torch.tensor([device_time, wall_time], device=self.device)
+                vals_to_bcast = torch.tensor([device_time, wall_time, memory_increase], device=self.device)
                 if self.distributed:
                     dist.all_reduce(vals_to_bcast, dist.ReduceOp.AVG)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
-                self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"])
+                n.meta["memory"] = vals_to_bcast[2].item()
+                self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"], n.meta["memory"])
+
+            if n.target == torch.ops.native_z3.release_param:
+                n.meta["memory"] = -self.allgather_mem.get(args[2], 0)
+
+            # if dist.get_rank() == 0:
+            #     print(f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms {n.meta['memory'] / 1024 / 1024:.2f}MB")
 
         if n.target == torch.ops.native_z3.allgather_param:
             out = args[0]
             assert hasattr(out, "ds_id")
             if not out.ds_persist:
                 self.nz3.invalidate_gathered_param(args[2])
+            self.allgather_mem[out.ds_id] = n.meta["memory"]
 
         return out

@@ -175,9 +175,9 @@ class ProfilingInterpreter(Interpreter):
                     dist.all_reduce(vals_to_bcast, dist.ReduceOp.AVG)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
-                n.meta["alloc_mem"] = vals_to_bcast[2].item()
-                n.meta["max_mem"] = vals_to_bcast[3].item()
-                n.meta["tensor_size"] = vals_to_bcast[4].item()
+                n.meta["alloc_mem"] = int(vals_to_bcast[2].item())
+                n.meta["max_mem"] = int(vals_to_bcast[3].item())
+                n.meta["tensor_size"] = int(vals_to_bcast[4].item())
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"], n.meta["alloc_mem"],
                                          n.meta["max_mem"], n.meta["tensor_size"])
 
@@ -186,7 +186,7 @@ class ProfilingInterpreter(Interpreter):
 
             if dist.get_rank() == 0 and self.debug_log:
                 print(
-                    f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms alloc_mem={n.meta['alloc_mem'] / 1024 / 1024:.2f}MB max_mem={n.meta['max_mem'] / 1024 / 1024:.2f}MB tensor_size={n.meta['tensor_size'] / 1024 / 1024:.2f}MB"
+                    f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms alloc_mem={n.meta['alloc_mem'] / 1024 / 1024:.2f}MB max_mem={n.meta['max_mem'] / 1024 / 1024:.2f}MB tensor_size={n.meta['tensor_size']}"
                 )
 
         if n.target == torch.ops.native_z3.allgather_param:

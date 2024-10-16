@@ -45,15 +45,17 @@ def dtype_to_elem_size(dtype: torch.dtype) -> int:
 
 
 def tensor_meta_size(tensor_meta) -> int:
-    numel = functools.reduce(operator.mul, tensor_meta.shape)
+    numel = 1 if len(tensor_meta.shape) == 0 else functools.reduce(operator.mul, tensor_meta.shape)
 
     dtype = tensor_meta.dtype
     if dtype == torch.float32:
         elem_size = 4
-    elif dtype == torch.float64:
+    elif dtype == torch.float64 or dtype == torch.int64:
         elem_size = 8
     elif dtype == torch.float16 or dtype == torch.bfloat16:
         elem_size = 2
+    elif dtype == torch.bool:
+        elem_size = 1
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 

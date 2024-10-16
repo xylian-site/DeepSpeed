@@ -154,7 +154,38 @@ def try_schedule_with_new_allgather(scheduled: List[Node], unscheduled: List[Nod
     return _do_schedule_without_allgather(tmp_scheduled, tmp_unscheduled, edges, non_ag_runnable)
 
 
-def list_schedule2(graph: Graph, available_mem: int, output_size: int) -> Graph:
+def count_inflight_values(graph: Graph):
+
+    node_to_last_use: Dict[Node, Node] = {}
+    user_to_last_uses: Dict[Node, List[Node]] = {}
+
+    def register_last_uses(n: Node, user: Node):
+        if n not in node_to_last_use:
+            node_to_last_use[n] = user
+            user_to_last_uses.setdefault(user, []).append(n)
+
+    from torch.fx.node import map_arg
+    for node in reversed(graph.nodes):
+        map_arg(node.args, lambda n: register_last_uses(n, node))
+        map_arg(node.kwargs, lambda n: register_last_uses(n, node))
+
+    max_inflight_size = 0
+    inflight_values = set()
+    for node in graph.nodes:
+        inflight_values.add(node)
+        if node in user_to_last_uses:
+            for to_delete in user_to_last_uses[node]:
+                inflight_values.remove(to_delete)
+
+        inflight_size = sum(n.meta["tensor_size"] for n in inflight_values)
+        print(
+            f"Node: {node.name} users: {list(node.users.keys())} node_to_last_use: {node_to_last_use[node] if node in node_to_last_use else 'NA'} user_to_last_uses: {user_to_last_uses[node] if node in user_to_last_uses else 'NA'} inflight_values: {inflight_values} inflight_size: {inflight_size}"
+        )
+        max_inflight_size = max(max_inflight_size, inflight_size)
+    print(f"Max inflight size: {max_inflight_size}")
+
+
+def list_schedule2(graph: Graph, available_mem: int, output_size: int, debug_log: bool) -> Graph:
 
     scheduled, unscheduled, edges, mem_table = init_schedule(graph)
     tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled, edges)
@@ -189,4 +220,7 @@ def list_schedule2(graph: Graph, available_mem: int, output_size: int) -> Graph:
             tmp_scheduled.append(n)
             tmp_unscheduled.remove(n)
 
-    return make_graph_from_schedule(tmp_scheduled)
+    ret = make_graph_from_schedule(tmp_scheduled)
+    if debug_log:
+        count_inflight_values(ret)
+    return ret

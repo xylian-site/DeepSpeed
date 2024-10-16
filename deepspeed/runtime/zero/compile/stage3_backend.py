@@ -183,7 +183,7 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                                    get_param_nodes(gm.graph, param_indices))
 
             nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
-            profiler = ProfilingInterpreter(nz3, gm)
+            profiler = ProfilingInterpreter(nz3, gm, debug_log=debug_log)
             real_outputs = profiler.run(*real_inputs)
 
             total_activation_size = 0

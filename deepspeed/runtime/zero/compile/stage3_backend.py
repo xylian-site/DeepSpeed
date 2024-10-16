@@ -200,6 +200,18 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                         total_activation_size += v.numel() * v.element_size()
                 if rank == 0 and debug_log:
                     print(f"Total activation size graph_id={graph_id} {total_activation_size / 1024 / 1024:.2f} MB")
+                    ops_with_mem_str = []
+                    for n, v in zip(output_node.args[0], real_outputs):
+                        if torch.is_tensor(v):
+                            size = v.numel() * v.element_size()
+                            ops_with_mem_str.append((
+                                size,
+                                f" Output {n.name} {size / total_activation_size * 100:.1f}% {v.shape} {v.dtype} {v.device} {size / 1024 / 1024:.2f} MB"
+                            ))
+                        else:
+                            ops_with_mem_str.append((0, f" Output {n.name} {v}"))
+                    ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
+                    print("\n".join([x[1] for x in ops_with_mem_str]))
 
             gm.graph = list_schedule2(gm.graph)
 

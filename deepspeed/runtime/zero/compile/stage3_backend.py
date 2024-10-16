@@ -157,9 +157,10 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
         graph_counts[name] += 1
 
 
-def make_stage3_backend(dump_graphs=False):
+def make_stage3_backend(dump_graphs=False, debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
+    rank = dist.get_rank()
 
     def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
@@ -186,6 +187,7 @@ def make_stage3_backend(dump_graphs=False):
             real_outputs = profiler.run(*real_inputs)
 
             if needs_backward:
+                total_activation_size = 0
                 nonlocal offload_helper
                 output_node = get_output_node(gm.graph)
                 mod_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
@@ -194,6 +196,10 @@ def make_stage3_backend(dump_graphs=False):
                     # Save intermediate values on CPU for backward
                     # We don't move ds parameters
                     offload_helper.save(output_name_map[n.name], v, not hasattr(v, 'ds_id'))
+                    if torch.is_tensor(v):
+                        total_activation_size += v.numel() * v.element_size()
+                if rank == 0 and debug_log:
+                    print(f"Total activation size graph_id={graph_id} {total_activation_size / 1024 / 1024:.2f} MB")
 
             gm.graph = list_schedule2(gm.graph)
 

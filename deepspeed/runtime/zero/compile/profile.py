@@ -9,7 +9,7 @@ from typing import Any, Tuple, Dict
 import statistics
 
 import torch
-from torch.utils._pytree import tree_all
+from torch.utils._pytree import tree_all, tree_leaves
 from torch.fx import GraphModule, Interpreter
 from torch.fx.node import map_aggregate
 
@@ -47,6 +47,10 @@ def _args_to_key(v):
         return str(v)
 
     return map_aggregate(v, _tensor_to_key)
+
+
+def _node_size(out):
+    return sum([v.element_size() * v.numel() for v in tree_leaves(out) if torch.is_tensor(v)])
 
 
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
@@ -95,6 +99,7 @@ class ProfilingInterpreter(Interpreter):
             n.meta["wall_time"] = 0.0
             n.meta["memory"] = 0
             n.meta["max_memory"] = 0
+            n.meta["tensor_size"] = _node_size(n)
             return super().run_node(n)
 
         args, kwargs = self.fetch_args_kwargs_from_env(n)
@@ -114,11 +119,12 @@ class ProfilingInterpreter(Interpreter):
         cache_key = (n.target, _args_to_key(args), _args_to_key(kwargs))
         cache_hit = cache_key in self.cache
         if cache_hit:
-            device_time, wall_time, alloc_mem, max_mem = self.cache[cache_key]
+            device_time, wall_time, alloc_mem, max_mem, tensor_size = self.cache[cache_key]
             n.meta["device_time"] = device_time
             n.meta["wall_time"] = wall_time
             n.meta["alloc_memory"] = alloc_mem
             n.meta["max_memory"] = max_mem
+            n.meta["tensor_size"] = tensor_size
 
         if is_comm_op(n):
             assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
@@ -148,6 +154,7 @@ class ProfilingInterpreter(Interpreter):
         accelerator.synchronize()
         alloc_mem = get_accelerator().memory_allocated() - alloc_mem_start
         max_memory = get_accelerator().max_memory_allocated() - max_mem_start
+        tensor_size = _node_size(out)
 
         def partition_param_if_necessary(v):
             if hasattr(v, "ds_id") and not v.ds_persist:
@@ -162,22 +169,24 @@ class ProfilingInterpreter(Interpreter):
             wall_time = statistics.mean(walltimes[warmup:]) * 1000
 
             with unset_fake_temporarily():
-                vals_to_bcast = torch.tensor([device_time, wall_time, alloc_mem, max_memory], device=self.device)
+                vals_to_bcast = torch.tensor([device_time, wall_time, alloc_mem, max_memory, tensor_size],
+                                             device=self.device)
                 if self.distributed:
                     dist.all_reduce(vals_to_bcast, dist.ReduceOp.AVG)
                 n.meta["device_time"] = vals_to_bcast[0].item()
                 n.meta["wall_time"] = vals_to_bcast[1].item()
                 n.meta["alloc_mem"] = vals_to_bcast[2].item()
                 n.meta["max_mem"] = vals_to_bcast[3].item()
+                n.meta["tensor_size"] = vals_to_bcast[4].item()
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"], n.meta["alloc_mem"],
-                                         n.meta["max_mem"])
+                                         n.meta["max_mem"], n.meta["tensor_size"])
 
             if n.target == torch.ops.native_z3.release_param:
                 n.meta["alloc_mem"] = -self.allgather_mem.get(args[2], 0)
 
             if dist.get_rank() == 0 and self.debug_log:
                 print(
-                    f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms alloc_mem={n.meta['alloc_mem'] / 1024 / 1024:.2f}MB max_mem={n.meta['max_mem'] / 1024 / 1024:.2f}MB"
+                    f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms alloc_mem={n.meta['alloc_mem'] / 1024 / 1024:.2f}MB max_mem={n.meta['max_mem'] / 1024 / 1024:.2f}MB tensor_size={n.meta['tensor_size'] / 1024 / 1024:.2f}MB"
                 )
 
         if n.target == torch.ops.native_z3.allgather_param:

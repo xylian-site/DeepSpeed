@@ -25,7 +25,7 @@ from .fx import add_postprocess, add_args_process, get_output_node
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
-from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values
 from .tracer import ops_no_release, ops_no_wait
 from .partitioner import get_wrapped_partitioner
 
@@ -157,7 +157,7 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
         graph_counts[name] += 1
 
 
-def make_stage3_backend(dump_graphs=False, debug_log=False):
+def make_stage3_backend(dump_graphs=False, debug_log=True):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
@@ -176,6 +176,10 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
             param_indices = [(i, param.ds_id, param.ds_shape) for i, (n, param) in enumerate(gm.named_parameters())]
 
         def fw(gm, sample_inputs):
+
+            if rank == 0 and dump_graph:
+                print(f"Initial graph graph_id={graph_id} {gm.graph}")
+
             param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
             original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
 
@@ -183,7 +187,7 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                                    get_param_nodes(gm.graph, param_indices))
 
             nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
-            profiler = ProfilingInterpreter(nz3, gm, debug_log=debug_log)
+            profiler = ProfilingInterpreter(nz3, gm, debug_log=False)
             real_outputs = profiler.run(*real_inputs)
 
             total_activation_size = 0
@@ -213,10 +217,23 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                     ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
                     print("\n".join([x[1] for x in ops_with_mem_str]))
 
-            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), total_activation_size)
+            if rank == 0 and dump_graph:
+                print(f"Before scheduling graph graph_id={graph_id} {gm.graph}")
+
+            gm.graph = list_schedule2(gm.graph,
+                                      get_accelerator().available_memory(),
+                                      total_activation_size,
+                                      debug_log=debug_log)
+
+            if rank == 0 and debug_log:
+                count_inflight_values(gm.graph, f"fwd_{graph_id}_inflight_values.csv")
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
             nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
+
+            if rank == 0 and dump_graph:
+                print(f"After scheduling graph_id={graph_id} {gm.graph}")
+
             dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
 
             gc.collect()
@@ -246,7 +263,7 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                     validated_inputs.append(materialize_fake(in_val, device="cpu"))
             validated_inputs = tuple(validated_inputs)
 
-            real_outputs = ProfilingInterpreter(nz3, gm).run(*validated_inputs)
+            real_outputs = ProfilingInterpreter(nz3, gm, debug_log=False).run(*validated_inputs)
 
             output_size = sum(v.numel() * v.element_size() for v in real_outputs if torch.is_tensor(v))
             if rank == 0 and debug_log:
@@ -269,7 +286,11 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
             gc.collect()
             get_accelerator().empty_cache()
 
-            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size)
+            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
+
+            if rank == 0 and debug_log:
+                count_inflight_values(gm.graph, f"bwd_{graph_id}_inflight_values.csv")
+
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)

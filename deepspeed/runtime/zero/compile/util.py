@@ -122,3 +122,78 @@ def materialize_fake(v, device=None):
         return t
 
     return map_aggregate(v, lambda x: convert(x))
+
+
+def count_inflight_values(graph: Graph, file_path: str):
+
+    node_to_last_use: Dict[Node, Node] = {}
+    user_to_last_uses: Dict[Node, List[Node]] = {}
+
+    no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view, torch.ops.aten.reshape, torch.ops.aten.flatten}
+
+    def register_last_uses(n: Node, user: Node):
+        if n not in node_to_last_use:
+            if user.target in no_copy_ops:
+                user = node_to_last_use[user]
+
+            node_to_last_use[n] = user
+            user_to_last_uses.setdefault(user, []).append(n)
+
+    from torch.fx.node import map_arg
+    for node in reversed(graph.nodes):
+        map_arg(node.args, lambda n: register_last_uses(n, node))
+        map_arg(node.kwargs, lambda n: register_last_uses(n, node))
+
+    for node in reversed(graph.nodes):
+        if node.target in no_copy_ops:
+            node.meta["tensor_mem"] = 0
+        else:
+            node.meta["tensor_mem"] = node.meta["tensor_size"]
+
+    max_inflight_size = 0
+    inflight_values = set()
+
+    # Output csv.
+    csv_filename = file_path
+    csv_data = []
+    header = [
+        'Node', 'tensor_mem', 'inflight_size', 'inflight_size_in_output', 'args', 'users', 'node_to_last_use',
+        'user_to_last_uses', 'inflight_values'
+    ]
+    csv_data.append(header)
+
+    from .fx import get_output_node
+    output_node = get_output_node(graph)
+    values_in_output = set([n for n in output_node.args[0] if isinstance(n, Node)])
+
+    for node in graph.nodes:
+        inflight_values.add(node)
+        if node in user_to_last_uses:
+            for to_delete in user_to_last_uses[node]:
+                inflight_values.remove(to_delete)
+
+        inflight_size = sum(n.meta["tensor_mem"] for n in inflight_values)
+        inflight_size_in_output = sum(n.meta["tensor_mem"] for n in inflight_values if n in values_in_output)
+
+        row = [
+            node.name, node.meta["tensor_mem"], inflight_size, inflight_size_in_output,
+            [a.name for a in node.args if isinstance(a, Node)],
+            list(node.users.keys()), node_to_last_use[node] if node in node_to_last_use else 'NA',
+            user_to_last_uses[node] if node in user_to_last_uses else 'NA',
+            list(inflight_values)
+        ]
+        csv_data.append(row)
+
+        # print(
+        #     f"Node: {node.name} users: {list(node.users.keys())} node_to_last_use: {node_to_last_use[node] if node in node_to_last_use else 'NA'} user_to_last_uses: {user_to_last_uses[node] if node in user_to_last_uses else 'NA'} inflight_values: {inflight_values} inflight_size: {inflight_size}"
+        # )
+        max_inflight_size = max(max_inflight_size, inflight_size)
+    print(f"Max inflight size: {max_inflight_size}")
+
+    import csv
+    with open(csv_filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerows(csv_data)
+
+    print(f"Max inflight size: {max_inflight_size}")
+    print(f"Data successfully written to {csv_filename}")

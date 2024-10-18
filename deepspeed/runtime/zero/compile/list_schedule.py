@@ -13,27 +13,6 @@ from torch.utils._pytree import tree_iter
 from .util import tensor_meta_size
 
 
-def init_schedule(graph: Graph):
-    mem_table = create_mem_table(graph)
-
-    scheduled = []
-    unscheduled = []
-    edges = defaultdict(list)
-    for node in graph.nodes:
-        # print(f"Node: {node} args: {node.args}")
-        if len(node.args) == 0:
-            scheduled.append(node)
-        else:
-            unscheduled.append(node)
-        for a in node.args:
-            for elem_a in tree_iter(a):
-                if isinstance(elem_a, Node):
-                    if node not in edges[elem_a]:
-                        edges[elem_a].append(node)
-
-    return scheduled, unscheduled, edges, mem_table
-
-
 def make_graph_from_schedule(scheduled: List[Node]):
     new_graph = Graph()
     env = {}
@@ -61,6 +40,34 @@ def flat_nodes_in_args(args: List[Node]):
 def filter_args(node: Node):
     args = node.args[:get_original_args_num(node)]
     return flat_nodes_in_args(args)
+
+
+def init_schedule(graph: Graph):
+    mem_table = create_mem_table(graph)
+    remaining_users = defaultdict(set)
+    user_to_producer = {}
+
+    scheduled = []
+    unscheduled = []
+    edges = defaultdict(list)
+    for node in graph.nodes:
+        filtered_args = filter_args(node)
+        # print(f"Node: {node} args: {node.args}")
+        if len(filtered_args) == 0:
+            scheduled.append(node)
+
+            remaining_users[node] = set(node.users.keys())
+            for user in node.users.keys():
+                user_to_producer[user] = node
+        else:
+            unscheduled.append(node)
+        for a in filtered_args:
+            for elem_a in tree_iter(a):
+                if isinstance(elem_a, Node):
+                    if node not in edges[elem_a]:
+                        edges[elem_a].append(node)
+
+    return scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer
 
 
 def get_runnable_nodes(scheduled: List[Node], unscheduled: List[Node]):
@@ -154,37 +161,6 @@ def try_schedule_with_new_allgather(scheduled: List[Node], unscheduled: List[Nod
     return _do_schedule_without_allgather(tmp_scheduled, tmp_unscheduled, edges, non_ag_runnable)
 
 
-def count_inflight_values(graph: Graph):
-
-    node_to_last_use: Dict[Node, Node] = {}
-    user_to_last_uses: Dict[Node, List[Node]] = {}
-
-    def register_last_uses(n: Node, user: Node):
-        if n not in node_to_last_use:
-            node_to_last_use[n] = user
-            user_to_last_uses.setdefault(user, []).append(n)
-
-    from torch.fx.node import map_arg
-    for node in reversed(graph.nodes):
-        map_arg(node.args, lambda n: register_last_uses(n, node))
-        map_arg(node.kwargs, lambda n: register_last_uses(n, node))
-
-    max_inflight_size = 0
-    inflight_values = set()
-    for node in graph.nodes:
-        inflight_values.add(node)
-        if node in user_to_last_uses:
-            for to_delete in user_to_last_uses[node]:
-                inflight_values.remove(to_delete)
-
-        inflight_size = sum(n.meta["tensor_size"] for n in inflight_values)
-        print(
-            f"Node: {node.name} users: {list(node.users.keys())} node_to_last_use: {node_to_last_use[node] if node in node_to_last_use else 'NA'} user_to_last_uses: {user_to_last_uses[node] if node in user_to_last_uses else 'NA'} inflight_values: {inflight_values} inflight_size: {inflight_size}"
-        )
-        max_inflight_size = max(max_inflight_size, inflight_size)
-    print(f"Max inflight size: {max_inflight_size}")
-
-
 def list_schedule2(graph: Graph, available_mem: int, output_size: int, debug_log: bool) -> Graph:
 
     scheduled, unscheduled, edges, mem_table = init_schedule(graph)
@@ -220,7 +196,4 @@ def list_schedule2(graph: Graph, available_mem: int, output_size: int, debug_log
             tmp_scheduled.append(n)
             tmp_unscheduled.remove(n)
 
-    ret = make_graph_from_schedule(tmp_scheduled)
-    if debug_log:
-        count_inflight_values(ret)
-    return ret
+    return make_graph_from_schedule(tmp_scheduled)

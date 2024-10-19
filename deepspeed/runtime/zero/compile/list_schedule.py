@@ -163,7 +163,7 @@ def try_schedule_with_new_allgather(scheduled: List[Node], unscheduled: List[Nod
 
 def list_schedule2(graph: Graph, available_mem: int, output_size: int, debug_log: bool) -> Graph:
 
-    scheduled, unscheduled, edges, mem_table = init_schedule(graph)
+    scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer = init_schedule(graph)
     tmp_scheduled, tmp_unscheduled = schedule_without_allgather(scheduled, unscheduled, edges)
 
     while len(tmp_unscheduled) > 0:

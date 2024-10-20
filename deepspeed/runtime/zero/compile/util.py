@@ -10,13 +10,15 @@ from weakref import WeakSet
 
 import torch
 from torch.fx import Node, Graph
-from torch.fx.node import map_aggregate, Argument
+from torch.fx.node import map_aggregate, Argument, map_arg
 
 try:
     from torch._subclasses.fake_tensor import unset_fake_temporarily
 except ImportError:
     # torch < v2.5
     from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+
+no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default}
 
 
 def get_input_nodes(graph: Graph) -> List[Node]:
@@ -124,20 +126,11 @@ def materialize_fake(v, device=None):
     return map_aggregate(v, lambda x: convert(x))
 
 
-def count_inflight_values(graph: Graph, file_path: str):
+def get_last_uses(graph: Graph):
+    position = {node: i for i, node in enumerate(graph.nodes)}
 
     node_to_last_use: Dict[Node, Node] = {}
     user_to_last_uses: Dict[Node, List[Node]] = {}
-
-    no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default}
-
-    position = {}
-    for i, node in enumerate(graph.nodes):
-        if node.target in no_copy_ops:
-            node.meta["tensor_mem"] = 0
-        else:
-            node.meta["tensor_mem"] = node.meta["tensor_size"]
-        position[node] = i
 
     def register_last_uses(n: Node, user: Node):
         update = False
@@ -161,10 +154,22 @@ def count_inflight_values(graph: Graph, file_path: str):
             if known_last_use:
                 user_to_last_uses[known_last_use].remove(n)
 
-    from torch.fx.node import map_arg
     for node in reversed(graph.nodes):
         map_arg(node.args, lambda n: register_last_uses(n, node))
         map_arg(node.kwargs, lambda n: register_last_uses(n, node))
+
+    return node_to_last_use, user_to_last_uses
+
+
+def count_inflight_values(graph: Graph, file_path: str):
+    position = {node: i for i, node in enumerate(graph.nodes)}
+    for node in graph.nodes:
+        if node.target in no_copy_ops:
+            node.meta["tensor_mem"] = 0
+        else:
+            node.meta["tensor_mem"] = node.meta["tensor_size"]
+
+    node_to_last_use, user_to_last_uses = get_last_uses(graph)
 
     max_inflight_size = 0
     inflight_values = set()

@@ -17,16 +17,14 @@ from torch._functorch.aot_autograd import aot_module_simplified
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.zero.compile.tracer import add_dependency_on_params
-from deepspeed.runtime.zero.compile.nx import fx_to_nx, find_reachable_terminal_nodes
 
 from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
 from .list_schedule import list_schedule2
-from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values
-from .tracer import ops_no_release, ops_no_wait
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
+from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
 
 import os
@@ -55,6 +53,7 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
                                meta=_make_node_meta(node, ds_id, True))
     output_node = get_output_node(graph)
     output_node.replace_input_with(new_node, node)
+    return new_node
 
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int, count: int):
@@ -108,27 +107,16 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
 
 
 def add_gather_and_release(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes: List[Node]):
-    add_dependency_on_params(graph, param_nodes)
-
-    nx_graph = fx_to_nx(graph)
-    last_user_nodes = {}
+    ag_nodes = []
     for pn in param_nodes:
-        dependent_nodes = [n for n in graph.nodes if pn in n.required_inputs]
-        last_user_nodes[pn] = find_reachable_terminal_nodes(nx_graph, dependent_nodes)
+        ag_node = add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
+        ag_nodes.append((pn, ag_node))
 
-    for pn in param_nodes:
-        add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
-
-    release_counts = defaultdict(int)
-    to_add = []
-    for pn, nodes in last_user_nodes.items():
-        for node in nodes:
-            if node.target not in ops_no_release:
-                to_add.append((node, pn, param_manager.ds_ids[pn.name]))
-                release_counts[pn.name] += 1
-
-    for node, pn, ds_id in to_add:
-        add_release(graph_id, graph, node, pn, ds_id, release_counts[pn.name])
+    node_to_last_use, _ = get_last_uses(graph)
+    for pn, ag in ag_nodes:
+        last_use = node_to_last_use[ag]
+        ds_id = param_manager.ds_ids[pn.name]
+        add_release(graph_id, graph, last_use, pn, ds_id, 1)
 
 
 def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],

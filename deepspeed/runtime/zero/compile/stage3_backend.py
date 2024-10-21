@@ -22,7 +22,7 @@ from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
-from .list_schedule import list_schedule2
+from .list_schedule import list_schedule2, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
@@ -133,10 +133,11 @@ param_manager = {}
 
 
 def dump_graph(graph: GraphModule, name: str, skip=False):
+    print(f"dump_graph {name} {skip}")
     if not skip and dist.get_rank() == 0:
         global graph_counts
         fname = f"{name}_{graph_counts[name]}"
-        graph.graph.print_tabular()
+        # graph.graph.print_tabular()
 
         g = FxGraphDrawer(graph, fname)
         with open(f"{fname}.svg", "wb") as file:
@@ -165,8 +166,8 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
 
         def fw(gm, sample_inputs):
 
-            if rank == 0 and dump_graph:
-                print(f"Initial graph graph_id={graph_id} {gm.graph}")
+            if rank == 0 and dump_graphs:
+                print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
             original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
@@ -205,8 +206,13 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
                     ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
                     print("\n".join([x[1] for x in ops_with_mem_str]))
 
-            if rank == 0 and dump_graph:
-                print(f"Before scheduling graph graph_id={graph_id} {gm.graph}")
+            if rank == 0 and dump_graphs:
+                print(f"Fwd before scheduling graph graph_id={graph_id} {gm.graph}")
+
+            fast_free_schedule(gm.graph,
+                               get_accelerator().available_memory(),
+                               total_activation_size,
+                               debug_log=debug_log)
 
             gm.graph = list_schedule2(gm.graph,
                                       get_accelerator().available_memory(),
@@ -219,10 +225,10 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
             nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
 
-            if rank == 0 and dump_graph:
-                print(f"After scheduling graph_id={graph_id} {gm.graph}")
+            if rank == 0 and dump_graphs:
+                print(f"Fwd after scheduling graph_id={graph_id} {gm.graph}")
 
-            dump_graph(gm, f"forward_aot_scheduled", skip=not dump_graphs)
+            dump_graph(gm, f"forward_aot_scheduled_{graph_id}", skip=not dump_graphs)
 
             gc.collect()
             get_accelerator().empty_cache()
@@ -231,6 +237,9 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
+            if rank == 0 and dump_graphs:
+                print(f"Bwd initial graph graph_id={graph_id} {gm.graph}")
+
             assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
             param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
@@ -274,14 +283,26 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
             gc.collect()
             get_accelerator().empty_cache()
 
+            if rank == 0 and dump_graphs:
+                print(f"Bwd before scheduling graph graph_id={graph_id} {gm.graph}")
+
+            test_graph = fast_free_schedule(gm.graph,
+                                            get_accelerator().available_memory(),
+                                            output_size,
+                                            debug_log=debug_log)
+
             gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
+
+            if rank == 0 and dump_graphs:
+                print(f"Bwd after scheduling graph_id={graph_id} {gm.graph}")
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"bwd_{graph_id}_inflight_values.csv")
+                count_inflight_values(test_graph, f"bwd_test_{graph_id}_inflight_values.csv")
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-            dump_graph(gm, f"backward_aot_scheduled", skip=not dump_graphs)
+            dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
             return make_boxed_func(gm.forward)
 

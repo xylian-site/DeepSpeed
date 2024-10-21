@@ -161,13 +161,18 @@ def get_last_uses(graph: Graph):
     return node_to_last_use, user_to_last_uses
 
 
-def count_inflight_values(graph: Graph, file_path: str):
-    position = {node: i for i, node in enumerate(graph.nodes)}
+def set_tensor_mem(graph: Graph):
     for node in graph.nodes:
-        if node.target in no_copy_ops:
+        if node.target in no_copy_ops or "tensor_meta" not in node.meta:
             node.meta["tensor_mem"] = 0
         else:
-            node.meta["tensor_mem"] = node.meta["tensor_size"]
+            assert "tensor_meta" in node.meta, f"Node {node} does not have tensor_meta"
+            node.meta["tensor_mem"] = tensor_meta_size(node.meta["tensor_meta"])
+
+
+def count_inflight_values(graph: Graph, file_path: str):
+    position = {node: i for i, node in enumerate(graph.nodes)}
+    set_tensor_mem(graph)
 
     node_to_last_use, user_to_last_uses = get_last_uses(graph)
 
@@ -193,6 +198,7 @@ def count_inflight_values(graph: Graph, file_path: str):
             for to_delete in user_to_last_uses[node]:
                 inflight_values.remove(to_delete)
 
+        assert "tensor_mem" in node.meta, f"Node {node} does not have tensor_mem"
         inflight_size = sum(n.meta["tensor_mem"] for n in inflight_values)
         inflight_size_in_output = sum(n.meta["tensor_mem"] for n in inflight_values if n in values_in_output)
 

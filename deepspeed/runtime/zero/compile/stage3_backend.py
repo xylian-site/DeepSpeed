@@ -146,7 +146,7 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
         graph_counts[name] += 1
 
 
-def make_stage3_backend(dump_graphs=False, debug_log=True):
+def make_stage3_backend(dump_graphs=False, debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
@@ -286,19 +286,18 @@ def make_stage3_backend(dump_graphs=False, debug_log=True):
             if rank == 0 and dump_graphs:
                 print(f"Bwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
-            test_graph = fast_free_schedule(gm.graph,
-                                            get_accelerator().available_memory(),
-                                            output_size,
-                                            debug_log=debug_log)
+            gm.graph = fast_free_schedule(gm.graph,
+                                          get_accelerator().available_memory(),
+                                          output_size,
+                                          debug_log=debug_log)
 
-            gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
+            # gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
 
             if rank == 0 and dump_graphs:
                 print(f"Bwd after scheduling graph_id={graph_id} {gm.graph}")
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"bwd_{graph_id}_inflight_values.csv")
-                count_inflight_values(test_graph, f"bwd_test_{graph_id}_inflight_values.csv")
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])

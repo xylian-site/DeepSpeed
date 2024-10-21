@@ -161,18 +161,8 @@ def get_last_uses(graph: Graph):
     return node_to_last_use, user_to_last_uses
 
 
-def set_tensor_mem(graph: Graph):
-    for node in graph.nodes:
-        if node.target in no_copy_ops or "tensor_meta" not in node.meta:
-            node.meta["tensor_mem"] = 0
-        else:
-            assert "tensor_meta" in node.meta, f"Node {node} does not have tensor_meta"
-            node.meta["tensor_mem"] = tensor_meta_size(node.meta["tensor_meta"])
-
-
 def count_inflight_values(graph: Graph, file_path: str):
     position = {node: i for i, node in enumerate(graph.nodes)}
-    set_tensor_mem(graph)
 
     node_to_last_use, user_to_last_uses = get_last_uses(graph)
 
@@ -183,7 +173,7 @@ def count_inflight_values(graph: Graph, file_path: str):
     csv_filename = file_path
     csv_data = []
     header = [
-        'Node', 'tensor_mem', 'inflight_size', 'inflight_size_in_output', 'args', 'users', 'node_to_last_use',
+        'Node', 'tensor_size', 'inflight_size', 'inflight_size_in_output', 'args', 'users', 'node_to_last_use',
         'lifetime', 'user_to_last_uses', 'inflight_values'
     ]
     csv_data.append(header)
@@ -198,14 +188,14 @@ def count_inflight_values(graph: Graph, file_path: str):
             for to_delete in user_to_last_uses[node]:
                 inflight_values.remove(to_delete)
 
-        assert "tensor_mem" in node.meta, f"Node {node} does not have tensor_mem"
-        inflight_size = sum(n.meta["tensor_mem"] for n in inflight_values)
-        inflight_size_in_output = sum(n.meta["tensor_mem"] for n in inflight_values if n in values_in_output)
+        assert "tensor_size" in node.meta, f"Node {node} does not have tensor_size"
+        inflight_size = sum(n.meta["tensor_size"] for n in inflight_values)
+        inflight_size_in_output = sum(n.meta["tensor_size"] for n in inflight_values if n in values_in_output)
 
         lifetime = position[node_to_last_use[node]] - position[node] if node in node_to_last_use else 0
 
         row = [
-            node.name, node.meta["tensor_mem"], inflight_size, inflight_size_in_output,
+            node.name, node.meta["tensor_size"], inflight_size, inflight_size_in_output,
             [a.name for a in node.args if isinstance(a, Node)],
             list(node.users.keys()), node_to_last_use[node] if node in node_to_last_use else 'NA', lifetime,
             user_to_last_uses[node] if node in user_to_last_uses else 'NA',

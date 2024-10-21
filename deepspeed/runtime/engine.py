@@ -3698,6 +3698,7 @@ class DeepSpeedEngine(Module):
                 backend=get_accelerator().get_compile_backend(),
                 compile_kwargs={},
                 schedule=False,
+                scheduler="simple_prefetch",
                 use_symmetric_memory=False,
                 dump_graphs=False) -> None:
         """Compile the module using the specified backend and kwargs.
@@ -3748,7 +3749,7 @@ class DeepSpeedEngine(Module):
             from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
-            backend = make_stage3_backend(dump_graphs=dump_graphs)
+            backend = make_stage3_backend(scheduler=scheduler, dump_graphs=dump_graphs)
 
         print(f"Compiling")
         if 'backend' in compile_kwargs:

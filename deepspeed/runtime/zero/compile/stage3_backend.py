@@ -22,7 +22,7 @@ from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
 from .profile import ProfilingInterpreter
-from .list_schedule import list_schedule2, fast_free_schedule
+from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
@@ -146,10 +146,17 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
         graph_counts[name] += 1
 
 
-def make_stage3_backend(dump_graphs=False, debug_log=False):
+def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
+
+    if scheduler == "simple_prefetch":
+        scheduler_fn = simple_prefetch
+    elif scheduler == "fast_free":
+        scheduler_fn = fast_free_schedule
+    else:
+        raise ValueError(f"Unknown scheduler {scheduler}")
 
     def stage3_backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
@@ -214,10 +221,10 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
                                total_activation_size,
                                debug_log=debug_log)
 
-            gm.graph = list_schedule2(gm.graph,
-                                      get_accelerator().available_memory(),
-                                      total_activation_size,
-                                      debug_log=debug_log)
+            gm.graph = scheduler_fn(gm.graph,
+                                    get_accelerator().available_memory(),
+                                    total_activation_size,
+                                    debug_log=debug_log)
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"fwd_{graph_id}_inflight_values.csv")
@@ -286,12 +293,7 @@ def make_stage3_backend(dump_graphs=False, debug_log=False):
             if rank == 0 and dump_graphs:
                 print(f"Bwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
-            gm.graph = fast_free_schedule(gm.graph,
-                                          get_accelerator().available_memory(),
-                                          output_size,
-                                          debug_log=debug_log)
-
-            # gm.graph = list_schedule2(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
+            gm.graph = scheduler_fn(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
 
             if rank == 0 and dump_graphs:
                 print(f"Bwd after scheduling graph_id={graph_id} {gm.graph}")

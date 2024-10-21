@@ -8,6 +8,7 @@ from typing import List, Dict
 from copy import copy
 from dataclasses import dataclass
 
+import torch
 from torch.fx import Graph, Node
 from torch.fx.node import map_arg
 from torch.utils._pytree import tree_iter
@@ -117,7 +118,6 @@ def get_new_runnable_nodes_with(scheduled: List[Node], edges: Dict[Node, List[No
     scheduled = set(scheduled)
     new_runnables = []
     for node in edges[new_scheduled]:
-        args = node.args[:get_original_args_num(node)]
         if all(arg in scheduled for arg in filter_args(node) if arg != new_scheduled):
             new_runnables.append(node)
 
@@ -225,43 +225,30 @@ def init_schedule_with_placeholders(graph: Graph):
     return scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer
 
 
-def get_node_requirements(target_node: Node,
-                          scheduled: List[Node],
-                          cache_required: Dict[Node, List[Node]],
-                          stop_condition=lambda x: False):
-
-    required_nodes = []
+def get_node_requirements(target_node: Node, scheduled: List[Node]):
     scheduled = set(scheduled)
+    visited = set()
+    ordered_nodes = []
 
-    def get_required_nodes(node: Node):
+    def dfs(node: Node):
         if node in scheduled:
-            return True
-        if stop_condition(node):
-            return False
-        required_nodes.append(node)
+            return
+        if node in visited:
+            return
+        visited.add(node)
 
         args = []
+        def register_arg(n: Node):
+            args.append(n)
+        map_arg(node.args, register_arg)
 
-        def register_arg(node: Node):
-            args.append(node)
+        for arg in args:
+            dfs(arg)
+        ordered_nodes.append(node)
 
-        map_arg(node.args, lambda n: register_arg(n))
+    dfs(target_node)
 
-        return all(get_required_nodes(arg) for arg in args)
-
-    if get_required_nodes(target_node):
-        required_nodes = reversed(required_nodes)
-        registered = set()
-        target_schedule = []
-        for node in required_nodes:
-            if node not in registered:
-                target_schedule.append(node)
-                registered.add(node)
-
-        return target_schedule
-
-    return None
-    # return sum(n.meta["device_time"] for n in required_nodes), required_nodes
+    return ordered_nodes
 
 
 @dataclass
@@ -279,8 +266,6 @@ class AllgatherTask:
 
 
 def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug_log: bool) -> Graph:
-    import torch
-
     node_to_last_use, user_to_last_uses = get_last_uses(graph)
     set_tensor_mem(graph)
 
@@ -294,6 +279,8 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
     unscheduled_ags = [n for n in unscheduled if n.target == torch.ops.native_z3.allgather_param]
     release_nodes = {n.args[2]: n for n in unscheduled if n.target == torch.ops.native_z3.release_param}
 
+    import time
+
     while len(unscheduled_ags) > 0:
         print(f" fast_free_schedule loop {len(unscheduled_ags)}")
 
@@ -301,15 +288,18 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
         for i, node in enumerate(unscheduled_ags):
             ds_id = node.args[2]
 
-            exclude_allgather = lambda n: n != node and n.target == torch.ops.native_z3.allgather_param
-            schedule_until_ag = get_node_requirements(node, scheduled, exclude_allgather)
+            start_search_1 = time.time()
+            schedule_until_ag = get_node_requirements(node, scheduled)
+            end_search_1 = time.time()
             if schedule_until_ag is None:
                 print(f"Node {node} cannot be scheduled")
                 continue
 
             last_use = node_to_last_use[node]
-            # diff_required_nodes = get_node_requirements(node_to_last_use[node], scheduled + required_nodes, exclude_allgather)
+
+            start_search_2 = time.time()
             diff_required_nodes = get_node_requirements(last_use, scheduled + schedule_until_ag)
+            end_search_2 = time.time()
 
             allgather_cost = sum(n.meta["device_time"] for n in schedule_until_ag)
             free_cost = sum(n.meta["device_time"] for n in diff_required_nodes)
@@ -325,7 +315,7 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
             task = AllgatherTask(node, allgather_cost, free_cost, allgathered_mem, allgather_acc_mem, free_acc_mem,
                                  last_use, n_scheduled_ags, schedule_until_ag, schedule_until_free)
 
-            print(f" {i} allgather runnable: {node} last_use: {node_to_last_use[node]} task: {task}")
+            # print(f" {i} allgather runnable: {node} last_use: {node_to_last_use[node]} t1: {end_search_1-start_search_1:.2f} t2: {end_search_2-start_search_2:.2f} task: {task}")
             runnable_ags.append(task)
 
         assert len(runnable_ags) > 0, "No runnable allgather nodes"
@@ -345,20 +335,19 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
             next_ag = sorted_ags[0]
             nodes_to_schedule = next_ag.schedule_until_ag
 
-        print(f" next_ag {next_ag}")
+        # print(f" next_ag {next_ag}")
         for n in nodes_to_schedule:
             scheduled.append(n)
             unscheduled.remove(n)
 
         unscheduled_ags.remove(next_ag.node)
 
-    print(f"After ag scheduled: scheduled: {scheduled}")
+    # print(f"After ag scheduled: scheduled: {scheduled}")
 
     scheduled_set = set(scheduled)
     for node in graph.nodes:
         if node in scheduled_set:
             continue
-        print(f"adding {node} to scheduled")
         scheduled.append(node)
         unscheduled.remove(node)
 

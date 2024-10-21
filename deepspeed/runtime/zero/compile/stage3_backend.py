@@ -133,7 +133,6 @@ param_manager = {}
 
 
 def dump_graph(graph: GraphModule, name: str, skip=False):
-    print(f"dump_graph {name} {skip}")
     if not skip and dist.get_rank() == 0:
         global graph_counts
         fname = f"{name}_{graph_counts[name]}"

@@ -3751,7 +3751,7 @@ class DeepSpeedEngine(Module):
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
             backend = make_stage3_backend(scheduler=scheduler, dump_graphs=dump_graphs)
 
-        print(f"Compiling")
+        print(f"Compiling with {scheduler}")
         if 'backend' in compile_kwargs:
             logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
 

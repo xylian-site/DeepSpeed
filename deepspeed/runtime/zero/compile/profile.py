@@ -201,10 +201,15 @@ class ProfilingInterpreter(Interpreter):
 
 class MemoryProfilingInterpreter(Interpreter):
 
-    def __init__(self, gm: GraphModule):
+    def __init__(self, gm: GraphModule, debug_log=False):
         super().__init__(gm)
         self.device = torch.device(get_accelerator().current_device())
         self.mem_record = []
+        self.last_alloc = get_accelerator().memory_allocated()
+
+        self.node_counter = 0
+        self.node_num = len(gm.graph.nodes)
+        self.debug_log = debug_log
 
     def run(self, *args) -> Any:
         try:
@@ -226,10 +231,20 @@ class MemoryProfilingInterpreter(Interpreter):
             args, kwargs = self.fetch_args_kwargs_from_env(n)
             ret = getattr(self, n.op)(n.target, args, kwargs)
 
-        self.mem_record.append((n.name, get_accelerator().memory_allocated()))
+        current_alloc = get_accelerator().memory_allocated()
+        self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc))
+
+        self.node_counter += 1
+        if self.debug_log:
+            print(
+                f"Node {self.node_counter}/{self.node_num} {n.name} memory {current_alloc / 1024 / 1024:.2f}MB delta {(current_alloc - self.last_alloc) / 1024 / 1024:.2f}MB"
+            )
+
+        self.last_alloc = current_alloc
+
         return ret
 
     def dump(self, path):
         import pandas as pd
-        df = pd.DataFrame(self.mem_record, columns=["node", "memory"])
+        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "delta"])
         df.to_csv(path, index=False)

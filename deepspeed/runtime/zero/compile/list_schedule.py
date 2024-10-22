@@ -286,6 +286,13 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
         required_nodes = get_node_requirements(last_use, scheduled)
         ag_nodes_in_path[ag_node] = set(n for n in required_nodes if n.target == torch.ops.native_z3.allgather_param)
 
+    reduce_nodes = [n for n in unscheduled if n.target == torch.ops.native_z3.reduce_grad]
+    ag_nodes_in_path_to_reduce_nodes = {}
+
+    for reduce_node in reduce_nodes:
+        ag_nodes_in_path_to_reduce_nodes[reduce_node] = set(n for n in get_node_requirements(reduce_node, scheduled)
+                                                            if n.target == torch.ops.native_z3.allgather_param)
+
     while len(unscheduled_ags) > 0:
 
         ag_nodes_count = {ag_node: len(nodes) for ag_node, nodes in ag_nodes_in_path.items()}
@@ -356,6 +363,20 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
         for ag_node, nodes in ag_nodes_in_path.items():
             if next_ag.node in nodes:
                 nodes.remove(next_ag.node)
+
+        # Schedule reduce nodes when possible to free memory earlier
+        reduces_to_schedule = []
+        for reduce_node in reduce_nodes:
+            if next_ag.node in ag_nodes_in_path_to_reduce_nodes[reduce_node]:
+                ag_nodes_in_path_to_reduce_nodes[reduce_node].remove(next_ag.node)
+                if len(ag_nodes_in_path_to_reduce_nodes[reduce_node]) == 0:
+                    reduces_to_schedule.append(reduce_node)
+
+        for n in reduces_to_schedule:
+            need_to_schedule = get_node_requirements(n, scheduled)
+            for nn in need_to_schedule:
+                scheduled.append(nn)
+                unscheduled.remove(nn)
 
     # print(f"After ag scheduled: scheduled: {scheduled}")
 

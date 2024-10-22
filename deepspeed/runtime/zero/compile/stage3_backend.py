@@ -21,7 +21,7 @@ from deepspeed.accelerator import get_accelerator
 from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
-from .profile import ProfilingInterpreter
+from .profile import ProfilingInterpreter, MemoryProfilingInterpreter
 from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait
@@ -215,11 +215,6 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             if rank == 0 and dump_graphs:
                 print(f"Fwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
-            fast_free_schedule(gm.graph,
-                               get_accelerator().available_memory(),
-                               total_activation_size,
-                               debug_log=debug_log)
-
             gm.graph = scheduler_fn(gm.graph,
                                     get_accelerator().available_memory(),
                                     total_activation_size,
@@ -240,6 +235,13 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             get_accelerator().empty_cache()
 
             gm.recompile()
+
+            if debug_log:
+                mem_prof = MemoryProfilingInterpreter(gm)
+                mem_prof.run(*real_inputs)
+                if rank == 0:
+                    mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
+
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
@@ -304,6 +306,13 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
+
+            if debug_log:
+                mem_prof = MemoryProfilingInterpreter(gm)
+                mem_prof.run(*validated_inputs)
+                if rank == 0:
+                    mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
+
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd

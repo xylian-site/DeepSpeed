@@ -197,3 +197,39 @@ class ProfilingInterpreter(Interpreter):
             self.allgather_mem[out.ds_id] = n.meta["alloc_mem"]
 
         return out
+
+
+class MemoryProfilingInterpreter(Interpreter):
+
+    def __init__(self, gm: GraphModule):
+        super().__init__(gm)
+        self.device = torch.device(get_accelerator().current_device())
+        self.mem_record = []
+
+    def run(self, *args) -> Any:
+        try:
+            assert _all_real_if_tensor(args), "Inputs must be real tensors"
+
+            with unset_fake_temporarily():
+                with get_accelerator().random().fork_rng(devices=[self.device]):
+                    args = map_aggregate(args, lambda x: _to(x, self.device))
+                    return_val = super().run(*args)
+        except Exception as e:
+            print(f"MemoryProfiling error {e}")
+
+        return return_val
+
+    def run_node(self, n: torch.fx.Node) -> Any:
+        if n.op in {"placeholder", "output"}:
+            ret = super().run_node(n)
+        else:
+            args, kwargs = self.fetch_args_kwargs_from_env(n)
+            ret = getattr(self, n.op)(n.target, args, kwargs)
+
+        self.mem_record.append((n.name, get_accelerator().memory_allocated()))
+        return ret
+
+    def dump(self, path):
+        import pandas as pd
+        df = pd.DataFrame(self.mem_record, columns=["node", "memory"])
+        df.to_csv(path, index=False)

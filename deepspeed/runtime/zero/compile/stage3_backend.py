@@ -237,10 +237,8 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             gm.recompile()
 
             if debug_log:
-                nz3.start_forward()
                 mem_prof = MemoryProfilingInterpreter(gm)
                 mem_prof.run(*real_inputs)
-                nz3.end_forward()
                 if rank == 0:
                     mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
 
@@ -310,10 +308,8 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             gm.recompile()
 
             if debug_log:
-                nz3.start_backward(True)
                 mem_prof = MemoryProfilingInterpreter(gm)
                 mem_prof.run(*validated_inputs)
-                nz3.end_backward()
                 if rank == 0:
                     mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
 

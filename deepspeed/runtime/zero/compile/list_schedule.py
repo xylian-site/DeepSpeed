@@ -14,6 +14,7 @@ from torch.fx.node import map_arg
 from torch.utils._pytree import tree_iter
 
 from .util import tensor_meta_size, get_last_uses
+from .fx import get_output_node
 
 
 def make_graph_from_schedule(scheduled: List[Node]):
@@ -288,9 +289,17 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
 
     reduce_nodes = [n for n in unscheduled if n.target == torch.ops.native_z3.reduce_grad]
     ag_nodes_in_path_to_reduce_nodes = {}
-
     for reduce_node in reduce_nodes:
         ag_nodes_in_path_to_reduce_nodes[reduce_node] = set(n for n in get_node_requirements(reduce_node, scheduled)
+                                                            if n.target == torch.ops.native_z3.allgather_param)
+
+    output_nodes = [
+        n for n in get_output_node(graph).args[0]
+        if isinstance(n, Node) and n.target != torch.ops.native_z3.reduce_grad
+    ]
+    ag_nodes_in_path_to_output_nodes = {}
+    for output_node in output_nodes:
+        ag_nodes_in_path_to_output_nodes[output_node] = set(n for n in get_node_requirements(output_node, scheduled)
                                                             if n.target == torch.ops.native_z3.allgather_param)
 
     while len(unscheduled_ags) > 0:
@@ -373,6 +382,20 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
                     reduces_to_schedule.append(reduce_node)
 
         for n in reduces_to_schedule:
+            need_to_schedule = get_node_requirements(n, scheduled)
+            for nn in need_to_schedule:
+                scheduled.append(nn)
+                unscheduled.remove(nn)
+
+        # Do the same for output nodes
+        outputs_to_schedule = []
+        for output_node in output_nodes:
+            if next_ag.node in ag_nodes_in_path_to_output_nodes[output_node]:
+                ag_nodes_in_path_to_output_nodes[output_node].remove(next_ag.node)
+                if len(ag_nodes_in_path_to_output_nodes[output_node]) == 0:
+                    outputs_to_schedule.append(output_node)
+
+        for n in outputs_to_schedule:
             need_to_schedule = get_node_requirements(n, scheduled)
             for nn in need_to_schedule:
                 scheduled.append(nn)

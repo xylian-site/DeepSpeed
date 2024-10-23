@@ -172,7 +172,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
 
         def fw(gm, sample_inputs):
 
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
@@ -212,7 +212,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                     ops_with_mem_str.sort(key=lambda x: x[0], reverse=True)
                     print("\n".join([x[1] for x in ops_with_mem_str]))
 
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Fwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
             gm.graph = scheduler_fn(gm.graph,
@@ -226,7 +226,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
             nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
 
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Fwd after scheduling graph_id={graph_id} {gm.graph}")
 
             dump_graph(gm, f"forward_aot_scheduled_{graph_id}", skip=not dump_graphs)
@@ -247,7 +247,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Bwd initial graph graph_id={graph_id} {gm.graph}")
 
             assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
@@ -293,12 +293,12 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             gc.collect()
             get_accelerator().empty_cache()
 
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Bwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
             gm.graph = scheduler_fn(gm.graph, get_accelerator().available_memory(), output_size, debug_log=debug_log)
 
-            if rank == 0 and dump_graphs:
+            if rank == 0 and debug_log:
                 print(f"Bwd after scheduling graph_id={graph_id} {gm.graph}")
 
             if rank == 0 and debug_log:

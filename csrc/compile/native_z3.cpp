@@ -301,6 +301,7 @@ public:
             rs_comp_done_events_[ds_id] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
         }
+        reduce_counter_ = ds_ids_.size();
     }
     ~CustomOpExecutor() {}
 
@@ -317,7 +318,6 @@ public:
     void start_backward(bool update)
     {
         op_states_bwd_.resetArgCounter();
-        reduce_counter_ = ds_ids_.size();
 
         param_updated_ = update;
     }
@@ -453,8 +453,6 @@ public:
         if (reduce_counter_ == 0) {
             flushReduceBucket(scalar_type);
 
-            // This looks duplicated but it's necessary to ensure the copy is done.
-            // The backward hook has start_backward() might not be called when backward starting.
             reduce_counter_ = ds_ids_.size();
 
             // This synchronization ensures all of reduce calls are done before optimizer's step.

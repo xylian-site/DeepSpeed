@@ -311,16 +311,11 @@ public:
         op_states.registerOpNArgs(op_name, n_args);
     }
 
-    void start_forward() { op_states_fwd_.resetArgCounter(); }
+    void start_forward() {}
 
     void end_forward() {}
 
-    void start_backward(bool update)
-    {
-        op_states_bwd_.resetArgCounter();
-
-        param_updated_ = update;
-    }
+    void start_backward(bool update) { param_updated_ = update; }
 
     void end_backward()
     {
@@ -413,6 +408,7 @@ public:
         if (op_states.isArgCounterZero(user)) {
             assert(hasKey(ag_comm_done_events_, ds_id));
             ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
+            op_states_fwd_.resetArgCounter();
         }
 
         return v;

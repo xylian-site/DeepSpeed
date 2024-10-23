@@ -56,11 +56,11 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     return new_node
 
 
-def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int, count: int):
+def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
     add_postprocess(graph,
                     node,
                     torch.ops.native_z3.release_param,
-                    extra_args=[graph_id, ds_id, count],
+                    extra_args=[graph_id, ds_id],
                     name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
                     meta=_make_node_meta(node, ds_id, False))
 
@@ -116,7 +116,7 @@ def add_gather_and_release(graph_id: int, graph: Graph, param_manager: DSGraphPa
     for pn, ag in ag_nodes:
         last_use = node_to_last_use[ag]
         ds_id = param_manager.ds_ids[pn.name]
-        add_release(graph_id, graph, last_use, pn, ds_id, 1)
+        add_release(graph_id, graph, last_use, pn, ds_id)
 
 
 def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphParamManager, param_nodes_bw: List[Node],

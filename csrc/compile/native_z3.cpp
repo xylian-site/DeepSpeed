@@ -310,17 +310,12 @@ public:
         op_states.registerOpNArgs(op_name, n_args);
     }
 
-    void start_forward()
-    {
-        release_counter_.clear();
-        op_states_fwd_.resetArgCounter();
-    }
+    void start_forward() { op_states_fwd_.resetArgCounter(); }
 
     void end_forward() {}
 
     void start_backward(bool update)
     {
-        release_counter_.clear();
         op_states_bwd_.resetArgCounter();
         reduce_counter_ = ds_ids_.size();
 
@@ -386,14 +381,11 @@ public:
         return output_buf;
     }
 
-    at::Tensor release_param(at::Tensor v, long ds_id, long count)
+    at::Tensor release_param(at::Tensor v, long ds_id)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
-        if (!hasKey(release_counter_, ds_id)) { release_counter_[ds_id] = count; }
-        release_counter_[ds_id]--;
-
-        if (!param.isPersistent() && release_counter_[ds_id] == 0) {
+        if (!param.isPersistent()) {
             at::Tensor gathered_param = param_registry_->getGatheredParam(ds_id);
 
             if (gathered_param.defined()) {  // gathered param is undefined while profiling
@@ -488,7 +480,6 @@ private:
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events_;
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events_;
 
-    std::unordered_map<long, size_t> release_counter_;
     size_t reduce_counter_ = 0;
     bool param_updated_ = false;
     std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks_;
@@ -694,12 +685,12 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-at::Tensor release_param(at::Tensor v, long graph_id, long ds_id, long count)
+at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->release_param(v, ds_id, count);
+    return executors_[graph_id]->release_param(v, ds_id);
 }
 
-at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id, long count) { return v; }
+at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
 
 at::Tensor wait_allgather(at::Tensor v,
                           long graph_id,
@@ -765,7 +756,7 @@ at::Tensor test_call(at::Tensor a)
 TORCH_LIBRARY(native_z3, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
-    m.def("release_param(Tensor a, int graph_id, int id, int count) -> Tensor");
+    m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def(
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");

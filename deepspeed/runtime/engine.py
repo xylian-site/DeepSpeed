@@ -1899,7 +1899,11 @@ class DeepSpeedEngine(Module):
             inputs = self._cast_inputs_half(inputs)
 
         if hasattr(self, "nz3"):
-            self.nz3.start_forward()
+            from deepspeed.runtime.zero.compile.preprocess import start_forward
+            start_forward(self.nz3,
+                          micro_steps=self.micro_steps,
+                          global_steps=self.global_steps,
+                          update=self.is_gradient_accumulation_boundary())
 
         loss = self.module(*inputs, **kwargs)
 

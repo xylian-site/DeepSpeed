@@ -5,7 +5,8 @@
 
 import gc
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Tuple
+from dataclasses import dataclass, field
 
 import torch
 from torch.fx import Node, Graph, GraphModule
@@ -129,7 +130,7 @@ def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager: DSGraphPar
 
 
 graph_counts = defaultdict(int)
-param_manager = {}
+param_manager: Dict[int, DSGraphParamManager] = {}
 
 
 def dump_graph(graph: GraphModule, name: str, skip=False):
@@ -143,6 +144,22 @@ def dump_graph(graph: GraphModule, name: str, skip=False):
             file.write(g.get_dot_graph().create_svg())
 
         graph_counts[name] += 1
+
+
+@dataclass
+class ProfilingResult:
+    fwd_graph: Graph = None
+    bwd_graph: Graph = None
+    fwd_mem: List[Tuple[str, int, int]] = field(default_factory=list)  # name, current_alloc, delta
+    bwd_mem: List[Tuple[str, int, int]] = field(default_factory=list)
+    fwd_time: List[Tuple[str, int, int]] = field(default_factory=list)  # name, device_time, wall_time
+    bwd_time: List[Tuple[str, int, int]] = field(default_factory=list)
+    fwd_tensor_sizes: List[Tuple[str, int]] = field(default_factory=list)  # name, size
+    bwd_tensor_sizes: List[Tuple[str, int]] = field(default_factory=list)
+    param_indices: List[Tuple[int, int, Tuple[int, ...]]] = field(default_factory=list)  # index, ds_id, ds_shape
+
+
+profiling_results: Dict[int, ProfilingResult] = {}
 
 
 def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
@@ -170,8 +187,12 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             # < v2.5
             param_indices = [(i, param.ds_id, param.ds_shape) for i, (n, param) in enumerate(gm.named_parameters())]
 
-        def fw(gm, sample_inputs):
+        global profiling_results
+        if graph_id not in profiling_results:
+            profiling_results[graph_id] = ProfilingResult()
+            profiling_results[graph_id].param_indices = param_indices
 
+        def fw(gm, sample_inputs):
             if rank == 0 and debug_log:
                 print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
 
@@ -236,11 +257,21 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
 
             gm.recompile()
 
-            if debug_log:
-                mem_prof = MemoryProfilingInterpreter(gm)
-                mem_prof.run(*real_inputs)
-                if rank == 0:
-                    mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
+            mem_prof = MemoryProfilingInterpreter(gm)
+            mem_prof.run(*real_inputs)
+
+            if debug_log and rank == 0:
+                mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
+
+            profiling_results[graph_id].fwd_graph = gm.graph
+            for n in gm.graph.nodes:
+                profiling_results[graph_id].fwd_time.append(
+                    (n.name, n.meta["device_time"] if "device_time" in n.meta else 0.0,
+                     n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
+                profiling_results[graph_id].fwd_tensor_sizes.append(
+                    (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
+            for name, current_alloc, delta in mem_prof.mem_record:
+                profiling_results[graph_id].fwd_mem.append((name, current_alloc, delta))
 
             return make_boxed_func(gm.forward)
 
@@ -307,11 +338,20 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
 
-            if debug_log:
-                mem_prof = MemoryProfilingInterpreter(gm)
-                mem_prof.run(*validated_inputs)
-                if rank == 0:
-                    mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
+            mem_prof = MemoryProfilingInterpreter(gm)
+            mem_prof.run(*validated_inputs)
+            if debug_log and rank == 0:
+                mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
+
+            profiling_results[graph_id].bwd_graph = gm.graph
+            for n in gm.graph.nodes:
+                profiling_results[graph_id].bwd_time.append(
+                    (n.name, n.meta["device_time"] if "device_time" in n.meta else 0.0,
+                     n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
+                profiling_results[graph_id].bwd_tensor_sizes.append(
+                    (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
+            for name, current_alloc, delta in mem_prof.mem_record:
+                profiling_results[graph_id].bwd_mem.append((name, current_alloc, delta))
 
             return make_boxed_func(gm.forward)
 

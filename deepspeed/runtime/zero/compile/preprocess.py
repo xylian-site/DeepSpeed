@@ -7,13 +7,12 @@ from collections import defaultdict
 
 import torch
 
+import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from .stage3_backend import param_manager, profiling_results
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000
-
-from .stage3_backend import param_manager, profiling_results
 
 persistent_optimized = False
 
@@ -55,7 +54,6 @@ def sort_params_by_time_per_size():
     # print(f"ds_id_to_size={ds_id_to_size}")
     # print(f"ds_id_to_time={ds_id_to_time}")
 
-    import deepspeed.comm as dist
     if dist.get_rank() == 0:
         for ds_id in ds_ids:
             dtime_in_sec = ds_id_to_prof_dtime[ds_id]
@@ -77,9 +75,10 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
         total_mem = accelerator.total_memory()
         available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
 
-        print(
-            f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
-        )
+        if dist.get_rank() == 0:
+            print(
+                f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
+            )
 
         sorted_ds_ids = sort_params_by_time_per_size()
         persistent_mem = 0
@@ -88,7 +87,8 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
                 break
             persistent_mem += size
             nz3.set_persistent(ds_id, True)
-            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
+            if dist.get_rank() == 0:
+                print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
         persistent_optimized = True
 

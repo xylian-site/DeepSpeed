@@ -1,16 +1,17 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from collections import defaultdict
 
 import torch
 
 from deepspeed.accelerator import get_accelerator
-from .stage3_backend import profiling_results
+from .stage3_backend import param_manager, profiling_results
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000
-
-
-from .stage3_backend import param_manager, profiling_results
-
 
 persistent_optimized = False
 
@@ -28,7 +29,7 @@ def sort_params_by_time_per_size():
         profile = profiling_results[graph_id]
         for n in profile.fwd_graph.nodes:
             if n.target == torch.ops.native_z3.allgather_param:
-                assert "tensor_size" in n.meta               
+                assert "tensor_size" in n.meta
                 ds_id_to_size[n.args[2]] = n.meta["tensor_size"]
                 assert "device_time" in n.meta
                 ds_id_to_time[n.args[2]] += n.meta["device_time"]
@@ -46,10 +47,7 @@ def sort_params_by_time_per_size():
 
     # print(f"ds_id_to_size={ds_id_to_size}")
     # print(f"ds_id_to_time={ds_id_to_time}")
-    for ds_id in ds_ids:
-        print(f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]} time={ds_id_to_time[ds_id]} size={ds_id_to_size[ds_id]}")
-
-    return ds_ids
+    return {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
 
 def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
@@ -61,8 +59,18 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
         total_mem = accelerator.total_memory()
         available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
 
-        print(f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}")
-        sort_params_by_time_per_size()
+        print(
+            f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
+        )
+        sorted_ds_ids = sort_params_by_time_per_size()
+        persistent_mem = 0
+        for ds_id, size in sorted_ds_ids.items():
+            if persistent_mem + size > available_mem:
+                break
+            persistent_mem += size
+            nz3.set_persistent(ds_id, True)
+            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
+
         persistent_optimized = True
 
     nz3.start_forward()

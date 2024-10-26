@@ -1,9 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from collections import defaultdict
 
 import torch
 
 from deepspeed.accelerator import get_accelerator
-from .stage3_backend import profiling_results
+from .stage3_backend import param_manager, profiling_results
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000
@@ -49,6 +54,7 @@ def sort_params_by_time_per_size():
 
     # print(f"ds_id_to_size={ds_id_to_size}")
     # print(f"ds_id_to_time={ds_id_to_time}")
+
     import deepspeed.comm as dist
     if dist.get_rank() == 0:
         for ds_id in ds_ids:
@@ -59,7 +65,7 @@ def sort_params_by_time_per_size():
                 f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
             )
 
-    return ds_ids
+    return {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
 
 def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
@@ -74,7 +80,16 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
         print(
             f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
         )
-        sort_params_by_time_per_size()
+
+        sorted_ds_ids = sort_params_by_time_per_size()
+        persistent_mem = 0
+        for ds_id, size in sorted_ds_ids.items():
+            if persistent_mem + size > available_mem:
+                break
+            persistent_mem += size
+            nz3.set_persistent(ds_id, True)
+            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
+
         persistent_optimized = True
 
     nz3.start_forward()

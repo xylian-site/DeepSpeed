@@ -39,6 +39,7 @@ public:
     std::vector<int64_t> getShape() const { return shape_; }
     at::Tensor getDSTensor() const { return ds_tensor_; }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
+    void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
 private:
@@ -137,6 +138,7 @@ public:
     const size_t getNumParams() const { return params_.size(); }
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
+    void setPersistent(long ds_id, bool persistent) { params_.at(ds_id).setPersistent(persistent); }
     // bool useSymmMem() const { return use_symm_mem_; }
 
 private:
@@ -650,6 +652,11 @@ void register_param(long ds_id,
     param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
 }
 
+void set_persistent(long ds_id, bool persistent)
+{
+    param_registry->setPersistent(ds_id, persistent);
+}
+
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     return executors_[graph_id]->allgather_param(param_tensor, ds_id, symm_mem);
@@ -789,6 +796,7 @@ TORCH_LIBRARY_IMPL(native_z3, Meta, m)
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.def("register_param", &n3z::register_param, "Register a parameter");
+    m.def("set_persistent", &n3z::set_persistent, "Set persistent flag for a parameter");
     m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
     m.def("init", &n3z::init, "Set the process group");
     m.def("cleanup", &n3z::cleanup, "Cleanup the process group");

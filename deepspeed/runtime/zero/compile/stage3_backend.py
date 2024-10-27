@@ -22,7 +22,7 @@ from deepspeed.accelerator import get_accelerator
 from .fx import add_postprocess, add_args_process, get_output_node
 # from .schedule import schedule
 from .graph_param import DSGraphParamManager
-from .profile import ProfilingInterpreter, MemoryProfilingInterpreter
+from .graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
 from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait

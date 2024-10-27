@@ -139,7 +139,6 @@ public:
     const at::Tensor& getGatheredParam(long ds_id) const { return gathered_params_.at(ds_id); }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
     void setPersistent(long ds_id, bool persistent) { params_.at(ds_id).setPersistent(persistent); }
-    // bool useSymmMem() const { return use_symm_mem_; }
 
 private:
     std::unordered_map<long, DSParam> params_;
@@ -326,8 +325,7 @@ public:
         }
     }
 
-    at::Tensor allgather_param(at::Tensor param_tensor,
-                               long ds_id,
+    at::Tensor launchAllGather(long ds_id,
                                c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
@@ -338,9 +336,6 @@ public:
 
         const at::Tensor& ds_tensor = param.getDSTensor();
         at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
-
-        ag_comp_done_events_[ds_id]->record();
-        ag_comp_done_events_[ds_id]->block(comm_stream_);
 
         if (symm_mem == nullptr) {
             ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
@@ -371,11 +366,36 @@ public:
             symm_mem->barrier(0);
         }
 
-        ag_comm_done_events_[ds_id]->record(comm_stream_);
-
         param_registry_->registerGatheredParam(ds_id, output_buf);
 
         return output_buf;
+    }
+
+    at::Tensor allgather_param(long ds_id,
+                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    {
+        ag_comp_done_events_[ds_id]->record();
+        ag_comp_done_events_[ds_id]->block(comm_stream_);
+
+        auto output_buf = launchAllGather(ds_id, symm_mem);
+
+        ag_comm_done_events_[ds_id]->record(comm_stream_);
+        return output_buf;
+    }
+
+    void prefetch_params_fused(std::vector<int64_t> ds_ids,
+                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    {
+        for (long ds_id : ds_ids) {
+            ag_comp_done_events_[ds_id]->record();
+            ag_comp_done_events_[ds_id]->block(comm_stream_);
+        }
+
+        ncclGroupStart();
+        for (long ds_id : ds_ids) { launchAllGather(ds_id, symm_mem); }
+        ncclGroupEnd();
+
+        for (long ds_id : ds_ids) { ag_comm_done_events_[ds_id]->record(comm_stream_); }
     }
 
     at::Tensor release_param(at::Tensor v, long ds_id)
@@ -659,7 +679,12 @@ void set_persistent(long ds_id, bool persistent)
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->allgather_param(param_tensor, ds_id, symm_mem);
+    return executors_[graph_id]->allgather_param(ds_id, symm_mem);
+}
+
+void prefetch_params_fused(long graph_id, const std::vector<long>& ds_ids)
+{
+    executors_[graph_id]->prefetch_params_fused(ds_ids, symm_mem);
 }
 
 // for profiling
@@ -757,6 +782,7 @@ at::Tensor test_call(at::Tensor a)
 TORCH_LIBRARY(native_z3, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
+    m.def("prefetch_params_fused(int graph_id, int[] ids) -> ()");
     m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def(
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");

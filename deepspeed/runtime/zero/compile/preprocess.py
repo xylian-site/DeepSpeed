@@ -7,6 +7,7 @@ from collections import defaultdict
 
 import torch
 
+import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from .stage3_backend import param_manager, profiling_results
 
@@ -19,6 +20,8 @@ persistent_optimized = False
 def sort_params_by_time_per_size():
     ds_id_to_size = {}
     ds_id_to_time = defaultdict(float)
+    ds_id_to_prof_dtime = defaultdict(float)
+    ds_id_to_prof_wtime = defaultdict(float)
 
     for graph_id, pm in param_manager.items():
         params = pm.params
@@ -34,6 +37,9 @@ def sort_params_by_time_per_size():
                 assert "device_time" in n.meta
                 ds_id_to_time[n.args[2]] += n.meta["device_time"]
 
+                ds_id_to_prof_dtime[n.args[2]] = n.meta["device_time"]
+                ds_id_to_prof_wtime[n.args[2]] = n.meta["wall_time"]
+
         if profile.bwd_graph is not None:
             for n in profile.bwd_graph.nodes:
                 if n.target == torch.ops.native_z3.allgather_param:
@@ -47,6 +53,16 @@ def sort_params_by_time_per_size():
 
     # print(f"ds_id_to_size={ds_id_to_size}")
     # print(f"ds_id_to_time={ds_id_to_time}")
+
+    if dist.get_rank() == 0:
+        for ds_id in ds_ids:
+            dtime_in_sec = ds_id_to_prof_dtime[ds_id]
+            wtime_in_sec = ds_id_to_prof_wtime[ds_id]
+            size_in_mb = ds_id_to_size[ds_id] / 1024 / 1024
+            print(
+                f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
+            )
+
     return {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
 
@@ -59,9 +75,11 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
         total_mem = accelerator.total_memory()
         available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
 
-        print(
-            f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
-        )
+        if dist.get_rank() == 0:
+            print(
+                f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
+            )
+
         sorted_ds_ids = sort_params_by_time_per_size()
         persistent_mem = 0
         for ds_id, size in sorted_ds_ids.items():
@@ -69,7 +87,8 @@ def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
                 break
             persistent_mem += size
             nz3.set_persistent(ds_id, True)
-            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
+            if dist.get_rank() == 0:
+                print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
         persistent_optimized = True
 

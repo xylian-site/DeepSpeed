@@ -13,7 +13,7 @@ from torch.fx import Graph, Node
 from torch.fx.node import map_arg
 from torch.utils._pytree import tree_iter
 
-from .util import tensor_meta_size, get_last_uses
+from .util import get_last_uses
 from .fx import get_output_node
 
 
@@ -91,9 +91,9 @@ def create_mem_table(graph: Graph) -> Dict[str, int]:
     mem_table = {}
     for node in graph.nodes:
         if node.name.startswith("allgather_ds_param"):
-            mem_table[node.name] = tensor_meta_size(node.meta["tensor_meta"])
+            mem_table[node.name] = node.meta["tensor_size"]
         elif node.name.startswith("release_ds_param") or node.name.startswith("reduce_ds_param"):
-            mem_table[node.name] = -tensor_meta_size(node.meta["tensor_meta"])
+            mem_table[node.name] = -node.meta["tensor_size"]
         else:
             mem_table[node.name] = 0
 
@@ -273,7 +273,9 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
 
     # check tensor size
     for node in graph.nodes:
-        assert "tensor_size" in node.meta, f"Node {node} does not have tensor_size"
+        if "tensor_size" not in node.meta:
+            # Our profiler may not visit all nodes because of the control flow.
+            node.meta["tensor_size"] = 0
 
     scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer = init_schedule_with_placeholders(
         graph)

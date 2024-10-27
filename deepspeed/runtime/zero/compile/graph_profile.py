@@ -63,7 +63,6 @@ class ProfilingInterpreter(Interpreter):
 
         assert iteration > 0
         assert warmup >= 0
-        assert warmup < iteration
         self.iteration = iteration
         self.warmup = warmup
         self.device = torch.device(get_accelerator().current_device())
@@ -126,10 +125,6 @@ class ProfilingInterpreter(Interpreter):
             n.meta["max_memory"] = max_mem
             n.meta["tensor_size"] = tensor_size
 
-        if is_comm_op(n):
-            assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
-            dist.barrier()
-
         run_only_once = cache_hit or n.target == torch.ops.native_z3.release_param
         iteration = 1 if run_only_once else self.iteration
         accelerator = get_accelerator()
@@ -140,18 +135,25 @@ class ProfilingInterpreter(Interpreter):
         alloc_mem_start = get_accelerator().memory_allocated()
         max_mem_start = get_accelerator().max_memory_allocated()
 
-        walltimes = []
+        if not run_only_once:
+            for i in range(self.warmup):
+                out = getattr(self, n.op)(n.target, args, kwargs)
+
+        if is_comm_op(n):
+            assert self.distributed, f"Distributed environment is not initialized but comm operator {n.name} {n.target} is used."
+            dist.barrier()
+
+        start = time.time()
         for i in range(iteration):
-            start = time.time()
             start_events[i].record()
             out = getattr(self, n.op)(n.target, args, kwargs)
             end_events[i].record()
-            walltimes.append(time.time() - start)
+        accelerator.synchronize()
+        walltime_sum = time.time() - start
 
         if is_comm_op(n):
             dist.barrier()
 
-        accelerator.synchronize()
         alloc_mem = get_accelerator().memory_allocated() - alloc_mem_start
         max_memory = get_accelerator().max_memory_allocated() - max_mem_start
         tensor_size = _node_size(out)
@@ -164,9 +166,8 @@ class ProfilingInterpreter(Interpreter):
         args = map_aggregate(args, lambda x: partition_param_if_necessary(x))
 
         if not cache_hit:
-            warmup = 0 if run_only_once else self.warmup
-            device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)][warmup:])
-            wall_time = statistics.mean(walltimes[warmup:]) * 1000
+            device_time = statistics.mean([s.elapsed_time(e) for s, e in zip(start_events, end_events)])
+            wall_time = walltime_sum / iteration * 1000
 
             with unset_fake_temporarily():
                 vals_to_bcast = torch.tensor([device_time, wall_time, alloc_mem, max_memory, tensor_size],

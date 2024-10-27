@@ -306,19 +306,19 @@ public:
     }
     ~CustomOpExecutor() {}
 
-    void register_op_n_args(const std::string& op_name, long n_args, bool is_backward)
+    void registerOpNArgs(const std::string& op_name, long n_args, bool is_backward)
     {
         GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
         op_states.registerOpNArgs(op_name, n_args);
     }
 
-    void start_forward() {}
+    void startForward() {}
 
-    void end_forward() {}
+    void endForward() {}
 
-    void start_backward(bool update) { param_updated_ = update; }
+    void startBackward(bool update) { param_updated_ = update; }
 
-    void end_backward()
+    void endBackward()
     {
         if (param_updated_) {
             for (auto& it : has_acc_grad_) { it.second = false; }
@@ -371,8 +371,8 @@ public:
         return output_buf;
     }
 
-    at::Tensor allgather_param(long ds_id,
-                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    at::Tensor allgatherParam(long ds_id,
+                              c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         ag_comp_done_events_[ds_id]->record();
         ag_comp_done_events_[ds_id]->block(comm_stream_);
@@ -383,8 +383,8 @@ public:
         return output_buf;
     }
 
-    void prefetch_params_fused(std::vector<int64_t> ds_ids,
-                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    void prefetchParamsFused(std::vector<int64_t> ds_ids,
+                             c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         for (long ds_id : ds_ids) {
             ag_comp_done_events_[ds_id]->record();
@@ -398,7 +398,7 @@ public:
         for (long ds_id : ds_ids) { ag_comm_done_events_[ds_id]->record(comm_stream_); }
     }
 
-    at::Tensor release_param(at::Tensor v, long ds_id)
+    at::Tensor releaseParam(at::Tensor v, long ds_id)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
@@ -417,11 +417,11 @@ public:
         return v;
     }
 
-    at::Tensor wait_allgather(at::Tensor v,
-                              long ds_id,
-                              const std::string& user,
-                              long n_args,
-                              bool is_backward)
+    at::Tensor waitAllgather(at::Tensor v,
+                             long ds_id,
+                             const std::string& user,
+                             long n_args,
+                             bool is_backward)
     {
         GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
 
@@ -436,7 +436,7 @@ public:
         return v;
     }
 
-    at::Tensor reduce_grad(at::Tensor grad_tensor, long ds_id)
+    at::Tensor reduceGrad(at::Tensor grad_tensor, long ds_id)
     {
         int world_size = process_group_->getSize();
         const DSParam& param = param_registry_->getParam(ds_id);
@@ -476,7 +476,7 @@ public:
             // This synchronization ensures all of reduce calls are done before optimizer's step.
             at::cuda::stream_synchronize(comm_stream_);
 
-            end_backward();
+            endBackward();
         }
 
         return at::Tensor();
@@ -612,7 +612,7 @@ void register_graph_ops(long graph_id,
 {
     assert(op_names.size() == n_args.size());
     for (int i = 0; i < op_names.size(); i++) {
-        executors_[graph_id]->register_op_n_args(op_names[i], n_args[i], false);
+        executors_[graph_id]->registerOpNArgs(op_names[i], n_args[i], false);
     }
 }
 
@@ -622,7 +622,7 @@ void register_bwd_graph_ops(long graph_id,
 {
     assert(hasKey(executors_, graph_id));
     for (int i = 0; i < op_names.size(); i++) {
-        executors_[graph_id]->register_op_n_args(op_names[i], n_args[i], true);
+        executors_[graph_id]->registerOpNArgs(op_names[i], n_args[i], true);
     }
 }
 
@@ -679,12 +679,12 @@ void set_persistent(long ds_id, bool persistent)
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->allgather_param(ds_id, symm_mem);
+    return executors_[graph_id]->allgatherParam(ds_id, symm_mem);
 }
 
 void prefetch_params_fused(long graph_id, const std::vector<long>& ds_ids)
 {
-    executors_[graph_id]->prefetch_params_fused(ds_ids, symm_mem);
+    executors_[graph_id]->prefetchParamsFused(ds_ids, symm_mem);
 }
 
 // for profiling
@@ -713,7 +713,7 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
 
 at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->release_param(v, ds_id);
+    return executors_[graph_id]->releaseParam(v, ds_id);
 }
 
 at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
@@ -725,7 +725,7 @@ at::Tensor wait_allgather(at::Tensor v,
                           long n_args,
                           bool is_backward)
 {
-    executors_[graph_id]->wait_allgather(v, ds_id, user, n_args, is_backward);
+    executors_[graph_id]->waitAllgather(v, ds_id, user, n_args, is_backward);
     return v;
 }
 
@@ -741,7 +741,7 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
-    if (!profile) { executors_[graph_id]->reduce_grad(grad_tensor, ds_id); }
+    if (!profile) { executors_[graph_id]->reduceGrad(grad_tensor, ds_id); }
     return at::Tensor();
 }
 
@@ -753,22 +753,22 @@ at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
 void start_forward()
 {
     lazy_init_symm_memory();
-    for (auto& it : executors_) { it.second->start_forward(); }
+    for (auto& it : executors_) { it.second->startForward(); }
 }
 
 void end_forward()
 {
-    for (auto& it : executors_) { it.second->end_forward(); }
+    for (auto& it : executors_) { it.second->endForward(); }
 }
 
 void start_backward(bool update)
 {
-    for (auto& it : executors_) { it.second->start_backward(update); }
+    for (auto& it : executors_) { it.second->startBackward(update); }
 }
 
 void end_backward()
 {
-    for (auto& it : executors_) { it.second->end_backward(); }
+    for (auto& it : executors_) { it.second->endBackward(); }
 }
 
 at::Tensor test_call(at::Tensor a)

@@ -117,11 +117,10 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
         new_order_rev.append(node)
 
         if node.op != "placeholder" and order_rev[i + 1].op == "placeholder":
-            # last flush
-            all_remaining_ags = prefetch_ags + [ag_node for ag_group in prefetch_ag_groups for ag_node in ag_group]
-            if len(all_remaining_ags) > 0:
-                new_order_rev.append(all_remaining_ags)
-            print_rank_0(f"flush last prefetch_ags ds_ids={all_remaining_ags}")
+            for ag_group in prefetch_ag_groups:
+                new_order_rev.append(ag_group)
+            if len(prefetch_ags) > 0:
+                new_order_rev.append(prefetch_ags)
 
     new_graph = Graph()
     env = {}

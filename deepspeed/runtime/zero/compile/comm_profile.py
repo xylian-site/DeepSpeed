@@ -138,7 +138,7 @@ def create_predictor():
     sizes = [result[0] for result in profile_results]
     durations = [result[1] for result in profile_results]
 
-    predictor = interp1d(sizes, durations, kind='cubic', fill_value="extrapolate")
+    predictor = interp1d(sizes, durations, kind='linear', fill_value="extrapolate")
 
     def f(size):
         if size == 0:

@@ -9,6 +9,7 @@ import torch
 from torch.fx import Graph, Node
 
 from deepspeed.accelerator import get_accelerator
+import deepspeed.comm as dist
 
 from .comm_profile import create_predictor
 
@@ -27,11 +28,16 @@ def is_prefetch_enabled():
     return run_prefetch_pass
 
 
+def print_rank_0(message):
+    if dist.get_rank() == 0:
+        print(message)
+
+
 def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]],
                       op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]]):
-    max_mem = get_accelerator().available_memory() - MARGIN
+    max_mem = get_accelerator().total_memory() - MARGIN
 
-    print(
+    print_rank_0(
         f"schedule_prefetch max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} margin={MARGIN}"
     )
 
@@ -47,6 +53,10 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
     prefetch_ag_groups = []
     ag_tensor_size_sum = 0
     for i, node in enumerate(order_rev):
+        print_rank_0(
+            f"Checking node reverse order {node.name} {node.target} ag_tensor_size_sum={ag_tensor_size_sum} max_mem={max_mem}"
+        )
+
         if node.op != "placeholder":
             assert i < len(order_rev) - 1
             assert node.name in mem_dict
@@ -61,11 +71,16 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                     total_ag_tensor_size = sum([tensor_size_dict[ag_node.name] for ag_node in fused_ag_nodes])
                     ag_tensor_size_sum -= total_ag_tensor_size
                     new_order_rev.append(fused_ag_nodes)
-                    continue
+                    print_rank_0(
+                        f"Free up memory fused_ag_nodes={fused_ag_nodes} next_alloc_mem={next_alloc_mem} total_ag_tensor_size={total_ag_tensor_size} ag_tensor_size_sum={ag_tensor_size_sum} max_mem={max_mem}"
+                    )
                 elif len(prefetch_ags) > 0:
                     prefetch_ag_groups.append(prefetch_ags)
                     prefetch_ags = []
                     ag_tensor_size_sum = 0
+                    print_rank_0(
+                        f"Free up memory prefetch_ags={prefetch_ag_groups} next_alloc_mem={next_alloc_mem} ag_tensor_size_sum={ag_tensor_size_sum} max_mem={max_mem}"
+                    )
                 else:
                     break
 
@@ -75,11 +90,25 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                 pred_time_next = comm_predictor(tensor_size_dict[node.name])
                 pred_time_fused = comm_predictor(ag_tensor_size_sum + tensor_size_dict[node.name])
 
-                if len(prefetch_ags) > 0 and pred_time_fused > FUSE_FACTOR * (pred_time_current + pred_time_next):
+                print_rank_0(
+                    f"found allgather_param ag_tensor_size_sum={ag_tensor_size_sum} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused} (pred_time_current + pred_time_next)={pred_time_current + pred_time_next}"
+                )
+
+                FUSE_FACTOR1 = 0.5
+                FUSE_FACTOR2 = 0.8
+                do_fuse = pred_time_current < pred_time_next * FUSE_FACTOR1
+                do_fuse = do_fuse or pred_time_current >= pred_time_next and pred_time_fused < FUSE_FACTOR2 * (
+                    pred_time_current + pred_time_next)
+
+                if len(prefetch_ags) > 0 and not do_fuse:
                     # stop fusing here
                     prefetch_ag_groups.append(prefetch_ags)
                     prefetch_ags = []
-
+                    print_rank_0(f"stop fusing prefetch_ags={prefetch_ag_groups}")
+                else:
+                    print_rank_0(
+                        f"continue fusing ag_tensor_size_sum={ag_tensor_size_sum} ag_size={tensor_size_dict[node.name]} prefetch_ags={prefetch_ags}"
+                    )
                 prefetch_ags.append(node)
                 ag_tensor_size_sum += tensor_size_dict[node.name]
 
@@ -92,11 +121,13 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
             all_remaining_ags = prefetch_ags + [ag_node for ag_group in prefetch_ag_groups for ag_node in ag_group]
             if len(all_remaining_ags) > 0:
                 new_order_rev.append(all_remaining_ags)
+            print_rank_0(f"flush last prefetch_ags ds_ids={all_remaining_ags}")
 
     new_graph = Graph()
     env = {}
     for node in reversed(new_order_rev):
         if isinstance(node, Node):
+            #print(f"reconstruct {node.name} {node.target}")
             new_node = new_graph.node_copy(node, lambda n: env[n.name])
             env[node.name] = new_node
         else:
@@ -106,5 +137,6 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
             ds_ids = [ag_node.args[2] for ag_node in node]
             new_graph.call_function(torch.ops.native_z3.prefetch_params_fused,
                                     args=(graph_id, param_nodes_copy, ds_ids))
+            #print(f"Found prefetch group {node}")
 
     return new_graph

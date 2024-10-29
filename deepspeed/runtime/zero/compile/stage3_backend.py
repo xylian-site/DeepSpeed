@@ -287,7 +287,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                 gm.recompile()
 
                 if debug_log and rank == 0:
-                    print(f"Prefetching enabled for graph_id={graph_id} {graph}")
+                    print(f"Prefetching enabled for fwd graph_id={graph_id} {graph}")
 
                 mem_prof = MemoryProfilingInterpreter(gm)
                 mem_prof.run(*real_inputs)
@@ -383,10 +383,10 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                 gm.recompile()
 
                 if debug_log and rank == 0:
-                    print(f"Prefetching enabled for graph_id={graph_id} {graph}")
+                    print(f"Prefetching enabled for bwd graph_id={graph_id} {graph}")
 
                 mem_prof = MemoryProfilingInterpreter(gm)
-                mem_prof.run(*real_inputs)
+                mem_prof.run(*validated_inputs)
                 if debug_log and rank == 0:
                     mem_prof.dump(f"mem_prof_bwd_{graph_id}_after_prefetch.csv")
 

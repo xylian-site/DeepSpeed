@@ -374,6 +374,22 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
             for name, current_alloc, delta in mem_prof.mem_record:
                 profiling_results[graph_id].bwd_mem.append((name, current_alloc, delta))
 
+            if is_prefetch_enabled():
+                graph = schedule_prefetch(gm.graph, graph_id, profiling_results[graph_id].bwd_mem,
+                                          profiling_results[graph_id].bwd_time,
+                                          profiling_results[graph_id].bwd_tensor_sizes)
+                graph.lint()
+                gm.graph = graph
+                gm.recompile()
+
+                if debug_log and rank == 0:
+                    print(f"Prefetching enabled for graph_id={graph_id} {graph}")
+
+                mem_prof = MemoryProfilingInterpreter(gm)
+                mem_prof.run(*real_inputs)
+                if debug_log and rank == 0:
+                    mem_prof.dump(f"mem_prof_bwd_{graph_id}_after_prefetch.csv")
+
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd

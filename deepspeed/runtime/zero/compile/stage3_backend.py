@@ -27,6 +27,7 @@ from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
+from .prefetch import schedule_prefetch, is_prefetch_enabled
 
 import os
 
@@ -240,6 +241,7 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                                     get_accelerator().available_memory(),
                                     total_activation_size,
                                     debug_log=debug_log)
+            gm.recompile()
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"fwd_{graph_id}_inflight_values.csv")
@@ -252,10 +254,9 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
 
             dump_graph(gm, f"forward_aot_scheduled_{graph_id}", skip=not dump_graphs)
 
+            del profiler
             gc.collect()
             get_accelerator().empty_cache()
-
-            gm.recompile()
 
             mem_prof = MemoryProfilingInterpreter(gm)
             mem_prof.run(*real_inputs)
@@ -272,6 +273,26 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                     (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
             for name, current_alloc, delta in mem_prof.mem_record:
                 profiling_results[graph_id].fwd_mem.append((name, current_alloc, delta))
+
+            del mem_prof
+            gc.collect()
+            get_accelerator().empty_cache()
+
+            if is_prefetch_enabled():
+                graph = schedule_prefetch(gm.graph, graph_id, profiling_results[graph_id].fwd_mem,
+                                          profiling_results[graph_id].fwd_time,
+                                          profiling_results[graph_id].fwd_tensor_sizes)
+                graph.lint()
+                gm.graph = graph
+                gm.recompile()
+
+                if debug_log and rank == 0:
+                    print(f"Prefetching enabled for graph_id={graph_id} {graph}")
+
+                mem_prof = MemoryProfilingInterpreter(gm)
+                mem_prof.run(*real_inputs)
+                if debug_log and rank == 0:
+                    mem_prof.dump(f"mem_prof_fwd_{graph_id}_after_prefetch.csv")
 
             return make_boxed_func(gm.forward)
 

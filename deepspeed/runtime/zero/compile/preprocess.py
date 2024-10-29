@@ -10,11 +10,15 @@ import torch
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from .stage3_backend import param_manager, profiling_results
+from .prefetch import enable_prefetch
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000
 
 persistent_optimized = False
+max_alloc_mem = 0
+last_optimize_step = 0
+nz3 = None
 
 
 def sort_params_by_time_per_size():
@@ -63,33 +67,42 @@ def sort_params_by_time_per_size():
                 f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
             )
 
-    return {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
+    sorted_ds_ids = {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
-
-def start_forward(nz3, micro_steps: int, global_steps: int, update: bool):
     accelerator = get_accelerator()
+    max_alloc_mem = accelerator.max_memory_allocated()
+    total_mem = accelerator.total_memory()
+    available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
 
-    global persistent_optimized
-    if global_steps > WARMUP_STEPS and not persistent_optimized:
-        max_alloc_mem = accelerator.max_memory_allocated()
-        total_mem = accelerator.total_memory()
-        available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
-
+    persistent_mem = 0
+    for ds_id, size in sorted_ds_ids.items():
+        if persistent_mem + size > available_mem:
+            break
+        persistent_mem += size
+        nz3.set_persistent(ds_id, True)
         if dist.get_rank() == 0:
-            print(
-                f"global_steps={global_steps} Max memory allocated: {max_alloc_mem} Total memory: {total_mem} available_mem: {available_mem}"
-            )
+            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
-        sorted_ds_ids = sort_params_by_time_per_size()
-        persistent_mem = 0
-        for ds_id, size in sorted_ds_ids.items():
-            if persistent_mem + size > available_mem:
-                break
-            persistent_mem += size
-            nz3.set_persistent(ds_id, True)
-            if dist.get_rank() == 0:
-                print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
-        persistent_optimized = True
+def reset_graph():
+    print(f"reset_graph")
+
+    enable_prefetch()
+    torch._dynamo.reset()
+
+
+optimize_schedule = [
+    (WARMUP_STEPS, reset_graph),
+    # (WARMUP_STEPS * 2, sort_params_by_time_per_size),
+]
+
+
+def start_forward(nz3_handle, micro_steps: int, global_steps: int, update: bool):
+    global nz3
+    nz3 = nz3_handle
+
+    if len(optimize_schedule) > 0 and global_steps == optimize_schedule[0][0]:
+        _, optimize_fn = optimize_schedule.pop(0)
+        optimize_fn()
 
     nz3.start_forward()

@@ -9,6 +9,12 @@ from scipy.interpolate import interp1d
 
 import torch
 
+try:
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
+except ImportError:
+    # torch < v2.5
+    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+
 import deepspeed
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
@@ -47,7 +53,7 @@ def get_bw(comm_op, size, duration):
 
 
 # Run all_gather and print metrics
-def timed_all_gather(input, output, start_event, end_event, warmup, trials, async_op):
+def timed_all_gather(device, input, output, start_event, end_event, warmup, trials, async_op):
     sync_all()
     # Warmups, establish connections, etc.
     for i in range(warmup):
@@ -67,7 +73,11 @@ def timed_all_gather(input, output, start_event, end_event, warmup, trials, asyn
     size = input.element_size() * input.nelement()
     # tput, busbw = get_bw('all_gather', size, avg_duration)
 
-    return size, avg_duration
+    avg_duration_ten = torch.tensor([avg_duration], device=device)
+    if dist.get_world_size() > 1:
+        dist.all_reduce(avg_duration_ten, dist.ReduceOp.AVG)
+
+    return size, avg_duration_ten.item()
 
 
 def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
@@ -84,7 +94,7 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     for x in (2**p for p in range(1, maxsize)):
         M_LIST.append(x)
 
-    results = []
+    results = [(0, 0)]
     sync_all()
     # loop over various tensor sizes
     for M in M_LIST:
@@ -106,18 +116,37 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
             else:
                 raise e
         sync_all()
-        results.append(timed_all_gather(input, output, start_event, end_event, warmup, trials, async_op))
+        results.append(timed_all_gather(device, input, output, start_event, end_event, warmup, trials, async_op))
 
     return results
 
 
-def create_predictor(results):
-    # Extract size and avg_duration from results
-    sizes = [result[0] for result in results]
-    durations = [result[1] for result in results]
+profile_results = None
 
-    # Create a linear interpolation function
-    return interp1d(sizes, durations, kind='cubic', fill_value="extrapolate")
+
+def create_predictor():
+    global profile_results
+    if profile_results is None:
+        with unset_fake_temporarily():
+            device = get_accelerator().current_device()
+            profile_results = run_all_gather(device, torch.bfloat16, 30)
+        if dist.get_rank() == 0:
+            for size, avg_duration in profile_results:
+                print(f"size: {size}, avg_duration: {avg_duration}")
+
+    # Extract size and avg_duration from results
+    sizes = [result[0] for result in profile_results]
+    durations = [result[1] for result in profile_results]
+
+    predictor = interp1d(sizes, durations, kind='cubic', fill_value="extrapolate")
+
+    def f(size):
+        if size == 0:
+            return 0
+        return predictor(size)
+
+    # Create an interpolation function
+    return f
 
 
 if __name__ == "__main__":
@@ -127,19 +156,12 @@ if __name__ == "__main__":
 
     deepspeed.init_distributed(dist_backend='nccl')
 
-    device = get_accelerator().current_device()
-    results = run_all_gather(device, torch.bfloat16, 30)
+    # Create predictor function
+    predictor = create_predictor()
 
-    if dist.get_rank() == 0:
-        for size, avg_duration in results:
-            print(f"size: {size}, avg_duration: {avg_duration}")
-
-        # Create predictor function
-        predictor = create_predictor(results)
-
-        # Predict time for a specific data size
-        example_size = 1e9
-        predicted_time = predictor(example_size)
-        print(f"Predicted time for size {example_size}: {predicted_time:.6f} seconds")
+    # Predict time for a specific data size
+    example_size = 1e9
+    predicted_time = predictor(example_size)
+    print(f"Predicted time for size {example_size}: {predicted_time:.6f} seconds")
 
     dist.destroy_process_group()

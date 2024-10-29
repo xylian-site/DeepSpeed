@@ -682,7 +682,9 @@ at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
     return executors_[graph_id]->allgatherParam(ds_id, symm_mem);
 }
 
-void prefetch_params_fused(long graph_id, const std::vector<long>& ds_ids)
+void prefetch_params_fused(long graph_id,
+                           const std::vector<at::Tensor> params,
+                           const std::vector<long>& ds_ids)
 {
     executors_[graph_id]->prefetchParamsFused(ds_ids, symm_mem);
 }
@@ -771,6 +773,12 @@ void end_backward()
     for (auto& it : executors_) { it.second->endBackward(); }
 }
 
+void reset()
+{
+    executors_.clear();
+    reduce_buckets = nullptr;
+}
+
 at::Tensor test_call(at::Tensor a)
 {
     std::cout << "test_call" << std::endl;
@@ -782,7 +790,7 @@ at::Tensor test_call(at::Tensor a)
 TORCH_LIBRARY(native_z3, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
-    m.def("prefetch_params_fused(int graph_id, int[] ids) -> ()");
+    m.def("prefetch_params_fused(int graph_id, Tensor[] params, int[] ids) -> ()");
     m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def(
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
@@ -794,6 +802,7 @@ TORCH_LIBRARY(native_z3, m)
 TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 {
     m.impl("allgather_param", &n3z::allgather_param);
+    m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
@@ -804,6 +813,7 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
 {
     m.impl("allgather_param", &n3z::allgather_param);
+    m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
@@ -837,6 +847,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("end_forward", &n3z::end_forward, "End forward pass");
     m.def("start_backward", &n3z::start_backward, "Start backward pass");
     m.def("end_backward", &n3z::end_backward, "End backward pass");
+    m.def("reset", &n3z::reset, "Reset the state");
     m.def(
         "invalidate_gathered_param", &n3z::invalidate_gathered_param, "Invalidate gathered param");
     m.def(

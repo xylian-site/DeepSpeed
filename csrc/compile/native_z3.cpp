@@ -574,7 +574,7 @@ private:
 };
 
 static std::shared_ptr<DSParamRegistry> param_registry;
-static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors_;
+static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
@@ -607,7 +607,7 @@ void enable_profiling(bool enable) { profile = enable; }
 
 void register_graph(long graph_id, const std::vector<long>& ds_ids)
 {
-    executors_[graph_id] = std::make_shared<CustomOpExecutor>(
+    executors[graph_id] = std::make_shared<CustomOpExecutor>(
         process_group, param_registry, reduce_buckets, ds_ids, nccl_comm, comm_stream);
 }
 
@@ -617,7 +617,7 @@ void register_graph_ops(long graph_id,
 {
     assert(op_names.size() == n_args.size());
     for (int i = 0; i < op_names.size(); i++) {
-        executors_[graph_id]->registerOpNArgs(op_names[i], n_args[i], false);
+        executors[graph_id]->registerOpNArgs(op_names[i], n_args[i], false);
     }
 }
 
@@ -625,9 +625,9 @@ void register_bwd_graph_ops(long graph_id,
                             const std::vector<std::string>& op_names,
                             const std::vector<long>& n_args)
 {
-    assert(hasKey(executors_, graph_id));
+    assert(hasKey(executors, graph_id));
     for (int i = 0; i < op_names.size(); i++) {
-        executors_[graph_id]->registerOpNArgs(op_names[i], n_args[i], true);
+        executors[graph_id]->registerOpNArgs(op_names[i], n_args[i], true);
     }
 }
 
@@ -684,14 +684,14 @@ void set_persistent(long ds_id, bool persistent)
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->allgatherParam(ds_id, symm_mem);
+    return executors[graph_id]->allgatherParam(ds_id, symm_mem);
 }
 
 void prefetch_params_fused(long graph_id,
                            const std::vector<at::Tensor> params,
                            const std::vector<long>& ds_ids)
 {
-    executors_[graph_id]->prefetchParamsFused(ds_ids, symm_mem);
+    executors[graph_id]->prefetchParamsFused(ds_ids, symm_mem);
 }
 
 // for profiling
@@ -720,7 +720,7 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
 
 at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
 {
-    return executors_[graph_id]->releaseParam(v, ds_id);
+    return executors[graph_id]->releaseParam(v, ds_id);
 }
 
 at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
@@ -732,7 +732,7 @@ at::Tensor wait_allgather(at::Tensor v,
                           long n_args,
                           bool is_backward)
 {
-    executors_[graph_id]->waitAllgather(v, ds_id, user, n_args, is_backward);
+    executors[graph_id]->waitAllgather(v, ds_id, user, n_args, is_backward);
     return v;
 }
 
@@ -748,7 +748,7 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
-    if (!profile) { executors_[graph_id]->reduceGrad(grad_tensor, ds_id); }
+    if (!profile) { executors[graph_id]->reduceGrad(grad_tensor, ds_id); }
     return at::Tensor();
 }
 
@@ -760,27 +760,27 @@ at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
 void start_forward()
 {
     lazy_init_symm_memory();
-    for (auto& it : executors_) { it.second->startForward(); }
+    for (auto& it : executors) { it.second->startForward(); }
 }
 
 void end_forward()
 {
-    for (auto& it : executors_) { it.second->endForward(); }
+    for (auto& it : executors) { it.second->endForward(); }
 }
 
 void start_backward(bool update)
 {
-    for (auto& it : executors_) { it.second->startBackward(update); }
+    for (auto& it : executors) { it.second->startBackward(update); }
 }
 
 void end_backward()
 {
-    for (auto& it : executors_) { it.second->endBackward(); }
+    for (auto& it : executors) { it.second->endBackward(); }
 }
 
 void reset()
 {
-    executors_.clear();
+    executors.clear();
     reduce_buckets = nullptr;
 }
 

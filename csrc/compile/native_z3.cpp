@@ -578,7 +578,7 @@ static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors_;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
-static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(false);
+static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(true);
 static ncclComm_t nccl_comm;
 static bool enable_double_buffer = false;
 static bool use_symm_mem;

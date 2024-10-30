@@ -14,7 +14,8 @@ import deepspeed.comm as dist
 from .comm_profile import create_predictor
 
 FUSE_FACTOR = 0.8
-MARGIN = 5_000_000_000
+MARGIN = 0.1
+MAX_FUSE_SIZE = 1e9
 
 run_prefetch_pass = False
 
@@ -35,7 +36,7 @@ def print_rank_0(message):
 
 def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]],
                       op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]]):
-    max_mem = get_accelerator().total_memory() - MARGIN
+    max_mem = get_accelerator().total_memory() * (1 - MARGIN)
 
     mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
     time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
@@ -93,15 +94,10 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                 pred_time_next = comm_predictor(tensor_size_dict[node.name])
                 pred_time_fused = comm_predictor(ag_tensor_size_sum + tensor_size_dict[node.name])
 
+                do_fuse = max(pred_time_current, pred_time_next) * 1.2 > pred_time_fused and (ag_tensor_size_sum + tensor_size_dict[node.name]) < MAX_FUSE_SIZE
                 print_rank_0(
-                    f"found allgather_param ag_tensor_size_sum={ag_tensor_size_sum} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused} (pred_time_current + pred_time_next)={pred_time_current + pred_time_next}"
+                    f"found allgather_param do_fuse={do_fuse} ag_tensor_size_sum={ag_tensor_size_sum} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused} (pred_time_current + pred_time_next)={pred_time_current + pred_time_next}"
                 )
-
-                FUSE_FACTOR1 = 0.5
-                FUSE_FACTOR2 = 0.8
-                do_fuse = pred_time_current < pred_time_next * FUSE_FACTOR1
-                do_fuse = do_fuse or pred_time_current >= pred_time_next and pred_time_fused < FUSE_FACTOR2 * (
-                    pred_time_current + pred_time_next)
 
                 if len(prefetch_ags) > 0 and not do_fuse:
                     # stop fusing here

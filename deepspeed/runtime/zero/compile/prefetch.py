@@ -94,7 +94,8 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                 pred_time_next = comm_predictor(tensor_size_dict[node.name])
                 pred_time_fused = comm_predictor(ag_tensor_size_sum + tensor_size_dict[node.name])
 
-                do_fuse = max(pred_time_current, pred_time_next) * 1.2 > pred_time_fused and (ag_tensor_size_sum + tensor_size_dict[node.name]) < MAX_FUSE_SIZE
+                do_fuse = max(pred_time_current, pred_time_next) * 1.2 > pred_time_fused and (
+                    ag_tensor_size_sum + tensor_size_dict[node.name]) < MAX_FUSE_SIZE
                 print_rank_0(
                     f"found allgather_param do_fuse={do_fuse} ag_tensor_size_sum={ag_tensor_size_sum} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused} (pred_time_current + pred_time_next)={pred_time_current + pred_time_next}"
                 )

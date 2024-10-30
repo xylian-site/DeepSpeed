@@ -285,13 +285,17 @@ public:
                      std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets,
                      std::vector<long> ds_ids,
                      ncclComm_t nccl_comm,
-                     at::cuda::CUDAStream comm_stream)
+                     at::cuda::CUDAStream ag_stream,
+                     at::cuda::CUDAStream rs_stream,
+                     at::cuda::CUDAStream copy_stream)
         : process_group_(process_group),
           param_registry_(std::move(param_registry)),
           reduce_buckets_(std::move(reduce_buckets)),
           ds_ids_(std::move(ds_ids)),
           nccl_comm_(nccl_comm),
-          comm_stream_(comm_stream)
+          ag_stream_(ag_stream),
+          rs_stream_(rs_stream),
+          copy_stream_(copy_stream)
     {
         for (long ds_id : ds_ids_) {
             has_acc_grad_[ds_id] = false;
@@ -320,6 +324,9 @@ public:
 
     void endBackward()
     {
+        rs_stream_.synchronize();
+        copy_stream_.synchronize();
+
         if (param_updated_) {
             for (auto& it : has_acc_grad_) { it.second = false; }
         }
@@ -339,11 +346,11 @@ public:
                                                 ds_tensor.numel(),
                                                 get_nccl_data_type(ds_tensor.scalar_type()),
                                                 nccl_comm_,
-                                                comm_stream_);
+                                                ag_stream_);
 
             if (result != ncclSuccess) { throw std::runtime_error("NCCL AllGather failed"); }
         } else {
-            at::cuda::CUDAStreamGuard guard(comm_stream_);
+            at::cuda::CUDAStreamGuard guard(ag_stream_);
             int world_size = process_group_->getSize();
             int rank = process_group_->getRank();
 
@@ -375,11 +382,11 @@ public:
         }
 
         ag_comp_done_events_[ds_id]->record();
-        ag_comp_done_events_[ds_id]->block(comm_stream_);
+        ag_comp_done_events_[ds_id]->block(ag_stream_);
 
         auto output_buf = launchAllGather(ds_id, symm_mem);
 
-        ag_comm_done_events_[ds_id]->record(comm_stream_);
+        ag_comm_done_events_[ds_id]->record(ag_stream_);
         return output_buf;
     }
 
@@ -393,14 +400,14 @@ public:
 
         for (long ds_id : ds_ids_not_gatherd) {
             ag_comp_done_events_[ds_id]->record();
-            ag_comp_done_events_[ds_id]->block(comm_stream_);
+            ag_comp_done_events_[ds_id]->block(ag_stream_);
         }
 
         ncclGroupStart();
         for (long ds_id : ds_ids_not_gatherd) { launchAllGather(ds_id, symm_mem); }
         ncclGroupEnd();
 
-        for (long ds_id : ds_ids_not_gatherd) { ag_comm_done_events_[ds_id]->record(comm_stream_); }
+        for (long ds_id : ds_ids_not_gatherd) { ag_comm_done_events_[ds_id]->record(ag_stream_); }
     }
 
     at::Tensor releaseParam(at::Tensor v, long ds_id)
@@ -459,7 +466,7 @@ public:
 
         if (grad_tensor.numel() > reduce_bucket->getSize()) {
             // extend buckets
-            at::cuda::stream_synchronize(comm_stream_);
+            at::cuda::stream_synchronize(rs_stream_);
             reduce_bucket->reserve(grad_tensor.numel());
         }
 
@@ -479,7 +486,8 @@ public:
             reduce_counter_ = ds_ids_.size();
 
             // This synchronization ensures all of reduce calls are done before optimizer's step.
-            at::cuda::stream_synchronize(comm_stream_);
+            at::cuda::stream_synchronize(rs_stream_);
+            at::cuda::stream_synchronize(copy_stream_);
 
             endBackward();
         }
@@ -493,7 +501,9 @@ private:
     std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets_;
     std::vector<long> ds_ids_;
     ncclComm_t nccl_comm_;
-    at::cuda::CUDAStream comm_stream_;
+    at::cuda::CUDAStream ag_stream_;
+    at::cuda::CUDAStream rs_stream_;
+    at::cuda::CUDAStream copy_stream_;
     GraphOpStates op_states_fwd_ = GraphOpStates();
     GraphOpStates op_states_bwd_ = GraphOpStates();
 
@@ -513,7 +523,7 @@ private:
         int64_t tmp_recv_numel = 0;
         for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
             auto comp_done_event = rs_comp_done_events_.at(t.getDSId());
-            comp_done_event->block(comm_stream_);
+            comp_done_event->block(rs_stream_);
 
             if (has_acc_grad_.at(t.getDSId())) {
                 tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();
@@ -544,7 +554,7 @@ private:
                                                     get_nccl_data_type(scalar_type),
                                                     ncclAvg,
                                                     nccl_comm_,
-                                                    comm_stream_);
+                                                    rs_stream_);
             if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
 
             if (acc_grad) { offset += recv_buf.numel(); }
@@ -552,7 +562,7 @@ private:
         ncclGroupEnd();
 
         {
-            at::cuda::CUDAStreamGuard guard(comm_stream_);
+            at::cuda::CUDAStreamGuard guard(rs_stream_);
             int64_t offset = 0;
             for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
                 bool acc_grad = has_acc_grad_.at(t.getDSId());
@@ -568,7 +578,7 @@ private:
             }
         }
 
-        reduce_buckets_->swap(scalar_type, comm_stream_);
+        reduce_buckets_->swap(scalar_type, rs_stream_);
         reduce_tasks_[scalar_type].clear();
     }
 };
@@ -578,7 +588,9 @@ static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
-static at::cuda::CUDAStream comm_stream = at::cuda::getStreamFromPool(true);
+static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
+static at::cuda::CUDAStream rs_stream = at::cuda::getStreamFromPool(true);
+static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t nccl_comm;
 static bool enable_double_buffer = false;
 static bool use_symm_mem;
@@ -607,8 +619,14 @@ void enable_profiling(bool enable) { profile = enable; }
 
 void register_graph(long graph_id, const std::vector<long>& ds_ids)
 {
-    executors[graph_id] = std::make_shared<CustomOpExecutor>(
-        process_group, param_registry, reduce_buckets, ds_ids, nccl_comm, comm_stream);
+    executors[graph_id] = std::make_shared<CustomOpExecutor>(process_group,
+                                                             param_registry,
+                                                             reduce_buckets,
+                                                             ds_ids,
+                                                             nccl_comm,
+                                                             ag_stream,
+                                                             rs_stream,
+                                                             copy_stream);
 }
 
 void register_graph_ops(long graph_id,

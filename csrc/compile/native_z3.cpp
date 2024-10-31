@@ -332,13 +332,12 @@ public:
         }
     }
 
-    at::Tensor launchAllGather(long ds_id,
-                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
+    void launchAllGather(at::Tensor output_buf,
+                         long ds_id,
+                         c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
-
         const at::Tensor& ds_tensor = param.getDSTensor();
-        at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
 
         if (symm_mem == nullptr) {
             ncclResult_t result = ncclAllGather(ds_tensor.contiguous().data_ptr(),
@@ -370,8 +369,6 @@ public:
         }
 
         param_registry_->registerGatheredParam(ds_id, output_buf);
-
-        return output_buf;
     }
 
     at::Tensor allgatherParam(long ds_id,
@@ -381,10 +378,14 @@ public:
             return param_registry_->getGatheredParam(ds_id);
         }
 
+        const DSParam& param = param_registry_->getParam(ds_id);
+        const at::Tensor& ds_tensor = param.getDSTensor();
+        at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
+
         ag_comp_done_events_[ds_id]->record();
         ag_comp_done_events_[ds_id]->block(ag_stream_);
 
-        auto output_buf = launchAllGather(ds_id, symm_mem);
+        launchAllGather(output_buf, ds_id, symm_mem);
 
         ag_comm_done_events_[ds_id]->record(ag_stream_);
         return output_buf;
@@ -398,13 +399,22 @@ public:
             if (!param_registry_->hasGatheredParam(ds_id)) { ds_ids_not_gatherd.push_back(ds_id); }
         }
 
+        std::unordered_map<long, at::Tensor> output_bufs;
+        for (long ds_id : ds_ids_not_gatherd) {
+            const DSParam& param = param_registry_->getParam(ds_id);
+            output_bufs[ds_id] = torch::empty(param.getShape(), param.getDSTensor().options());
+        }
+
         for (long ds_id : ds_ids_not_gatherd) {
             ag_comp_done_events_[ds_id]->record();
             ag_comp_done_events_[ds_id]->block(ag_stream_);
         }
 
         ncclGroupStart();
-        for (long ds_id : ds_ids_not_gatherd) { launchAllGather(ds_id, symm_mem); }
+        for (long ds_id : ds_ids_not_gatherd) {
+            assert(hasKey(output_bufs, ds_id));
+            launchAllGather(output_bufs.at(ds_id), ds_id, symm_mem);
+        }
         ncclGroupEnd();
 
         for (long ds_id : ds_ids_not_gatherd) { ag_comm_done_events_[ds_id]->record(ag_stream_); }

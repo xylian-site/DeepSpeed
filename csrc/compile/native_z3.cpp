@@ -305,6 +305,8 @@ public:
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
             rs_comp_done_events_[ds_id] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            rs_copy_done_events_[ds_id] =
+                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
         }
         reduce_counter_ = ds_ids_.size();
     }
@@ -483,10 +485,16 @@ public:
         at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
 
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}));
-        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
-
         rs_comp_done_events_[ds_id]->record(comp_stream);
+
+        {
+            at::cuda::CUDAStreamGuard guard(copy_stream_);
+            rs_comp_done_events_[ds_id]->block(copy_stream_);
+            reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}), true);
+            rs_copy_done_events_[ds_id]->record(copy_stream_);
+        }
+
+        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
 
         reduce_counter_--;
 
@@ -520,6 +528,7 @@ private:
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comp_done_events_;
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> ag_comm_done_events_;
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events_;
+    std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_copy_done_events_;
 
     size_t reduce_counter_ = 0;
     bool param_updated_ = false;
@@ -532,8 +541,8 @@ private:
 
         int64_t tmp_recv_numel = 0;
         for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-            auto comp_done_event = rs_comp_done_events_.at(t.getDSId());
-            comp_done_event->block(rs_stream_);
+            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
+            copy_done_event->block(rs_stream_);
 
             if (has_acc_grad_.at(t.getDSId())) {
                 tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();

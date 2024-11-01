@@ -11,7 +11,7 @@ from torch.fx import Graph, Node
 from deepspeed.accelerator import get_accelerator
 import deepspeed.comm as dist
 
-from .comm_profile import create_predictor
+from ..profilers.comm_profile import create_predictor
 
 FUSE_FACTOR = 0.8
 MARGIN = 0.1

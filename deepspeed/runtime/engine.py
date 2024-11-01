@@ -3749,7 +3749,7 @@ class DeepSpeedEngine(Module):
                 self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             WARMUP_STEPS = 5
-            from deepspeed.runtime.zero.compile.prefetch import schedule_prefetch
+            from deepspeed.runtime.zero.compile.passes.prefetch import schedule_prefetch
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
 
             opt_passes = [(schedule_prefetch, 1.0)]

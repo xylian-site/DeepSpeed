@@ -22,7 +22,7 @@ except ImportError:
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from .util import is_comm_op
+from ..util import is_comm_op
 
 
 def _all_real_if_tensor(args):

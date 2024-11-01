@@ -7,7 +7,6 @@ import gc
 from collections import defaultdict
 from typing import List, Dict, Tuple
 from dataclasses import dataclass, field
-import os
 
 import torch
 from torch.fx import Node, Graph, GraphModule
@@ -21,20 +20,13 @@ import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
 from .fx import add_postprocess, add_args_process, get_output_node
-# from .schedule import schedule
 from .graph_param import DSGraphParamManager
-from .graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
+from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
 from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
-from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
 
-pid = os.getpid()
-
-gathered_params = {}
-param_map = {}
-z3_optimizer = None
-nz3 = None
+ops_no_wait = [torch.ops.aten.sym_size.int]
 
 
 def _make_node_meta(node: Node, ds_id: int, comm: bool):

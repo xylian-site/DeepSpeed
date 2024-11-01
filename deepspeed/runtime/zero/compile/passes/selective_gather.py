@@ -9,7 +9,7 @@ import torch
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from .stage3_backend import param_manager, profiling_results
+from ..stage3_backend import param_manager, profiling_results
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000

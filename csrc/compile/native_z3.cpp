@@ -485,16 +485,16 @@ public:
         at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
 
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        rs_comp_done_events_[ds_id]->record(comp_stream);
+        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
 
+        rs_comp_done_events_[ds_id]->record(comp_stream);
+        rs_comp_done_events_[ds_id]->block(copy_stream_);
         {
             at::cuda::CUDAStreamGuard guard(copy_stream_);
-            rs_comp_done_events_[ds_id]->block(copy_stream_);
             reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}), true);
             rs_copy_done_events_[ds_id]->record(copy_stream_);
         }
-
-        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
+        rs_copy_done_events_[ds_id]->block(comp_stream);
 
         reduce_counter_--;
 

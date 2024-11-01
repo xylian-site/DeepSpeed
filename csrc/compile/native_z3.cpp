@@ -499,7 +499,7 @@ public:
         reduce_counter_--;
 
         if (reduce_counter_ == 0) {
-            flushReduceBucket(scalar_type);
+            flushAllReduceBuckets();
 
             reduce_counter_ = ds_ids_.size();
 
@@ -600,6 +600,11 @@ private:
         reduce_buckets_->swap(scalar_type, rs_stream_);
         reduce_tasks_[scalar_type].clear();
     }
+
+    void flushAllReduceBuckets()
+    {
+        for (const auto& it : reduce_tasks_) { flushReduceBucket(it.first); }
+    }
 };
 
 static std::shared_ptr<DSParamRegistry> param_registry;
@@ -670,6 +675,7 @@ void register_bwd_graph_ops(long graph_id,
 
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,
+          bool _enable_double_buffer,
           bool _use_symm_mem)
 {
     process_group = pg;
@@ -695,6 +701,7 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
     param_registry = std::make_shared<DSParamRegistry>();
     reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
                                                                   enable_double_buffer);
+    enable_double_buffer = _enable_double_buffer;
     use_symm_mem = _use_symm_mem;
 }
 

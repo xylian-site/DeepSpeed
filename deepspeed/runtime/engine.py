@@ -1899,11 +1899,9 @@ class DeepSpeedEngine(Module):
             inputs = self._cast_inputs_half(inputs)
 
         if hasattr(self, "nz3"):
-            from deepspeed.runtime.zero.compile.preprocess import start_forward
-            start_forward(self.nz3,
-                          micro_steps=self.micro_steps,
-                          global_steps=self.global_steps,
-                          update=self.is_gradient_accumulation_boundary())
+            self.launch_compile_passes(micro_steps=self.micro_steps,
+                                       global_steps=self.global_steps,
+                                       update=self.is_gradient_accumulation_boundary())
 
         loss = self.module(*inputs, **kwargs)
 
@@ -3750,10 +3748,24 @@ class DeepSpeedEngine(Module):
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
                 self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
+            WARMUP_STEPS = 5
+            from deepspeed.runtime.zero.compile.prefetch import schedule_prefetch
+            from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
+
+            opt_passes = [(schedule_prefetch, 1.0)]
+
+            def launch_compile_passes(micro_steps=self.micro_steps,
+                                      global_steps=self.global_steps,
+                                      update=self.is_gradient_accumulation_boundary()):
+                if global_steps == WARMUP_STEPS:
+                    torch._dynamo.reset()
+                    launch_opt_passes()
+
+            self.launch_compile_passes = launch_compile_passes
+
             from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()
-            from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend
-            backend = make_stage3_backend(scheduler=scheduler, dump_graphs=dump_graphs)
+            backend = make_stage3_backend(opt_passes, scheduler=scheduler, dump_graphs=dump_graphs)
 
         print(f"Compiling with {scheduler}")
         if 'backend' in compile_kwargs:

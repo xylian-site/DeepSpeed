@@ -10,7 +10,6 @@ import torch
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from .stage3_backend import param_manager, profiling_results
-from .prefetch import enable_prefetch
 
 WARMUP_STEPS: int = 5
 MEM_MARGIN: int = 10_000_000_000
@@ -82,27 +81,3 @@ def sort_params_by_time_per_size():
         nz3.set_persistent(ds_id, True)
         if dist.get_rank() == 0:
             print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
-
-
-def reset_graph():
-    print(f"reset_graph")
-
-    enable_prefetch()
-    torch._dynamo.reset()
-
-
-optimize_schedule = [
-    (WARMUP_STEPS, reset_graph),
-    # (WARMUP_STEPS * 2, sort_params_by_time_per_size),
-]
-
-
-def start_forward(nz3_handle, micro_steps: int, global_steps: int, update: bool):
-    global nz3
-    nz3 = nz3_handle
-
-    if len(optimize_schedule) > 0 and global_steps == optimize_schedule[0][0]:
-        _, optimize_fn = optimize_schedule.pop(0)
-        optimize_fn()
-
-    nz3.start_forward()

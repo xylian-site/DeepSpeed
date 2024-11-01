@@ -7,6 +7,7 @@ import gc
 from collections import defaultdict
 from typing import List, Dict, Tuple
 from dataclasses import dataclass, field
+import os
 
 import torch
 from torch.fx import Node, Graph, GraphModule
@@ -27,9 +28,6 @@ from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, get_last_uses
 from .tracer import ops_no_wait
 from .partitioner import get_wrapped_partitioner
-from .prefetch import schedule_prefetch, is_prefetch_enabled
-
-import os
 
 pid = os.getpid()
 
@@ -163,7 +161,43 @@ class ProfilingResult:
 profiling_results: Dict[int, ProfilingResult] = {}
 
 
-def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
+def run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_results, bwd, debug_log=False):
+    mem = profiling_results.bwd_mem if bwd else profiling_results.fwd_mem
+    mem.clear()
+    node_time = profiling_results.bwd_time if bwd else profiling_results.fwd_time
+    tensor_sizes = profiling_results.bwd_tensor_sizes if bwd else profiling_results.fwd_tensor_sizes
+
+    for i, opt_pass in enumerate(opt_passes):
+        for name, current_alloc, delta in mem_prof.mem_record:
+            mem.append((name, current_alloc, delta))
+
+        opt_pass_fn, mem_budget = opt_pass
+
+        graph = opt_pass_fn(gm.graph, graph_id, mem, node_time, tensor_sizes, mem_budget, bwd)
+        graph.lint()
+        gm.graph = graph
+        gm.recompile()
+
+        if debug_log:
+            print(f"Prefetching enabled for {'bwd' if bwd else 'fwd'} graph_id={graph_id} {graph}")
+
+        mem_prof = MemoryProfilingInterpreter(gm)
+        mem_prof.run(*real_inputs)
+        if debug_log:
+            mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
+
+    return gm
+
+
+enable_opt_passes = False
+
+
+def launch_opt_passes():
+    global enable_opt_passes
+    enable_opt_passes = True
+
+
+def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
@@ -271,28 +305,14 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                      n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
                 profiling_results[graph_id].fwd_tensor_sizes.append(
                     (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
-            for name, current_alloc, delta in mem_prof.mem_record:
-                profiling_results[graph_id].fwd_mem.append((name, current_alloc, delta))
 
-            del mem_prof
             gc.collect()
             get_accelerator().empty_cache()
 
-            if is_prefetch_enabled():
-                graph = schedule_prefetch(gm.graph, graph_id, profiling_results[graph_id].fwd_mem,
-                                          profiling_results[graph_id].fwd_time,
-                                          profiling_results[graph_id].fwd_tensor_sizes)
-                graph.lint()
-                gm.graph = graph
-                gm.recompile()
-
-                if debug_log and rank == 0:
-                    print(f"Prefetching enabled for fwd graph_id={graph_id} {graph}")
-
-                mem_prof = MemoryProfilingInterpreter(gm)
-                mem_prof.run(*real_inputs)
-                if debug_log and rank == 0:
-                    mem_prof.dump(f"mem_prof_fwd_{graph_id}_after_prefetch.csv")
+            global enable_opt_passes
+            if enable_opt_passes:
+                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_results[graph_id],
+                                    False, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 
@@ -371,24 +391,11 @@ def make_stage3_backend(scheduler, dump_graphs=False, debug_log=False):
                      n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
                 profiling_results[graph_id].bwd_tensor_sizes.append(
                     (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
-            for name, current_alloc, delta in mem_prof.mem_record:
-                profiling_results[graph_id].bwd_mem.append((name, current_alloc, delta))
 
-            if is_prefetch_enabled():
-                graph = schedule_prefetch(gm.graph, graph_id, profiling_results[graph_id].bwd_mem,
-                                          profiling_results[graph_id].bwd_time,
-                                          profiling_results[graph_id].bwd_tensor_sizes)
-                graph.lint()
-                gm.graph = graph
-                gm.recompile()
-
-                if debug_log and rank == 0:
-                    print(f"Prefetching enabled for bwd graph_id={graph_id} {graph}")
-
-                mem_prof = MemoryProfilingInterpreter(gm)
-                mem_prof.run(*validated_inputs)
-                if debug_log and rank == 0:
-                    mem_prof.dump(f"mem_prof_bwd_{graph_id}_after_prefetch.csv")
+            global enable_opt_passes
+            if enable_opt_passes:
+                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, mem_prof, profiling_results[graph_id],
+                                    True, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 

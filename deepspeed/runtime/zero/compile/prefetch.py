@@ -49,6 +49,15 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
         f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
     )
 
+    # Fill missing values
+    prev_mem = 0
+    for node in graph.nodes:
+        if node.name in mem_dict:
+            prev_mem = mem_dict[node.name][0]
+        else:
+            print_rank_0(f"node {node.name} not in mem_dict")
+            mem_dict[node.name] = (prev_mem, 0)
+
     comm_predictor = create_predictor()
 
     order_rev = list(reversed(graph.nodes))

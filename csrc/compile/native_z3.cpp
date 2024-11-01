@@ -147,13 +147,17 @@ private:
 
 class ReduceTask {
 public:
-    ReduceTask(long ds_id, at::Tensor send_buf) : ds_id_(ds_id), send_buf_(std::move(send_buf)) {}
+    ReduceTask(long ds_id, at::Tensor grad, at::Tensor send_buf)
+        : ds_id_(ds_id), grad_(std::move(grad)), send_buf_(std::move(send_buf))
+    {
+    }
 
     long getDSId() const { return ds_id_; }
     at::Tensor getSendBuf() const { return send_buf_; }
 
 private:
     long ds_id_;
+    at::Tensor grad_;
     at::Tensor send_buf_;
 };
 
@@ -485,7 +489,7 @@ public:
         at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
 
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        reduce_tasks_[scalar_type].emplace_back(ds_id, reduce_in_buffer);
+        reduce_tasks_[scalar_type].emplace_back(ds_id, grad_tensor, reduce_in_buffer);
 
         rs_comp_done_events_[ds_id]->record(comp_stream);
         rs_comp_done_events_[ds_id]->block(copy_stream_);
@@ -494,7 +498,6 @@ public:
             reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}), true);
             rs_copy_done_events_[ds_id]->record(copy_stream_);
         }
-        rs_copy_done_events_[ds_id]->block(comp_stream);
 
         reduce_counter_--;
 
@@ -616,7 +619,6 @@ static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream rs_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(false);
 static ncclComm_t nccl_comm;
-static bool enable_double_buffer = false;
 static bool use_symm_mem;
 static bool profile = false;
 
@@ -675,7 +677,7 @@ void register_bwd_graph_ops(long graph_id,
 
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,
-          bool _enable_double_buffer,
+          bool enable_double_buffer,
           bool _use_symm_mem)
 {
     process_group = pg;
@@ -701,7 +703,6 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
     param_registry = std::make_shared<DSParamRegistry>();
     reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
                                                                   enable_double_buffer);
-    enable_double_buffer = _enable_double_buffer;
     use_symm_mem = _use_symm_mem;
 }
 

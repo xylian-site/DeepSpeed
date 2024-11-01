@@ -85,6 +85,7 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     # Prepare benchmark header
     global_rank = dist.get_rank()
     world_size = dist.get_world_size()
+    maxsize = maxsize // world_size
 
     start_event = get_accelerator().Event(enable_timing=True)
     end_event = get_accelerator().Event(enable_timing=True)

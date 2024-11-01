@@ -31,6 +31,25 @@ graph_counts = defaultdict(int)
 param_manager: Dict[int, DSGraphParamManager] = {}
 
 
+def _set_time_and_tensor_size(graph_id, graph: Graph, bwd, profiling_results):
+    node_time = []
+    tensor_sizes = []
+
+    for n in graph.nodes:
+        node_time.append((n.name, n.meta["device_time"] if "device_time" in n.meta else 0.0,
+                          n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
+        tensor_sizes.append((n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
+
+    if bwd:
+        profiling_results[graph_id].bwd_graph = graph
+        profiling_results[graph_id].bwd_time = node_time
+        profiling_results[graph_id].bwd_tensor_sizes = tensor_sizes
+    else:
+        profiling_results[graph_id].fwd_graph = graph
+        profiling_results[graph_id].fwd_time = node_time
+        profiling_results[graph_id].fwd_tensor_sizes = tensor_sizes
+
+
 def dump_graph(graph: GraphModule, name: str, skip=False):
     if not skip and dist.get_rank() == 0:
         global graph_counts
@@ -155,13 +174,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
 
-            profiling_results[graph_id].fwd_graph = gm.graph
-            for n in gm.graph.nodes:
-                profiling_results[graph_id].fwd_time.append(
-                    (n.name, n.meta["device_time"] if "device_time" in n.meta else 0.0,
-                     n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
-                profiling_results[graph_id].fwd_tensor_sizes.append(
-                    (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
+            _set_time_and_tensor_size(graph_id, gm.graph, False, profiling_results)
 
             gc.collect()
             get_accelerator().empty_cache()
@@ -241,13 +254,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
 
-            profiling_results[graph_id].bwd_graph = gm.graph
-            for n in gm.graph.nodes:
-                profiling_results[graph_id].bwd_time.append(
-                    (n.name, n.meta["device_time"] if "device_time" in n.meta else 0.0,
-                     n.meta["wall_time"] if "wall_time" in n.meta else 0.0))
-                profiling_results[graph_id].bwd_tensor_sizes.append(
-                    (n.name, n.meta["tensor_size"] if "tensor_size" in n.meta else 0))
+            _set_time_and_tensor_size(graph_id, gm.graph, True, profiling_results)
 
             global enable_opt_passes
             if enable_opt_passes:

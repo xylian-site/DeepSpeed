@@ -330,9 +330,6 @@ public:
 
     void endBackward()
     {
-        rs_stream_.synchronize();
-        copy_stream_.synchronize();
-
         if (param_updated_) {
             for (auto& it : has_acc_grad_) { it.second = false; }
         }
@@ -508,7 +505,6 @@ public:
 
             // This synchronization ensures all of reduce calls are done before optimizer's step.
             at::cuda::stream_synchronize(rs_stream_);
-            at::cuda::stream_synchronize(copy_stream_);
 
             endBackward();
         }
@@ -617,7 +613,7 @@ c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
 static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream rs_stream = at::cuda::getStreamFromPool(true);
-static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(false);
+static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(true);
 static ncclComm_t nccl_comm;
 static bool use_symm_mem;
 static bool profile = false;

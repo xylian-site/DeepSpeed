@@ -749,8 +749,11 @@ void invalidate_gathered_param(long ds_id)
 void clear_all_gathered_params()
 {
     for (const auto& it : param_registry->getParams()) {
-        if (param_registry->hasGatheredParam(it.first)) {
-            param_registry->unregisterGatheredParam(it.first);
+        long ds_id = it.first;
+        const DSParam& param = param_registry->getParam(ds_id);
+        if (param.isPersistent()) { continue; }
+        if (param_registry->hasGatheredParam(ds_id)) {
+            param_registry->unregisterGatheredParam(ds_id);
         }
     }
 }

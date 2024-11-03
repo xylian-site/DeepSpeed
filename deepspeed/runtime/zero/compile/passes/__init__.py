@@ -1,3 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from ..profilers.graph_profile import MemoryProfilingInterpreter
 
 
@@ -6,6 +11,7 @@ def run_opt_passes(graph_id,
                    real_inputs,
                    opt_passes,
                    mem_prof,
+                   graph_order,
                    profiling_results,
                    param_manager,
                    bwd,
@@ -21,7 +27,8 @@ def run_opt_passes(graph_id,
 
         opt_pass_fn, mem_budget = opt_pass
 
-        graph = opt_pass_fn(gm.graph, graph_id, mem, node_time, tensor_sizes, mem_budget, param_manager, bwd)
+        graph = opt_pass_fn(gm.graph, graph_id, graph_order, mem, node_time, tensor_sizes, mem_budget, param_manager,
+                            bwd)
         graph.lint()
         gm.graph = graph
         gm.recompile()

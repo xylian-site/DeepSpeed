@@ -29,6 +29,12 @@ from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
 param_manager: Dict[int, DSGraphParamManager] = {}
+graph_order = []
+
+
+def reset_graph_order():
+    global graph_order
+    graph_order = []
 
 
 def _set_time_and_tensor_size(graph_id, graph: Graph, bwd, profiling_results):
@@ -91,6 +97,9 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
         offload_helper = NodeValueOffloadHelper(torch.device(get_accelerator().current_device()))
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
+        global graph_order
+        graph_order.append(graph_id)
+
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
                              if hasattr(input_val, 'ds_id')]
@@ -102,6 +111,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
         if graph_id not in profiling_results:
             profiling_results[graph_id] = ProfilingResult()
             profiling_results[graph_id].param_indices = param_indices
+            profiling_results[graph_id].needs_backward = needs_backward
 
         def fw(gm, sample_inputs):
             if rank == 0 and debug_log:
@@ -181,8 +191,8 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_results[graph_id],
-                                    param_manager, False, debug_log and rank == 0)
+                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, graph_order,
+                                    profiling_results[graph_id], param_manager, False, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 
@@ -258,8 +268,8 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, mem_prof, profiling_results[graph_id],
-                                    param_manager, True, debug_log and rank == 0)
+                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, mem_prof, graph_order,
+                                    profiling_results[graph_id], param_manager, True, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 

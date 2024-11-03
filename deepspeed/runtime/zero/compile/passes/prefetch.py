@@ -17,6 +17,7 @@ from ..graph_param import DSGraphParamManager
 FUSE_FACTOR = 0.8
 MARGIN = 0.1
 MAX_FUSE_SIZE = 1e9
+MAX_BUFFERED_SIZE = 2e9
 
 run_prefetch_pass = False
 
@@ -31,7 +32,7 @@ def get_ds_id(node: Node):
     return node.args[2]
 
 
-def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]],
+def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
                       op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
                       param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
@@ -78,7 +79,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
             next_alloc_mem, _ = mem_dict[next_node.name]
 
             # Free up memory
-            while next_alloc_mem + ag_tensor_size_sum > max_mem:
+            while next_alloc_mem + ag_tensor_size_sum > max_mem or ag_tensor_size_sum > MAX_BUFFERED_SIZE:
                 if len(prefetch_ag_groups) > 0:
                     # launch prefetch
                     fused_ag_nodes = prefetch_ag_groups.pop(0)

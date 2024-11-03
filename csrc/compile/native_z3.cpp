@@ -716,6 +716,7 @@ void register_param(long ds_id,
                     bool persistent)
 {
     param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
+    if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
 void set_persistent(long ds_id, bool persistent)

@@ -85,6 +85,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                     total_ag_tensor_size = sum([tensor_size_dict[ag_node.name] for ag_node in fused_ag_nodes])
                     ag_tensor_size_sum -= total_ag_tensor_size
                     new_order_rev.append(fused_ag_nodes)
+                    assert len(fused_ag_nodes) > 0
                     # print_rank_0(
                     #     f"Free up memory fused_ag_nodes={fused_ag_nodes} next_alloc_mem={next_alloc_mem} total_ag_tensor_size={total_ag_tensor_size} ag_tensor_size_sum={ag_tensor_size_sum} max_mem={max_mem}"
                     # )
@@ -100,14 +101,15 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
 
             if node.target == torch.ops.native_z3.allgather_param and get_ds_id(node) not in persistent_ds_ids:
 
-                pred_time_current = comm_predictor(ag_tensor_size_sum)
+                current_ag_size = sum([tensor_size_dict[ag_node.name] for ag_node in prefetch_ags])
+                pred_time_current = comm_predictor(current_ag_size)
                 pred_time_next = comm_predictor(tensor_size_dict[node.name])
-                pred_time_fused = comm_predictor(ag_tensor_size_sum + tensor_size_dict[node.name])
+                pred_time_fused = comm_predictor(current_ag_size + tensor_size_dict[node.name])
 
                 do_fuse = max(pred_time_current, pred_time_next) * 1.2 > pred_time_fused and (
-                    ag_tensor_size_sum + tensor_size_dict[node.name]) < MAX_FUSE_SIZE
+                    current_ag_size + tensor_size_dict[node.name]) < MAX_FUSE_SIZE
                 # print_rank_0(
-                #     f"found allgather_param do_fuse={do_fuse} ag_tensor_size_sum={ag_tensor_size_sum} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused} (pred_time_current + pred_time_next)={pred_time_current + pred_time_next}"
+                #     f"found allgather_param do_fuse={do_fuse} current_ag_size={current_ag_size} tensor_size_dict[node.name]={tensor_size_dict[node.name]} pred_time_current={pred_time_current} pred_time_next={pred_time_next} pred_time_fused={pred_time_fused}"
                 # )
 
                 if len(prefetch_ags) > 0 and not do_fuse:
@@ -127,6 +129,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
 
         if node.op != "placeholder" and order_rev[i + 1].op == "placeholder":
             for ag_group in prefetch_ag_groups:
+                assert len(ag_group) > 0
                 new_order_rev.append(ag_group)
                 total_ag_tensor_size = sum([tensor_size_dict[ag_node.name] for ag_node in ag_group])
                 ag_tensor_size_sum -= total_ag_tensor_size

@@ -85,7 +85,6 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     # Prepare benchmark header
     global_rank = dist.get_rank()
     world_size = dist.get_world_size()
-    maxsize = maxsize // world_size
 
     start_event = get_accelerator().Event(enable_timing=True)
     end_event = get_accelerator().Event(enable_timing=True)
@@ -93,7 +92,7 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     # Create list of message sizes
     M_LIST = []
     for x in (2**p for p in range(1, maxsize)):
-        M_LIST.append(x)
+        M_LIST.append(x // world_size)
 
     results = [(0, 0)]
     sync_all()

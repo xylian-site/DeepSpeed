@@ -107,7 +107,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             if rank == 0 and debug_log:
                 print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
 
-            param_manager[graph_id] = DSGraphParamManager(gm.graph, sample_inputs, param_indices)
+            param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
             original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
 
             add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
@@ -182,7 +182,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             global enable_opt_passes
             if enable_opt_passes:
                 gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_results[graph_id],
-                                    False, debug_log and rank == 0)
+                                    param_manager, False, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 
@@ -259,7 +259,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             global enable_opt_passes
             if enable_opt_passes:
                 gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, mem_prof, profiling_results[graph_id],
-                                    True, debug_log and rank == 0)
+                                    param_manager, True, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 

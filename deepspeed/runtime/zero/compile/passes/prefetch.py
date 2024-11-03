@@ -12,6 +12,7 @@ from deepspeed.accelerator import get_accelerator
 import deepspeed.comm as dist
 
 from ..profilers.comm_profile import create_predictor
+from ..graph_param import DSGraphParamManager
 
 FUSE_FACTOR = 0.8
 MARGIN = 0.1
@@ -25,9 +26,14 @@ def print_rank_0(message):
         print(message)
 
 
-def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]], op_time: List[Tuple[str, int,
-                                                                                                        int]],
-                      tensor_sizes: List[Tuple[str, int]], mem_budget: float, bwd: bool) -> Graph:
+def get_ds_id(node: Node):
+    assert node.target == torch.ops.native_z3.allgather_param
+    return node.args[2]
+
+
+def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]],
+                      op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
+                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
 
     mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
@@ -36,6 +42,9 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
 
     total_param_size = sum(
         [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
+
+    pm = param_manager[graph_id]
+    persistent_ds_ids = set(pm.ds_ids[name] for name, ds_param in pm.params.items() if ds_param.param.ds_persist)
 
     print_rank_0(
         f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
@@ -89,7 +98,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
                 else:
                     break
 
-            if node.target == torch.ops.native_z3.allgather_param:
+            if node.target == torch.ops.native_z3.allgather_param and get_ds_id(node) not in persistent_ds_ids:
 
                 pred_time_current = comm_predictor(ag_tensor_size_sum)
                 pred_time_next = comm_predictor(tensor_size_dict[node.name])
@@ -140,9 +149,8 @@ def schedule_prefetch(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int
             param_nodes = [ag_node.args[0] for ag_node in node]
             param_nodes_copy = [env[param_node.name] for param_node in param_nodes]
 
-            ds_ids = [ag_node.args[2] for ag_node in node]
+            ds_ids = [get_ds_id(ag_node) for ag_node in node]
             new_graph.call_function(torch.ops.native_z3.prefetch_params_fused,
                                     args=(graph_id, param_nodes_copy, ds_ids))
-            #print(f"Found prefetch group {node}")
 
     return new_graph

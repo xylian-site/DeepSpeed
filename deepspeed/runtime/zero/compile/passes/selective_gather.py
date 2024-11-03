@@ -19,7 +19,7 @@ nz3 = None
 
 
 def selective_gather(graph: Graph, graph_id: int, mem: List[Tuple[str, int, int]], op_time: List[Tuple[str, int, int]],
-                     tensor_sizes: List[Tuple[str, int]], mem_budget: float, bwd: bool) -> Graph:
+                     tensor_sizes: List[Tuple[str, int]], mem_budget: float, param_manager, bwd: bool) -> Graph:
 
     print(f"selective_gather starting graph_id={graph_id}")
     return graph

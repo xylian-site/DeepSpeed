@@ -1,7 +1,15 @@
 from ..profilers.graph_profile import MemoryProfilingInterpreter
 
 
-def run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_results, bwd, debug_log=False):
+def run_opt_passes(graph_id,
+                   gm,
+                   real_inputs,
+                   opt_passes,
+                   mem_prof,
+                   profiling_results,
+                   param_manager,
+                   bwd,
+                   debug_log=False):
     mem = profiling_results.bwd_mem if bwd else profiling_results.fwd_mem
     mem.clear()
     node_time = profiling_results.bwd_time if bwd else profiling_results.fwd_time
@@ -13,7 +21,7 @@ def run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, profiling_re
 
         opt_pass_fn, mem_budget = opt_pass
 
-        graph = opt_pass_fn(gm.graph, graph_id, mem, node_time, tensor_sizes, mem_budget, bwd)
+        graph = opt_pass_fn(gm.graph, graph_id, mem, node_time, tensor_sizes, mem_budget, param_manager, bwd)
         graph.lint()
         gm.graph = graph
         gm.recompile()

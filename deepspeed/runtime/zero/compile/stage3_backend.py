@@ -77,6 +77,7 @@ enable_opt_passes = False
 def launch_opt_passes():
     global enable_opt_passes
     enable_opt_passes = True
+    reset_graph_order()
 
 
 def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=False):
@@ -98,7 +99,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
         global graph_order
-        graph_order.append(graph_id)
+        graph_order.append((graph_id, needs_backward))
 
         if len(list(gm.named_parameters())) == 0:
             param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)

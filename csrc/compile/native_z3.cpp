@@ -719,9 +719,10 @@ void register_param(long ds_id,
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
-void set_persistent(long ds_id, bool persistent)
+void set_persistent(long ds_id, at::Tensor ds_tensor)
 {
-    param_registry->setPersistent(ds_id, persistent);
+    param_registry->registerGatheredParam(ds_id, ds_tensor);
+    param_registry->setPersistent(ds_id, true);
 }
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)

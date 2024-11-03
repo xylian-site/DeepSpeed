@@ -15,21 +15,30 @@ from ..stage3_backend import profiling_results
 
 max_alloc_mem = 0
 last_optimize_step = 0
-nz3 = None
 
 
 def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
                      op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
-                     param_manager, bwd: bool, z3_optimizer) -> Graph:
+                     param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
 
-    print(f"selective_gather starting graph_id={graph_id} optimizer={z3_optimizer}")
-
-    last_bw_graph = bwd and graph_id == graph_order[0]
-    if not last_bw_graph:
+    if not bwd:
         return graph
 
-    pm = param_manager[graph_id]
-    persistent_ds_ids = set(pm.ds_ids[name] for name, ds_param in pm.params.items() if ds_param.param.ds_persist)
+    last_backward_graph_id = None
+    for g_id, needs_bwd in graph_order:
+        if needs_bwd:
+            last_backward_graph_id = g_id
+            break
+
+    # Run only on the last backward graph
+    if last_backward_graph_id is None or graph_id != last_backward_graph_id:
+        return graph
+
+    persistent_ds_ids = set()
+    for graph_id, pm in param_manager.items():
+        for name, ds_param in pm.params.items():
+            if ds_param.param.ds_persist:
+                persistent_ds_ids.add(pm.ds_ids[name])
 
     ds_id_to_size = {}
     ds_id_to_time = defaultdict(float)
@@ -84,24 +93,37 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: L
     MEM_MARGIN = 0.1 * total_mem
     available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
 
+    ds_id_to_param = {}
+    for g_id, g_pm in param_manager.items():
+        for name, ds_param in g_pm.params.items():
+            ds_id_to_param[g_pm.ds_ids[name]] = ds_param.param
+
     persistent_mem = 0
     for ds_id, size in sorted_ds_ids.items():
         if persistent_mem + size > available_mem:
             break
         persistent_mem += size
-        # nz3.set_persistent(ds_id, True)
+
+        param_obj = ds_id_to_param[ds_id]
+        param_obj.ds_persist = True
+
+        z3_optimizer.persistent_parameters.append(param_obj)
+
+        param_obj.all_gather([param_obj])
+
+        nz3.set_persistent(ds_id, param_obj)
         if dist.get_rank() == 0:
             print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
     return graph
 
 
-def make_selective_gather(z3_optimizer):
+def make_selective_gather(z3_optimizer, nz3):
 
     def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
                                  op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]],
                                  mem_budget: float, param_manager, bwd: bool) -> Graph:
         return selective_gather(graph, graph_id, graph_order, mem, op_time, tensor_sizes, mem_budget, param_manager,
-                                bwd, z3_optimizer)
+                                bwd, z3_optimizer, nz3)
 
     return selective_gather_wrapper

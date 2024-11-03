@@ -3757,7 +3757,7 @@ class DeepSpeedEngine(Module):
             from deepspeed.runtime.zero.compile.passes.selective_gather import make_selective_gather
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
 
-            opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer), -1.0)]
+            opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer, self.nz3), -1.0)]
 
             def launch_compile_passes(micro_steps=self.micro_steps,
                                       global_steps=self.global_steps,

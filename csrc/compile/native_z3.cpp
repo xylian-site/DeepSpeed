@@ -739,6 +739,9 @@ void prefetch_params_fused(long graph_id,
 // for profiling
 void invalidate_gathered_param(long ds_id)
 {
+    const DSParam& param = param_registry->getParam(ds_id);
+    if (param.isPersistent()) { return; }
+
     param_registry->unregisterGatheredParam(ds_id);
     param_registry->registerGatheredParam(ds_id, at::Tensor());
 }

@@ -20,9 +20,9 @@ nz3 = None
 
 def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
                      op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
-                     param_manager, bwd: bool) -> Graph:
+                     param_manager, bwd: bool, z3_optimizer) -> Graph:
 
-    print(f"selective_gather starting graph_id={graph_id}")
+    print(f"selective_gather starting graph_id={graph_id} optimizer={z3_optimizer}")
 
     last_bw_graph = bwd and graph_id == graph_order[0]
     if not last_bw_graph:
@@ -94,3 +94,14 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: L
             print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
 
     return graph
+
+
+def make_selective_gather(z3_optimizer):
+
+    def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
+                                 op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]],
+                                 mem_budget: float, param_manager, bwd: bool) -> Graph:
+        return selective_gather(graph, graph_id, graph_order, mem, op_time, tensor_sizes, mem_budget, param_manager,
+                                bwd, z3_optimizer)
+
+    return selective_gather_wrapper

@@ -98,7 +98,7 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
     accelerator = get_accelerator()
     max_alloc_mem = accelerator.max_memory_allocated()
     total_mem = accelerator.total_memory()
-    MEM_MARGIN = 0.1 * total_mem
+    MEM_MARGIN = 0.2 * total_mem
     available_mem = (total_mem - max_mem) - MEM_MARGIN
 
     if dist.get_rank() == 0:

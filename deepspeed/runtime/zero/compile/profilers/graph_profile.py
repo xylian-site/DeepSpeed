@@ -85,7 +85,8 @@ class ProfilingInterpreter(Interpreter):
                 with get_accelerator().random().fork_rng(devices=[self.device]):
                     return_val = super().run(*args)
         except Exception as e:
-            print(f"Profiling error {e}")
+            msg = e.msg if "msg" in dir(e) else str(e)
+            print(f"Profiling error {msg}")
         finally:
             self.nz3.clear_all_gathered_params()
             self.nz3.enable_profiling(False)
@@ -117,6 +118,12 @@ class ProfilingInterpreter(Interpreter):
 
         cache_key = (n.target, _args_to_key(args), _args_to_key(kwargs))
         cache_hit = cache_key in self.cache
+
+        cache_hit_flag = torch.tensor([0 if cache_hit else 1], device=self.device, dtype=torch.int)
+        if self.distributed:
+            dist.all_reduce(cache_hit_flag, dist.ReduceOp.SUM)
+        cache_hit = cache_hit_flag.item() == 0
+
         if cache_hit:
             device_time, wall_time, alloc_mem, max_mem, tensor_size = self.cache[cache_key]
             n.meta["device_time"] = device_time

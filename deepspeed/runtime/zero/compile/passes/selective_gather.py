@@ -12,12 +12,14 @@ from torch.fx import Graph
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
+from ..profilers import ProfilingResult
+
 max_alloc_mem = 0
 last_optimize_step = 0
 
 
-def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results, mem_budget: float,
-                     param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
+def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                     mem_budget: float, param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
 
     if not bwd:
         return graph
@@ -31,6 +33,14 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
     # Run only on the last backward graph
     if last_backward_graph_id is None or graph_id != last_backward_graph_id:
         return graph
+
+    max_mem = 0
+    for _, prof in profiling_results.items():
+        fwd_max_mem = max(m[1] for m in prof.fwd_mem)
+        bwd_max_mem = max(m[1] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
+        max_mem = max(max_mem, fwd_max_mem, bwd_max_mem)
+        if dist.get_rank() == 0:
+            print(f"max_mem={max_mem} fwd_max_mem={fwd_max_mem} bwd_max_mem={bwd_max_mem}")
 
     persistent_ds_ids = set()
     for graph_id, pm in param_manager.items():
@@ -89,7 +99,10 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
     max_alloc_mem = accelerator.max_memory_allocated()
     total_mem = accelerator.total_memory()
     MEM_MARGIN = 0.1 * total_mem
-    available_mem = (total_mem - max_alloc_mem) - MEM_MARGIN
+    available_mem = (total_mem - max_mem) - MEM_MARGIN
+
+    if dist.get_rank() == 0:
+        print(f"max_mem={max_mem} total_mem={total_mem} available_mem={available_mem} MEM_MARGIN={MEM_MARGIN}")
 
     ds_id_to_param = {}
     for g_id, g_pm in param_manager.items():
@@ -107,11 +120,15 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
 
         z3_optimizer.persistent_parameters.append(param_obj)
 
+        alloc_mem = accelerator.memory_allocated()
         param_obj.all_gather([param_obj])
+        mem_diff = accelerator.memory_allocated() - alloc_mem
 
         nz3.set_persistent(ds_id, param_obj)
         if dist.get_rank() == 0:
-            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem}")
+            print(
+                f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.shape} mem_diff: {mem_diff}"
+            )
 
     return graph
 

@@ -92,7 +92,9 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     # Create list of message sizes
     M_LIST = []
     for x in (2**p for p in range(1, maxsize)):
-        M_LIST.append(x // world_size)
+        m = x // world_size
+        if m > 0:
+            M_LIST.append(m)
 
     results = [(0, 0)]
     sync_all()
@@ -100,7 +102,7 @@ def run_all_gather(device, dtype, maxsize, warmup=5, trials=10, async_op=False):
     for M in M_LIST:
         global_rank = dist.get_rank()
         try:
-            mat = torch.ones(world_size, M, dtype=dtype, device=device)
+            mat = torch.ones(M, dtype=dtype, device=device)
             sync_all()
             input = ((mat.mul_(float(global_rank))).view(-1))
             # Delete original mat to avoid OOM
@@ -129,7 +131,7 @@ def create_predictor():
     if profile_results is None:
         with unset_fake_temporarily():
             device = get_accelerator().current_device()
-            profile_results = run_all_gather(device, torch.bfloat16, 30)
+            profile_results = run_all_gather(device, torch.bfloat16, 31)
         if dist.get_rank() == 0:
             for size, avg_duration in profile_results:
                 print(f"size: {size}, avg_duration: {avg_duration}")

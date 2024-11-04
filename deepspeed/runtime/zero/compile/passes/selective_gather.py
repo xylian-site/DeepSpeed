@@ -4,21 +4,19 @@
 # DeepSpeed Team
 
 from collections import defaultdict
-from typing import List, Tuple
+from typing import List
 
 import torch
 from torch.fx import Graph
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from ..stage3_backend import profiling_results
 
 max_alloc_mem = 0
 last_optimize_step = 0
 
 
-def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
-                     op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
+def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results, mem_budget: float,
                      param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
 
     if not bwd:
@@ -76,14 +74,14 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: L
     # print(f"ds_id_to_size={ds_id_to_size}")
     # print(f"ds_id_to_time={ds_id_to_time}")
 
-    if dist.get_rank() == 0:
-        for ds_id in ds_ids:
-            dtime_in_sec = ds_id_to_prof_dtime[ds_id]
-            wtime_in_sec = ds_id_to_prof_wtime[ds_id]
-            size_in_mb = ds_id_to_size[ds_id] / 1024 / 1024
-            print(
-                f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
-            )
+    # if dist.get_rank() == 0:
+    #     for ds_id in ds_ids:
+    #         dtime_in_sec = ds_id_to_prof_dtime[ds_id]
+    #         wtime_in_sec = ds_id_to_prof_wtime[ds_id]
+    #         size_in_mb = ds_id_to_size[ds_id] / 1024 / 1024
+    #         print(
+    #             f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
+    #         )
 
     sorted_ds_ids = {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
@@ -120,10 +118,9 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], mem: L
 
 def make_selective_gather(z3_optimizer, nz3):
 
-    def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
-                                 op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]],
+    def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], profiling_results,
                                  mem_budget: float, param_manager, bwd: bool) -> Graph:
-        return selective_gather(graph, graph_id, graph_order, mem, op_time, tensor_sizes, mem_budget, param_manager,
-                                bwd, z3_optimizer, nz3)
+        return selective_gather(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd,
+                                z3_optimizer, nz3)
 
     return selective_gather_wrapper

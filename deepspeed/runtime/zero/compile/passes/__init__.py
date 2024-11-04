@@ -10,25 +10,18 @@ def run_opt_passes(graph_id,
                    gm,
                    real_inputs,
                    opt_passes,
-                   mem_prof,
                    graph_order,
                    profiling_results,
                    param_manager,
                    bwd,
                    debug_log=False):
-    mem = profiling_results.bwd_mem if bwd else profiling_results.fwd_mem
-    mem.clear()
-    node_time = profiling_results.bwd_time if bwd else profiling_results.fwd_time
-    tensor_sizes = profiling_results.bwd_tensor_sizes if bwd else profiling_results.fwd_tensor_sizes
+    profile = profiling_results[graph_id]
 
     for i, opt_pass in enumerate(opt_passes):
-        for name, current_alloc, delta in mem_prof.mem_record:
-            mem.append((name, current_alloc, delta))
 
         opt_pass_fn, mem_budget = opt_pass
 
-        graph = opt_pass_fn(gm.graph, graph_id, graph_order, mem, node_time, tensor_sizes, mem_budget, param_manager,
-                            bwd)
+        graph = opt_pass_fn(gm.graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
         graph.lint()
         gm.graph = graph
         gm.recompile()
@@ -40,5 +33,11 @@ def run_opt_passes(graph_id,
         mem_prof.run(*real_inputs)
         if debug_log:
             mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
+
+        mem = [(name, current_alloc, delta) for name, current_alloc, delta in mem_prof.mem_record]
+        if bwd:
+            profile.bwd_mem = mem
+        else:
+            profile.fwd_mem = mem
 
     return gm

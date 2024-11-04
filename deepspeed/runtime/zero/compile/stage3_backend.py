@@ -184,6 +184,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
+            profiling_results[graph_id].fwd_mem = mem_prof.mem_record
 
             _set_time_and_tensor_size(graph_id, gm.graph, False, profiling_results)
 
@@ -192,8 +193,8 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, mem_prof, graph_order,
-                                    profiling_results[graph_id], param_manager, False, debug_log and rank == 0)
+                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, graph_order, profiling_results,
+                                    param_manager, False, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 
@@ -264,13 +265,14 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             mem_prof.run(*validated_inputs)
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
+            profiling_results[graph_id].bwd_mem = mem_prof.mem_record
 
             _set_time_and_tensor_size(graph_id, gm.graph, True, profiling_results)
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, mem_prof, graph_order,
-                                    profiling_results[graph_id], param_manager, True, debug_log and rank == 0)
+                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, graph_order, profiling_results,
+                                    param_manager, True, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
 

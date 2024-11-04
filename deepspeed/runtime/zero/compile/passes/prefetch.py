@@ -3,7 +3,7 @@
 
 # DeepSpeed Team
 
-from typing import List, Tuple
+from typing import List
 
 import torch
 from torch.fx import Graph, Node
@@ -32,10 +32,13 @@ def get_ds_id(node: Node):
     return node.args[2]
 
 
-def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], mem: List[Tuple[str, int, int]],
-                      op_time: List[Tuple[str, int, int]], tensor_sizes: List[Tuple[str, int]], mem_budget: float,
+def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profiling_results, mem_budget: float,
                       param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
+
+    mem = profiling_results[graph_id].bwd_mem if bwd else profiling_results[graph_id].fwd_mem
+    op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
+    tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
 
     mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
     time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}

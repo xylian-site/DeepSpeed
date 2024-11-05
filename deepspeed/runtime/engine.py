@@ -1918,9 +1918,6 @@ class DeepSpeedEngine(Module):
                 if not self.nz3.backward_started:
                     self.nz3.start_backward(self.is_gradient_accumulation_boundary())
                     self.nz3.backward_started = True
-                # When this hook is called multiple times, grad can be None
-                if grad is not None:
-                    return grad.float() / self.gradient_accumulation_steps()
 
             def set_hook(v):
                 if torch.is_tensor(v) and v.grad_fn is not None:

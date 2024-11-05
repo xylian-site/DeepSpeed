@@ -209,8 +209,9 @@ class ProfilingInterpreter(Interpreter):
 
 class MemoryProfilingInterpreter(Interpreter):
 
-    def __init__(self, gm: GraphModule, debug_log=False):
+    def __init__(self, nz3, gm: GraphModule, debug_log=False):
         super().__init__(gm)
+        self.nz3 = nz3
         self.device = torch.device(get_accelerator().current_device())
         self.mem_record = []
         self.last_alloc = get_accelerator().memory_allocated()
@@ -222,6 +223,7 @@ class MemoryProfilingInterpreter(Interpreter):
     def run(self, *args) -> Any:
         try:
             assert _all_real_if_tensor(args), "Inputs must be real tensors"
+            self.nz3.enable_profiling(True)
 
             with unset_fake_temporarily():
                 with get_accelerator().random().fork_rng(devices=[self.device]):
@@ -229,6 +231,8 @@ class MemoryProfilingInterpreter(Interpreter):
                     return_val = super().run(*args)
         except Exception as e:
             print(f"MemoryProfiling error {e}")
+        finally:
+            self.nz3.enable_profiling(False)
 
         return return_val
 

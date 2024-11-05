@@ -118,6 +118,7 @@ public:
                        at::Tensor grad_buffer,
                        bool persistent)
     {
+        grad_buffer.zero_();
         params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
     }
 
@@ -584,7 +585,6 @@ private:
             int64_t offset = 0;
             for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
                 bool acc_grad = has_acc_grad_.at(t.getDSId());
-                auto current_grad = param_registry_->getParam(t.getDSId()).getGradBuffer();
 
                 if (acc_grad) {
                     auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();

@@ -179,7 +179,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             gc.collect()
             get_accelerator().empty_cache()
 
-            mem_prof = MemoryProfilingInterpreter(gm)
+            mem_prof = MemoryProfilingInterpreter(nz3, gm)
             mem_prof.run(*real_inputs)
 
             if debug_log and rank == 0:
@@ -261,7 +261,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
 
-            mem_prof = MemoryProfilingInterpreter(gm)
+            mem_prof = MemoryProfilingInterpreter(nz3, gm)
             mem_prof.run(*validated_inputs)
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")

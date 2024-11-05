@@ -213,13 +213,20 @@ public:
     {
     }
 
-    void swap(at::ScalarType scalar_type, at::cuda::CUDAStream stream)
+    void swap(at::ScalarType scalar_type,
+              at::cuda::CUDAStream rs_stream,
+              at::cuda::CUDAStream copy_stream)
     {
         assert(hasKey(current_buffer_, scalar_type));
         assert(hasKey(current_buffer_events_, scalar_type));
 
+        if (enable_double_buffer_) {
+            assert(hasKey(shadow_buffer_events_, scalar_type));
+            shadow_buffer_events_.at(scalar_type)->block(copy_stream);
+        }
+
         current_buffer_.at(scalar_type)->reset();
-        current_buffer_events_.at(scalar_type)->record(stream);
+        current_buffer_events_.at(scalar_type)->record(rs_stream);
 
         if (enable_double_buffer_) {
             assert(hasKey(shadow_buffer_, scalar_type));
@@ -476,7 +483,7 @@ public:
         if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
             flushReduceBucket(scalar_type);
 
-            // reduce_bucket might be swapped in flushReduceBucket.
+            // reduce_bucket is swapped in flushReduceBucket if double buffering is enabled
             reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
         }
 
@@ -604,7 +611,7 @@ private:
             }
         }
 
-        reduce_buckets_->swap(scalar_type, rs_stream_);
+        reduce_buckets_->swap(scalar_type, rs_stream_, copy_stream_);
         reduce_tasks_[scalar_type].clear();
     }
 

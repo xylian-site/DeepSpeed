@@ -6,7 +6,8 @@
 from ..profilers.graph_profile import MemoryProfilingInterpreter
 
 
-def run_opt_passes(graph_id,
+def run_opt_passes(nz3,
+                   graph_id,
                    gm,
                    real_inputs,
                    opt_passes,
@@ -29,7 +30,7 @@ def run_opt_passes(graph_id,
         if debug_log:
             print(f"Prefetching enabled for {'bwd' if bwd else 'fwd'} graph_id={graph_id} {graph}")
 
-        mem_prof = MemoryProfilingInterpreter(gm)
+        mem_prof = MemoryProfilingInterpreter(nz3, gm)
         mem_prof.run(*real_inputs)
         if debug_log:
             mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")

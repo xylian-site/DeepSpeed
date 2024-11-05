@@ -193,7 +193,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, real_inputs, opt_passes, graph_order, profiling_results,
+                gm = run_opt_passes(nz3, graph_id, gm, real_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)
@@ -271,7 +271,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(graph_id, gm, validated_inputs, opt_passes, graph_order, profiling_results,
+                gm = run_opt_passes(nz3, graph_id, gm, validated_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, True, debug_log and rank == 0)
 
             return make_boxed_func(gm.forward)

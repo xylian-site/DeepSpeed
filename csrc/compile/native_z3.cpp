@@ -292,7 +292,8 @@ public:
                      ncclComm_t nccl_comm,
                      at::cuda::CUDAStream ag_stream,
                      at::cuda::CUDAStream rs_stream,
-                     at::cuda::CUDAStream copy_stream)
+                     at::cuda::CUDAStream copy_stream,
+                     bool pre_div_reduce)
         : process_group_(process_group),
           param_registry_(std::move(param_registry)),
           reduce_buckets_(std::move(reduce_buckets)),
@@ -300,7 +301,8 @@ public:
           nccl_comm_(nccl_comm),
           ag_stream_(ag_stream),
           rs_stream_(rs_stream),
-          copy_stream_(copy_stream)
+          copy_stream_(copy_stream),
+          pre_div_reduce_(pre_div_reduce)
     {
         for (long ds_id : ds_ids_) {
             has_acc_grad_[ds_id] = false;
@@ -534,6 +536,7 @@ private:
     bool param_updated_ = false;
     std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks_;
     std::unordered_map<long, bool> has_acc_grad_;
+    bool pre_div_reduce_;
 
     void flushReduceBucket(at::ScalarType scalar_type)
     {
@@ -567,11 +570,16 @@ private:
                     tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
             }
 
+            ncclRedOp_t op = pre_div_reduce_ ? ncclSum : ncclAvg;
+            if (pre_div_reduce_) {
+                at::cuda::CUDAStreamGuard guard(rs_stream_);
+                t.getSendBuf().div_(process_group_->getSize());
+            }
             ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
                                                     recv_buf.data_ptr(),
                                                     recv_buf.numel(),
                                                     get_nccl_data_type(scalar_type),
-                                                    ncclAvg,
+                                                    op,
                                                     nccl_comm_,
                                                     rs_stream_);
             if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
@@ -617,6 +625,7 @@ static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(true);
 static ncclComm_t nccl_comm;
 static bool use_symm_mem;
 static bool profile = false;
+static bool pre_div_reduce = true;
 
 std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 {
@@ -648,7 +657,8 @@ void register_graph(long graph_id, const std::vector<long>& ds_ids)
                                                              nccl_comm,
                                                              ag_stream,
                                                              rs_stream,
-                                                             copy_stream);
+                                                             copy_stream,
+                                                             pre_div_reduce);
 }
 
 void register_graph_ops(long graph_id,

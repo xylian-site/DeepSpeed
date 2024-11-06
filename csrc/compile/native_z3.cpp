@@ -220,11 +220,6 @@ public:
         assert(hasKey(current_buffer_, scalar_type));
         assert(hasKey(current_buffer_events_, scalar_type));
 
-        if (enable_double_buffer_) {
-            assert(hasKey(shadow_buffer_events_, scalar_type));
-            shadow_buffer_events_.at(scalar_type)->block(copy_stream);
-        }
-
         current_buffer_.at(scalar_type)->reset();
         current_buffer_events_.at(scalar_type)->record(rs_stream);
 
@@ -495,14 +490,19 @@ public:
 
         at::Tensor reduce_in_buffer = reduce_bucket->allocate(grad_tensor.numel());
 
+        // This ensures the order of reduce_scatter -> copy
+        // Without this block, copy may start while reduce_scatter is still running
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        reduce_tasks_[scalar_type].emplace_back(ds_id, grad_tensor, reduce_in_buffer);
+        auto copy_src = grad_tensor.contiguous().view({-1});
+        // keep references to copy src
+        reduce_tasks_[scalar_type].emplace_back(ds_id, copy_src, reduce_in_buffer);
 
+        // computation must be done before copy
         rs_comp_done_events_[ds_id]->record(comp_stream);
         rs_comp_done_events_[ds_id]->block(copy_stream_);
         {
             at::cuda::CUDAStreamGuard guard(copy_stream_);
-            reduce_in_buffer.copy_(grad_tensor.contiguous().view({-1}), true);
+            reduce_in_buffer.copy_(copy_src, true);
             rs_copy_done_events_[ds_id]->record(copy_stream_);
         }
 
@@ -612,7 +612,17 @@ private:
         }
 
         reduce_buckets_->swap(scalar_type, rs_stream_, copy_stream_);
+
+        // Not very sure if this is necessary
+        // Want to prevent grad tensor from being released before the copy is done
+        auto comp_stream = at::cuda::getCurrentCUDAStream();
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
+            copy_done_event->block(comp_stream);
+        }
         reduce_tasks_[scalar_type].clear();
+
+        if (tmp_recv_numel > 0) { tmp_recv_buf.record_stream(rs_stream_); }
     }
 
     void flushAllReduceBuckets()

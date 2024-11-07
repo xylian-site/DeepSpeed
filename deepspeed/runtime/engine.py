@@ -3698,6 +3698,7 @@ class DeepSpeedEngine(Module):
                 compile_kwargs={},
                 schedule=False,
                 scheduler="simple_prefetch",
+                double_buffer=True,
                 use_symmetric_memory=False,
                 dump_graphs=False) -> None:
         """Compile the module using the specified backend and kwargs.
@@ -3722,7 +3723,8 @@ class DeepSpeedEngine(Module):
                                                       '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
                 self.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
                 get_accelerator().empty_cache()
-            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), True, use_symmetric_memory)
+            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), double_buffer,
+                          use_symmetric_memory)
 
             # Unset hooks
             for m in self.module.modules():

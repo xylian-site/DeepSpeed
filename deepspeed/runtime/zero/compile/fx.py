@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 from typing import Callable, Any, List, Dict
+from collections import defaultdict
 
 import torch
 from torch.fx import Node, Graph
@@ -158,3 +159,23 @@ def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager, param_node
 
     for param_name in param_manager.param_names:
         add_reduce(graph_id, graph, param_name_to_grad[param_name], param_name, param_manager.ds_ids[param_name])
+
+
+def add_free_activations(graph_id: int, graph: Graph, activation_node_names: List[str]):
+    node_to_last_use, _ = get_last_uses(graph)
+    activation_nodes_set = set([n for n in graph.nodes if n.op == "placeholder" and n.name in activation_node_names])
+
+    last_user_to_uses = defaultdict(list)
+    for node, last_user in node_to_last_use.items():
+        last_user_to_uses[last_user].append(node)
+
+    for last_user, used_nodes in last_user_to_uses.items():
+
+        activation_args = [an for an in used_nodes if an in activation_nodes_set]
+        if len(activation_args) == 0:
+            continue
+
+        node_name = f"free_activations_{[n.name for n in used_nodes]}"
+        with graph.inserting_after(last_user):
+            args = (activation_args, )
+            graph.create_node('call_function', torch.ops.native_z3.free_tensors, args, {}, name=node_name)

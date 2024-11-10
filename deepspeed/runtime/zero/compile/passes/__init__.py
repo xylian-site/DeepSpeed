@@ -5,6 +5,8 @@
 
 from ..profilers.graph_profile import MemoryProfilingInterpreter
 
+import deepspeed.comm as dist
+
 
 def run_opt_passes(nz3,
                    graph_id,
@@ -17,6 +19,7 @@ def run_opt_passes(nz3,
                    bwd,
                    debug_log=False):
     profile = profiling_results[graph_id]
+    rank = dist.get_rank()
 
     for i, opt_pass in enumerate(opt_passes):
 
@@ -32,7 +35,7 @@ def run_opt_passes(nz3,
 
         mem_prof = MemoryProfilingInterpreter(nz3, gm)
         mem_prof.run(*real_inputs)
-        if debug_log:
+        if debug_log and rank == 0:
             mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
 
         mem = [(name, current_alloc, delta) for name, current_alloc, delta in mem_prof.mem_record]

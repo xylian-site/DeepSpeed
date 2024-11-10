@@ -844,6 +844,13 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
     return at::Tensor();
 }
 
+void free_tensors(std::vector<at::Tensor> tensors)
+{
+    if (profile) { return; }
+
+    for (auto& tensor : tensors) { tensor.set_data(torch::empty({0}, tensor.options())); }
+}
+
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
     return at::Tensor();
@@ -886,6 +893,7 @@ TORCH_LIBRARY(native_z3, m)
     m.def(
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
+    m.def("free_tensors(Tensor[] a) -> ()");
 
     m.def("test_call(Tensor a) -> Tensor");
 }
@@ -897,6 +905,7 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
+    m.impl("free_tensors", &n3z::free_tensors);
 
     m.impl("test_call", &n3z::test_call);
 }
@@ -908,6 +917,7 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
     m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
+    m.impl("free_tensors", &n3z::free_tensors);
 
     m.impl("test_call", &n3z::test_call);
 }

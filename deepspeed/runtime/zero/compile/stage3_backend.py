@@ -18,7 +18,7 @@ from torch._functorch.aot_autograd import aot_module_simplified
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
-from .fx import get_output_node, add_gather_and_release, add_gather_and_reduce, register_and_add_wait_allgather
+from .fx import get_output_node, add_gather_and_release, add_gather_and_reduce, register_and_add_wait_allgather, add_free_activations
 from .graph_param import DSGraphParamManager
 from .profilers import ProfilingResult
 from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
@@ -213,9 +213,13 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             nonlocal offload_helper
             validated_inputs = []
+            activation_node_names = []
+            param_node_names = set([n.name for n in param_nodes_bw])
             for in_node, in_val in zip(input_nodes, sample_inputs):
                 if offload_helper.has_value(in_node.name):
                     validated_inputs.append(offload_helper.get_offloaded_value(in_node.name))
+                    if in_node.name not in param_node_names:
+                        activation_node_names.append(in_node.name)
                 else:
                     # Here we materialize the fake value on CPU to reduce the peak memory
                     # The values are moved to the device memory in the profiler
@@ -259,6 +263,8 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
+            add_free_activations(graph_id, gm.graph, activation_node_names)
+
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
 

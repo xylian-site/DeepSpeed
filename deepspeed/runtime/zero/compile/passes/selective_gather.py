@@ -36,8 +36,8 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
 
     max_mem = 0
     for _, prof in profiling_results.items():
-        fwd_max_mem = max(m[1] for m in prof.fwd_mem)
-        bwd_max_mem = max(m[1] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
+        fwd_max_mem = max(m[2] for m in prof.fwd_mem)
+        bwd_max_mem = max(m[2] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
         max_mem = max(max_mem, fwd_max_mem, bwd_max_mem)
         if dist.get_rank() == 0:
             print(f"max_mem={max_mem} fwd_max_mem={fwd_max_mem} bwd_max_mem={bwd_max_mem}")

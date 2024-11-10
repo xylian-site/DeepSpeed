@@ -224,6 +224,7 @@ class MemoryProfilingInterpreter(Interpreter):
         try:
             assert _all_real_if_tensor(args), "Inputs must be real tensors"
             self.nz3.enable_profiling(True)
+            self.mem_adjustment = 0
 
             with unset_fake_temporarily():
                 with get_accelerator().random().fork_rng(devices=[self.device]):
@@ -243,6 +244,11 @@ class MemoryProfilingInterpreter(Interpreter):
             args = map_aggregate(args, lambda x: _to(x, self.device))
             kwargs = map_aggregate(kwargs, lambda x: _to(x, self.device))
             ret = getattr(self, n.op)(n.target, args, kwargs)
+
+            if n.target == torch.ops.native_z3.free_tensors:
+                self.mem_adjustment -= sum(
+                    [v.element_size() * v.numel() for v in tree_leaves(args) if torch.is_tensor(v)])
+
             del args, kwargs
 
         current_alloc = get_accelerator().memory_allocated()
@@ -250,10 +256,11 @@ class MemoryProfilingInterpreter(Interpreter):
         dist.all_reduce(vals_to_bcast, dist.ReduceOp.MAX)
         current_alloc = vals_to_bcast[0].item()
 
-        self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc))
+        self.mem_record.append(
+            (n.name, current_alloc, current_alloc + self.mem_adjustment, current_alloc - self.last_alloc))
 
         self.node_counter += 1
-        if self.debug_log:
+        if self.debug_log and dist.get_rank() == 0:
             print(
                 f"Node {self.node_counter}/{self.node_num} {n.name} memory {current_alloc / 1024 / 1024:.2f}MB delta {(current_alloc - self.last_alloc) / 1024 / 1024:.2f}MB"
             )
@@ -264,5 +271,5 @@ class MemoryProfilingInterpreter(Interpreter):
 
     def dump(self, path):
         import pandas as pd
-        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "delta"])
+        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "memory_adjust", "delta"])
         df.to_csv(path, index=False)

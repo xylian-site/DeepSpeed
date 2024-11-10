@@ -17,7 +17,7 @@ from ..graph_param import DSGraphParamManager
 FUSE_FACTOR = 0.8
 MARGIN = 0.1
 MAX_FUSE_SIZE = 1e9
-MAX_BUFFERED_SIZE = 2e9
+MAX_BUFFERED_SIZE = 4e9
 
 run_prefetch_pass = False
 
@@ -34,7 +34,11 @@ def get_ds_id(node: Node):
 
 def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profiling_results, mem_budget: float,
                       param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
+    vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
+    dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
+    max_mem = vals_to_bcast[0].item()
 
     mem = profiling_results[graph_id].bwd_mem if bwd else profiling_results[graph_id].fwd_mem
     op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time

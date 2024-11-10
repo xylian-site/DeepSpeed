@@ -246,6 +246,10 @@ class MemoryProfilingInterpreter(Interpreter):
             del args, kwargs
 
         current_alloc = get_accelerator().memory_allocated()
+        vals_to_bcast = torch.tensor([current_alloc], device=self.device)
+        dist.all_reduce(vals_to_bcast, dist.ReduceOp.MAX)
+        current_alloc = vals_to_bcast[0].item()
+
         self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc))
 
         self.node_counter += 1

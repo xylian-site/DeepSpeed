@@ -193,9 +193,16 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
     for node, last_user in node_to_last_use.items():
         last_user_to_uses[last_user].append(node)
 
-    for last_user, used_nodes in last_user_to_uses.items():
+    def _should_free(node: Node) -> bool:
+        if not hasattr(node, "meta"):
+            return False
+        if not "tensor_meta" in node.meta:
+            return False
+        return True
 
-        activation_args = [an for an in used_nodes if an in activation_nodes_set]
+    for last_user, used_nodes in last_user_to_uses.items():
+        activation_args = [an for an in used_nodes if an in activation_nodes_set and _should_free(an)]
+
         if len(activation_args) == 0:
             continue
 

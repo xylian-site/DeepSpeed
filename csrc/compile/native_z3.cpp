@@ -350,6 +350,11 @@ public:
         if (param_updated_) {
             for (auto& it : has_acc_grad_) { it.second = false; }
         }
+
+        for (auto& it : reload_buffers_) {
+            it.second.record_stream(at::cuda::getCurrentCUDAStream());
+        }
+        reload_buffers_.clear();
     }
 
     void launchAllGather(at::Tensor output_buf,
@@ -601,9 +606,15 @@ public:
 
         assert(hasKey(reload_buffers_, id));
         auto ten = reload_buffers_.at(id);
-        reload_buffers_.erase(id);
+
+        // We can't release here because the tensor is still being used
+        // We will need "freeReloadedTensor" after the last user of the tensor to call
+        // ".record_stream". As it is a bit complicated, we clear the buffer and do at the end of
+        // the backward pass for now. reload_buffers_.erase(id);
         return ten;
     }
+
+    bool hasReloadBuffer(long id) { return hasKey(reload_buffers_, id); }
 
 private:
     c10::intrusive_ptr<c10d::ProcessGroup> process_group_;
@@ -967,6 +978,8 @@ at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id)
 
 at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id)
 {
+    if (profile && !executors[graph_id]->hasReloadBuffer(id)) { return tensor; }
+
     return executors[graph_id]->waitReload(tensor, id);
 }
 

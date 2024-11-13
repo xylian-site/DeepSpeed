@@ -19,6 +19,23 @@ def get_output_node(graph: Graph):
     raise ValueError("No output node found")
 
 
+def move_primals_to_head(graph: Graph):
+
+    # Move primals to the head of the graph
+    primals = [n for n in graph.nodes if n.op == "placeholder"]
+    non_primals = [n for n in graph.nodes if n.op != "placeholder"]
+    all_nodes = primals + non_primals
+
+    new_graph = Graph()
+    env = {}
+    for node in all_nodes:
+        new_node = new_graph.node_copy(node, lambda n: env[n.name])
+        env[node.name] = new_node
+    new_graph.lint()
+
+    return new_graph
+
+
 def add_args_process(graph: Graph,
                      node: Node,
                      fn: Callable[..., Any],
@@ -84,6 +101,9 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
                                extra_args=[graph_id, ds_id],
                                name=f"allgather_ds_param_{node.target}_{ds_id}",
                                meta=_make_node_meta(node, ds_id, True))
+
+    # Set the previous node back to output
+    # We don't want to change the output node to allgather
     output_node = get_output_node(graph)
     output_node.replace_input_with(new_node, node)
     return new_node
@@ -139,7 +159,7 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
     return ds_ids, ag_wait_nodes
 
 
-def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]):
+def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]) -> Graph:
     ag_nodes = []
     for pn in param_nodes:
         ag_node = add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
@@ -151,14 +171,18 @@ def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nod
         ds_id = param_manager.ds_ids[pn.name]
         add_release(graph_id, graph, last_use, pn, ds_id)
 
+    return move_primals_to_head(graph)
+
 
 def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager, param_nodes_bw: List[Node],
-                          param_name_to_grad: Dict[str, Node]):
+                          param_name_to_grad: Dict[str, Node]) -> Graph:
 
     add_gather_and_release(graph_id, graph, param_manager, param_nodes_bw)
 
     for param_name in param_manager.param_names:
         add_reduce(graph_id, graph, param_name_to_grad[param_name], param_name, param_manager.ds_ids[param_name])
+
+    return move_primals_to_head(graph)
 
 
 def add_free_activations(graph_id: int, graph: Graph, activation_node_names: List[str]):

@@ -856,6 +856,31 @@ at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
     return at::Tensor();
 }
 
+at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id)
+{
+    // auto dims = tensor.sizes();
+    // std::cout << "offload_tensor graph_id=" << graph_id << " id=" << id
+    //     << " dim=" << join_as_str(dims, ",") << std::endl;
+    return tensor.to(at::kCPU);
+}
+
+at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id)
+{
+    // auto dims = tensor.sizes();
+    // std::cout << "reload_tensor graph_id=" << graph_id << " id=" << id
+    //     << " dim=" << join_as_str(dims, ",") << std::endl;
+
+    return tensor.to(at::kCUDA);
+}
+
+at::Tensor wait_tensor_copy(at::Tensor tensor, long graph_id, long id)
+{
+    // auto dims = tensor.sizes();
+    // std::cout << "wait_tensor_copy graph_id=" << graph_id << " id=" << id
+    //     << " dim=" << join_as_str(dims, ",") << std::endl;
+    return tensor;
+}
+
 void start_forward()
 {
     lazy_init_symm_memory();
@@ -894,6 +919,9 @@ TORCH_LIBRARY(native_z3, m)
         "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
     m.def("free_tensors(Tensor[] a) -> ()");
+    m.def("offload_tensor(Tensor a, int id, int id) -> Tensor");
+    m.def("reload_tensor(Tensor a, int id, int id) -> Tensor");
+    m.def("wait_tensor_copy(Tensor a, int id, int id) -> Tensor");
 
     m.def("test_call(Tensor a) -> Tensor");
 }
@@ -906,6 +934,9 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
     m.impl("free_tensors", &n3z::free_tensors);
+    m.impl("offload_tensor", &n3z::offload_tensor);
+    m.impl("reload_tensor", &n3z::reload_tensor);
+    m.impl("wait_tensor_copy", &n3z::wait_tensor_copy);
 
     m.impl("test_call", &n3z::test_call);
 }
@@ -918,6 +949,9 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
     m.impl("free_tensors", &n3z::free_tensors);
+    m.impl("offload_tensor", &n3z::offload_tensor);
+    m.impl("reload_tensor", &n3z::reload_tensor);
+    m.impl("wait_tensor_copy", &n3z::wait_tensor_copy);
 
     m.impl("test_call", &n3z::test_call);
 }

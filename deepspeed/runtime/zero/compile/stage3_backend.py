@@ -23,6 +23,7 @@ from .graph_param import DSGraphParamManager
 from .profilers import ProfilingResult
 from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
 from .passes import run_opt_passes
+from .passes.offload_activation import offload_activation_fwd, reload_activation_bwd
 from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values
 from .partitioner import get_wrapped_partitioner
@@ -80,7 +81,7 @@ def launch_opt_passes():
     reset_graph_order()
 
 
-def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=False):
+def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_graphs=False, debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
@@ -97,6 +98,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
 
         offload_helper = NodeValueOffloadHelper(torch.device(get_accelerator().current_device()))
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
+        num_original_outputs = len(get_output_node(gm.graph).args[0])
 
         global graph_order
         graph_order.append((graph_id, needs_backward))
@@ -121,8 +123,14 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
             original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
 
-            add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
-                                   get_param_nodes(gm.graph, param_indices))
+            gm.graph = add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
+                                              get_param_nodes(gm.graph, param_indices))
+
+            if needs_backward and offload_activation:
+                outputs = get_output_node(gm.graph).args[0]
+                nodes_to_offload = outputs[num_original_outputs:]
+                gm.graph = offload_activation_fwd(gm.graph, graph_id, nodes_to_offload, graph_order,
+                                                  get_accelerator().available_memory(), param_manager[graph_id])
 
             nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
             profiler = ProfilingInterpreter(nz3, gm, debug_log=False)
@@ -196,6 +204,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
                 gm = run_opt_passes(nz3, graph_id, gm, real_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
 
+            gm.recompile()
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
@@ -205,7 +214,11 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
             assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
             param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
-            add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw, param_name_to_grad)
+            gm.graph = add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw,
+                                             param_name_to_grad)
+            if offload_activation:
+                gm.graph = reload_activation_bwd(gm.graph, graph_id, graph_order,
+                                                 get_accelerator().available_memory(), param_manager[graph_id])
 
             input_nodes = get_input_nodes(gm.graph)
             assert len(input_nodes) == len(
@@ -285,6 +298,7 @@ def make_stage3_backend(opt_passes, scheduler, dump_graphs=False, debug_log=Fals
                 gm = run_opt_passes(nz3, graph_id, gm, validated_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, True, debug_log and rank == 0)
 
+            gm.recompile()
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd

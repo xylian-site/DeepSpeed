@@ -145,11 +145,11 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
                 ag_tensor_size_sum -= sum([tensor_size_dict[ag_node.name] for ag_node in prefetch_ags])
             assert ag_tensor_size_sum == 0
 
-        assert ag_tensor_size_sum >= 0
-
         # print_rank_0(
         #     f"node={node} next_alloc_mem={next_alloc_mem} pending_ags={len(prefetch_ags)} ag_tensor_size_sum={ag_tensor_size_sum}"
         # )
+
+        assert ag_tensor_size_sum >= 0
 
     new_graph = Graph()
     env = {}

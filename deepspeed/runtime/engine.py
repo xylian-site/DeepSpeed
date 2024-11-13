@@ -3698,6 +3698,7 @@ class DeepSpeedEngine(Module):
                 compile_kwargs={},
                 schedule=False,
                 scheduler="simple_prefetch",
+                offload_activation=False,
                 double_buffer=True,
                 use_symmetric_memory=False,
                 dump_graphs=False) -> None:
@@ -3770,7 +3771,10 @@ class DeepSpeedEngine(Module):
 
             from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()
-            backend = make_stage3_backend(opt_passes, scheduler=scheduler, dump_graphs=dump_graphs)
+            backend = make_stage3_backend(opt_passes,
+                                          scheduler=scheduler,
+                                          offload_activation=offload_activation,
+                                          dump_graphs=dump_graphs)
 
         print(f"Compiling with {scheduler}")
         if 'backend' in compile_kwargs:

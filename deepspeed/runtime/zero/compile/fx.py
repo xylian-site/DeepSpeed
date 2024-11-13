@@ -189,6 +189,20 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
     node_to_last_use, _ = get_last_uses(graph)
     activation_nodes_set = set([n for n in graph.nodes if n.op == "placeholder" and n.name in activation_node_names])
 
+    offload_id_to_node = {}
+    node_to_wait_reload = {}
+    for node in graph.nodes:
+        if node.target == torch.ops.native_z3.reload_tensor:
+            offload_act = node.args[0]
+            # node_to_offload_id[offload_act] = node.args[2]
+            offload_id_to_node[node.args[2]] = offload_act
+        elif node.target == torch.ops.native_z3.wait_reload:
+            offload_id = node.args[2]
+            node_to_wait_reload[offload_id_to_node[offload_id]] = node
+
+    # print(f"add_free_activations node_to_wait_reload={node_to_wait_reload} activation_nodes_set={activation_nodes_set}")
+    activation_nodes_set = set(node_to_wait_reload[n] if n in node_to_wait_reload else n for n in activation_nodes_set)
+
     last_user_to_uses = defaultdict(list)
     for node, last_user in node_to_last_use.items():
         last_user_to_uses[last_user].append(node)

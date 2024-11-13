@@ -947,7 +947,10 @@ void free_tensors(std::vector<at::Tensor> tensors)
 {
     if (profile) { return; }
 
-    for (auto& tensor : tensors) { tensor.set_data(torch::empty({0}, tensor.options())); }
+    for (auto& tensor : tensors) {
+        tensor.record_stream(at::cuda::getCurrentCUDAStream());
+        tensor.set_data(torch::empty({0}, tensor.options()));
+    }
 }
 
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)

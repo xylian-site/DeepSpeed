@@ -38,7 +38,8 @@ def run_opt_passes(nz3,
         if debug_log and rank == 0:
             mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
 
-        mem = [(name, current_alloc, delta) for name, current_alloc, delta in mem_prof.mem_record]
+        mem = [(name, current_alloc, memory_adjust, delta)
+               for name, current_alloc, memory_adjust, delta in mem_prof.mem_record]
         if bwd:
             profile.bwd_mem = mem
         else:

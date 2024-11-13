@@ -25,7 +25,7 @@ from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterp
 from .passes import run_opt_passes
 from .passes.offload_activation import offload_activation_fwd, reload_activation_bwd
 from .list_schedule import simple_prefetch, fast_free_schedule
-from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, exclude_from_act_offload
 from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
@@ -128,7 +128,10 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             if needs_backward and offload_activation:
                 outputs = get_output_node(gm.graph).args[0]
-                nodes_to_offload = outputs[num_original_outputs:]
+                output_node_with_original_names = [(name, n) for name, n in zip(original_output_names, outputs)]
+                nodes_to_offload = [(name, node)
+                                    for name, node in output_node_with_original_names[num_original_outputs:]
+                                    if not exclude_from_act_offload(node)]
                 gm.graph = offload_activation_fwd(gm.graph, graph_id, nodes_to_offload, graph_order,
                                                   get_accelerator().available_memory(), param_manager[graph_id])
 

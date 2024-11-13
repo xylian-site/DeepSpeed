@@ -19,6 +19,10 @@ except ImportError:
     from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
 
 no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default}
+sym_size_ops = {
+    operator.ge, operator.le, operator.eq, operator.ne, operator.gt, operator.lt, torch.ops.aten.sym_size.int,
+    operator.getitem
+}
 
 
 def get_input_nodes(graph: Graph) -> List[Node]:
@@ -32,6 +36,10 @@ def get_param_nodes(graph: Graph, index_to_ds_ids: List[Tuple[int, int]]) -> Lis
 
 def is_comm_op(node: Node) -> bool:
     return "comm" in node.meta and node.meta["comm"]
+
+
+def exclude_from_act_offload(node: Node) -> bool:
+    return node.target in sym_size_ops
 
 
 def dtype_to_elem_size(dtype: torch.dtype) -> int:

@@ -1,14 +1,12 @@
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
 import random
 from collections import defaultdict
 
 import torch
 from torch.fx import Graph, Node
 
-from ..fx import get_output_node, get_last_uses, move_primals_to_head
+from ..fx import get_output_node, move_primals_to_head
 from ..graph_param import DSGraphParamManager
-
-OFFLOAD_THRESHOLD = 1024 * 1024  # 1MB
 
 value_to_id: Dict[int, Dict[str, int]] = defaultdict(dict)
 used_ids: Set[int] = set()
@@ -28,43 +26,25 @@ def get_random_id() -> int:
     return v
 
 
-def _make_node_meta(node: Node, comm: bool):
-    meta = {"comm": comm}
-    if "tensor_meta" in node.meta:
-        meta["tensor_meta"] = node.meta["tensor_meta"]
-    return meta
-
-
 def _should_offload(node: Node) -> bool:
     if not hasattr(node, "meta"):
         return False
     if not "tensor_meta" in node.meta:
         return False
 
-    shape = node.meta["tensor_meta"].shape
-    numel = 1
-    for s in shape:
-        numel *= s
-    return numel > OFFLOAD_THRESHOLD
+    return True
 
 
-def offload_activation_fwd(graph: Graph, graph_id: int, nodes_to_offload: List[Node], graph_order: List[int],
-                           mem_budget: float, param_manager: DSGraphParamManager) -> Graph:
-    # output_node = get_output_node(graph)
-    # output_value_nodes = set(output_node.args[0])
-
+def offload_activation_fwd(graph: Graph, graph_id: int, nodes_to_offload_with_names: List[Tuple[str, Node]],
+                           graph_order: List[int], mem_budget: float, param_manager: DSGraphParamManager) -> Graph:
     param_names = set(param_manager.param_names)
 
     import copy
     cl_graph = copy.deepcopy(graph)
     cl_graph.erase_node(get_output_node(cl_graph))
 
-    node_to_last_use, _ = get_last_uses(cl_graph)
-    node_name_to_last_use_name = {k.name: v.name for k, v in node_to_last_use.items()}
-    name_to_node = {n.name: n for n in graph.nodes}
-
     global value_to_id
-    for node in nodes_to_offload:
+    for name, node in nodes_to_offload_with_names:
         if node.name in param_names:
             continue
 
@@ -84,7 +64,7 @@ def offload_activation_fwd(graph: Graph, graph_id: int, nodes_to_offload: List[N
         output_node = get_output_node(graph)
         output_node.replace_input_with(node, wait_node)
 
-        value_to_id[graph_id][node.name] = val_id
+        value_to_id[graph_id][name] = val_id
 
     graph = move_primals_to_head(graph)
 
@@ -96,8 +76,8 @@ def reload_activation_bwd(graph: Graph, graph_id: int, graph_order: List[int], m
                           param_manager: DSGraphParamManager) -> Graph:
 
     graph_value_to_id = value_to_id[graph_id]
-    act_names = set(graph_value_to_id.keys())
-    act_nodes = [n for n in graph.nodes if n.name in act_names]
+    name_to_node = {n.name: n for n in graph.nodes}
+    act_nodes = [name_to_node[n] for n in graph_value_to_id.keys()]
 
     node_to_first_user = {}
     for act in act_nodes:

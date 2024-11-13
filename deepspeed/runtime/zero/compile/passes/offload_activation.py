@@ -63,7 +63,7 @@ def offload_activation_fwd(graph: Graph, graph_id: int, nodes_to_offload_with_na
                                              name=f"offload_{node.name}_{val_id}")
         with graph.inserting_after(offload_node):
             wait_node = graph.create_node('call_function',
-                                          torch.ops.native_z3.wait_tensor_copy, (offload_node, graph_id, val_id), {},
+                                          torch.ops.native_z3.wait_offload, (offload_node, graph_id, val_id), {},
                                           name=f"wait_copy_{node.name}_{val_id}")
 
         output_node = get_output_node(graph)
@@ -100,7 +100,7 @@ def reload_activation_bwd(graph: Graph, graph_id: int, graph_order: List[int], m
                                             name=f"reload_{node.name}_{val_id}")
         with graph.inserting_after(reload_node):
             wait_node = graph.create_node('call_function',
-                                          torch.ops.native_z3.wait_tensor_copy, (reload_node, graph_id, val_id), {},
+                                          torch.ops.native_z3.wait_reload, (reload_node, graph_id, val_id), {},
                                           name=f"wait_copy_{node.name}_{val_id}")
 
         # replace all uses of node with wait_node

@@ -6,7 +6,6 @@
 import functools
 import operator
 from typing import List, Tuple, Dict
-from weakref import WeakSet
 
 import torch
 from torch.fx import Node, Graph
@@ -77,20 +76,20 @@ class NodeValueOffloadHelper:
     def __init__(self, device):
         self.device = device
         self.env_values: Dict[str, Argument] = {}
-        self.env_values_device_unchanged: WeakSet[torch.Tensor] = WeakSet()
+        self.original_device: Dict[torch.Tensor, torch.device] = {}
 
     def _to_cpu(self, v):
         if torch.is_tensor(v):
-            if v.device == self.device:
-                with unset_fake_temporarily():
-                    return v.to('cpu').detach()
-            else:
-                self.env_values_device_unchanged.add(v)
+            with unset_fake_temporarily():
+                device = v.device
+                offloaded = v.to('cpu').detach()
+                self.original_device[offloaded] = device
+                return offloaded
         return v
 
     def _from_cpu(self, v):
-        if torch.is_tensor(v) and v not in self.env_values_device_unchanged:
-            return v.to(self.device).detach()
+        if torch.is_tensor(v) and v in self.original_device:
+            return v.to(self.original_device[v])
         return v
 
     def save(self, name: str, v: Argument, offload) -> None:
@@ -107,7 +106,7 @@ class NodeValueOffloadHelper:
 
     def clear(self) -> None:
         self.env_values.clear()
-        self.env_values_device_unchanged.clear()
+        self.original_device.clear()
 
 
 def materialize_fake(v, device=None):
@@ -223,3 +222,20 @@ def count_inflight_values(graph: Graph, file_path: str):
 
     print(f"Max inflight size: {max_inflight_size}")
     print(f"Data successfully written to {csv_filename}")
+
+
+class OutputCaptureStack:
+
+    def __init__(self):
+        self.stack = []
+        self.enabled = False
+
+    def push(self, v):
+        self.stack.append(v)
+        self.enabled = False
+
+    def pop(self):
+        return self.stack.pop()
+
+    def enable_for_next(self):
+        self.enabled = True

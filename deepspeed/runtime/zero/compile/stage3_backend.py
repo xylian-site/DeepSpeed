@@ -25,7 +25,7 @@ from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterp
 from .passes import run_opt_passes
 from .passes.offload_activation import offload_activation_fwd, reload_activation_bwd
 from .list_schedule import simple_prefetch, fast_free_schedule
-from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, materialize_fake, count_inflight_values, exclude_from_act_offload, OutputCaptureStack
+from .util import get_input_nodes, get_param_nodes, NodeValueOffloadHelper, count_inflight_values, exclude_from_act_offload, OutputCaptureStack, get_activation_node_names, get_bwd_inputs
 from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
@@ -150,8 +150,12 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             out_capture.enable_for_next()
 
             nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
+
+            def create_fwd_inputs():
+                return real_inputs
+
             profiler = ProfilingInterpreter(nz3, gm, debug_log=False)
-            real_outputs = profiler.run(*real_inputs)
+            real_outputs = profiler.run(*create_fwd_inputs())
 
             total_activation_size = 0
             if needs_backward:
@@ -205,7 +209,7 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             dump_graph(gm, f"forward_aot_scheduled_{graph_id}", skip=not dump_graphs)
 
             mem_prof = MemoryProfilingInterpreter(nz3, gm)
-            mem_prof.run(*real_inputs)
+            mem_prof.run(*create_fwd_inputs())
 
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_fwd_{graph_id}.csv")
@@ -218,7 +222,7 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             get_accelerator().empty_cache()
 
             if enable_opt_passes:
-                gm = run_opt_passes(nz3, graph_id, gm, real_inputs, opt_passes, graph_order, profiling_results,
+                gm = run_opt_passes(nz3, graph_id, gm, create_fwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
 
             gm.recompile()
@@ -235,7 +239,7 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             # avoiding keeping the duplicated activation.
             captured_out = out_capture.pop()
             offload_args = []
-            for i, out in enumerate(captured_out):
+            for out in captured_out:
                 if torch.is_tensor(out):
                     if not hasattr(out, 'ds_id'):
                         device = out.device
@@ -258,21 +262,12 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
             nonlocal offload_helper
-            validated_inputs = []
-            activation_node_names = []
-            param_node_names = set([n.name for n in param_nodes_bw])
-            for in_node, in_val in zip(input_nodes, sample_inputs):
-                if offload_helper.has_value(in_node.name):
-                    validated_inputs.append(offload_helper.load(in_node.name))
-                    if in_node.name not in param_node_names:
-                        activation_node_names.append(in_node.name)
-                else:
-                    # Here we materialize the fake value on CPU to reduce the peak memory
-                    # The values are moved to the device memory in the profiler
-                    validated_inputs.append(materialize_fake(in_val, device=acc_device))
-            validated_inputs = tuple(validated_inputs)
 
-            real_outputs = ProfilingInterpreter(nz3, gm, debug_log=False).run(*validated_inputs)
+            def create_bwd_inputs():
+                # Inputs can be destroyed during profiling. So we need to materialize them every time we run
+                return get_bwd_inputs(input_nodes, sample_inputs, offload_helper, acc_device)
+
+            real_outputs = ProfilingInterpreter(nz3, gm, debug_log=False).run(*create_bwd_inputs())
 
             output_size = sum(v.numel() * v.element_size() for v in real_outputs if torch.is_tensor(v))
             if rank == 0 and debug_log:
@@ -292,7 +287,6 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
                 print("\n".join([x[1] for x in ops_with_mem_str]))
 
             del real_outputs
-            offload_helper.clear()
             gc.collect()
             get_accelerator().empty_cache()
 
@@ -309,13 +303,14 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-            add_free_activations(graph_id, gm.graph, activation_node_names)
+            add_free_activations(graph_id, gm.graph, get_activation_node_names(gm.graph, param_nodes_bw,
+                                                                               offload_helper))
 
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
 
             mem_prof = MemoryProfilingInterpreter(nz3, gm)
-            mem_prof.run(*validated_inputs)
+            mem_prof.run(*create_bwd_inputs())
             if debug_log and rank == 0:
                 mem_prof.dump(f"mem_prof_bwd_{graph_id}.csv")
             profiling_results[graph_id].bwd_mem = mem_prof.mem_record
@@ -328,12 +323,14 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(nz3, graph_id, gm, validated_inputs, opt_passes, graph_order, profiling_results,
+                gm = run_opt_passes(nz3, graph_id, gm, create_bwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, True, debug_log and rank == 0)
 
             # Move the stashed tensors back to the
             for out, device in offload_args:
                 out.data = out.data.to(device)
+
+            offload_helper.clear()
 
             gm.recompile()
             return make_boxed_func(gm.forward)

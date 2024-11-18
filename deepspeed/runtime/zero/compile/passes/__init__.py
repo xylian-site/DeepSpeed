@@ -11,7 +11,7 @@ import deepspeed.comm as dist
 def run_opt_passes(nz3,
                    graph_id,
                    gm,
-                   real_inputs,
+                   create_inputs_fn,
                    opt_passes,
                    graph_order,
                    profiling_results,
@@ -34,7 +34,7 @@ def run_opt_passes(nz3,
             print(f"Prefetching enabled for {'bwd' if bwd else 'fwd'} graph_id={graph_id} {graph}")
 
         mem_prof = MemoryProfilingInterpreter(nz3, gm)
-        mem_prof.run(*real_inputs)
+        mem_prof.run(*create_inputs_fn())
         if debug_log and rank == 0:
             mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
 

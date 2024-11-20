@@ -3756,6 +3756,7 @@ class DeepSpeedEngine(Module):
             from deepspeed.runtime.zero.compile.passes.prefetch import schedule_prefetch
             from deepspeed.runtime.zero.compile.passes.selective_gather import make_selective_gather
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
+            from deepspeed.runtime.zero.compile.patch_compiled_func import patch_compiled_func
 
             opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer, self.nz3), -1.0)]
 
@@ -3765,6 +3766,7 @@ class DeepSpeedEngine(Module):
                 if global_steps == WARMUP_STEPS and self.micro_steps % self.gradient_accumulation_steps() == 0:
                     torch._dynamo.reset()
                     self.nz3.reset()
+                    patch_compiled_func()
                     launch_opt_passes()
 
             self.launch_compile_passes = launch_compile_passes

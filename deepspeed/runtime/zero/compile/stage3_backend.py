@@ -5,7 +5,7 @@
 
 import gc
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List
 
 import torch
 from torch.fx import Graph, GraphModule
@@ -31,6 +31,7 @@ from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
 param_manager: Dict[int, DSGraphParamManager] = {}
+output_names: Dict[int, List[str]] = {}
 graph_order = []
 
 
@@ -125,6 +126,7 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
             original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
+            output_names[graph_id] = original_output_names
 
             gm.graph = add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
                                               get_param_nodes(gm.graph, param_indices))
@@ -245,8 +247,8 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-            # add_free_activations(graph_id, gm.graph,
-            #                      get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
+            add_free_activations(graph_id, gm.graph,
+                                 get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
 
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
             gm.recompile()
@@ -275,6 +277,8 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             remaining_bwd_compile_count -= 1
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
+
+            output_names.pop(graph_id)
 
             gm.recompile()
             return make_boxed_func(gm.forward)

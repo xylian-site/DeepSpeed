@@ -224,46 +224,15 @@ def count_inflight_values(graph: Graph, file_path: str):
     print(f"Data successfully written to {csv_filename}")
 
 
-class OutputCaptureStack:
-
-    def __init__(self):
-        self.stack = []
-        self.enabled = False
-
-    def push(self, v):
-        self.stack.append(v)
-        self.enabled = False
-
-    def pop(self):
-        return self.stack.pop()
-
-    def enable_for_next(self):
-        self.enabled = True
-
-
-def get_activation_node_names(graph: Graph, param_nodes_bw: List[Node], offload_helper):
+def get_activation_node_names(graph: Graph, param_nodes_bw: List[Node], fwd_output_names: List[str]):
 
     input_nodes = get_input_nodes(graph)
     param_node_names = set([n.name for n in param_nodes_bw])
 
     activation_node_names = []
     for in_node in input_nodes:
-        if offload_helper.has_value(in_node.name):
+        if in_node.name in fwd_output_names:
             if in_node.name not in param_node_names:
                 activation_node_names.append(in_node.name)
 
     return activation_node_names
-
-
-def get_bwd_inputs(input_nodes: List[Node], sample_inputs, offload_helper, acc_device):
-    validated_inputs = []
-    for in_node, in_val in zip(input_nodes, sample_inputs):
-        if offload_helper.has_value(in_node.name):
-            validated_inputs.append(offload_helper.load(in_node.name))
-        else:
-            # Here we materialize the fake value on CPU to reduce the peak memory
-            # The values are moved to the device memory in the profiler
-            validated_inputs.append(materialize_fake(in_val, device=acc_device))
-    validated_inputs = tuple(validated_inputs)
-
-    return validated_inputs

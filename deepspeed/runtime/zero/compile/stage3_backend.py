@@ -125,15 +125,14 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
                 print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
-            original_output_names = [n.name for n in get_output_node(gm.graph).args[0]]
-            output_names[graph_id] = original_output_names
+            output_names[graph_id] = [n.name for n in get_output_node(gm.graph).args[0]]
 
             gm.graph = add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
                                               get_param_nodes(gm.graph, param_indices))
 
             if needs_backward and offload_activation:
                 outputs = get_output_node(gm.graph).args[0]
-                output_node_with_original_names = [(name, n) for name, n in zip(original_output_names, outputs)]
+                output_node_with_original_names = [(name, n) for name, n in zip(output_names[graph_id], outputs)]
                 nodes_to_offload = [(name, node)
                                     for name, node in output_node_with_original_names[num_original_outputs:]
                                     if not exclude_from_act_offload(node)]
@@ -200,6 +199,12 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
         def bw(gm, sample_inputs):
             if rank == 0 and debug_log:
                 print(f"Bwd initial graph graph_id={graph_id} {gm.graph}")
+
+            if len(bwd_inputs_stack) == 0:
+                # dynamo calls bw compiler ahead of time when symints are saved for backward. See the details for aot_dispatch_autograd in jit_compile_runtime_wrappers.
+                # As we currently use actually bwd input values in bw compiler, we return None to skip the compilation there.
+                # This would need be handled properly in the future.
+                return None
 
             assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
             param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)

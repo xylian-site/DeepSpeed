@@ -44,7 +44,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
     op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
     tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
 
-    mem_dict = {name: (mem_adjust, delta) for name, alloc_mem, mem_adjust, delta in mem}
+    mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
     time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
     tensor_size_dict = {name: size for name, size in tensor_sizes}
 

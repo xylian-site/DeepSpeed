@@ -6,7 +6,7 @@
 from typing import List
 
 import torch
-from torch.fx import Graph, Node
+from torch.fx import Graph
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
@@ -29,9 +29,10 @@ def lazy_init():
     global reload_event
 
     if copy_stream is None:
-        copy_stream = torch.cuda.Stream()
-        offload_event = torch.cuda.Event()
-        reload_event = torch.cuda.Event()
+
+        copy_stream = get_accelerator().Stream()
+        offload_event = get_accelerator().Event()
+        reload_event = get_accelerator().Event()
 
 
 optimizer = None
@@ -47,7 +48,7 @@ def offload_adam_states_async():
         if offload_buf_key not in state:
             state[offload_buf_key] = get_accelerator().pin_memory(torch.empty_like(state[key], device="cpu"))
 
-        with torch.cuda.stream(copy_stream):
+        with get_accelerator().stream(copy_stream):
             state[offload_buf_key].copy_(state[key], non_blocking=True)
             state[key].record_stream(copy_stream)
 
@@ -65,13 +66,13 @@ def offload_adam_states_async():
         if "exp_avg_sq" in state:
             del state["exp_avg_sq"]
 
-    torch.cuda.synchronize()
+    get_accelerator().synchronize()
 
 
 def reload_adam_states_async():
 
     def move_back_key(state, key):
-        with torch.cuda.stream(copy_stream):
+        with get_accelerator().stream(copy_stream):
             state[key] = state[_make_offload_state_key(key)].to(device, non_blocking=True)
         reload_event.record(stream=copy_stream)
 
@@ -81,7 +82,7 @@ def reload_adam_states_async():
         if _make_offload_state_key("exp_avg_sq") in state:
             move_back_key(state, "exp_avg_sq")
 
-    torch.cuda.synchronize()
+    get_accelerator().synchronize()
 
 
 def sync_offload_states():
@@ -92,10 +93,8 @@ def sync_reload_states():
     reload_event.wait_stream(copy_stream)
 
 
-
-
-def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
 
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
     vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
@@ -131,8 +130,8 @@ def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], 
     return graph
 
 
-def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
     vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
     dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
@@ -166,8 +165,8 @@ def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], 
     return graph
 
 
-def offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                       mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     lazy_init()
 
     if bwd:
@@ -183,4 +182,3 @@ def init_offload_opt_states(adam_optimizer):
     optimizer = adam_optimizer
     global device
     device = torch.device(get_accelerator().current_device())
-    

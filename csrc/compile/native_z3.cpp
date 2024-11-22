@@ -320,6 +320,8 @@ public:
     {
         for (long ds_id : ds_ids_) {
             has_acc_grad_[ds_id] = false;
+            valid_[ds_id] = false;
+
             ag_comm_done_events_[ds_id] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
             ag_comp_done_events_[ds_id] =
@@ -349,6 +351,7 @@ public:
     {
         if (param_updated_) {
             for (auto& it : has_acc_grad_) { it.second = false; }
+            for (auto& it : valid_) { it.second = false; }
         }
 
         for (auto& it : reload_buffers_) {
@@ -394,18 +397,20 @@ public:
         }
 
         param_registry_->registerGatheredParam(ds_id, output_buf);
+        valid_[ds_id] = true;
     }
 
     at::Tensor allgatherParam(long ds_id,
                               c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
-        if (param_registry_->hasGatheredParam(ds_id)) {
-            return param_registry_->getGatheredParam(ds_id);
-        }
+        assert(hasKey(valid_, ds_id));
+        if (valid_.at(ds_id)) { return param_registry_->getGatheredParam(ds_id); }
 
         const DSParam& param = param_registry_->getParam(ds_id);
         const at::Tensor& ds_tensor = param.getDSTensor();
-        at::Tensor output_buf = torch::empty(param.getShape(), ds_tensor.options());
+        at::Tensor output_buf = param_registry_->hasGatheredParam(ds_id)
+                                    ? param_registry_->getGatheredParam(ds_id)
+                                    : torch::empty(param.getShape(), ds_tensor.options());
 
         ag_comp_done_events_[ds_id]->record();
         ag_comp_done_events_[ds_id]->block(ag_stream_);
@@ -419,30 +424,35 @@ public:
     void prefetchParamsFused(std::vector<int64_t> ds_ids,
                              c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem)
     {
-        std::vector<int64_t> ds_ids_not_gatherd;
+        std::vector<int64_t> invalid_ds_ids;
         for (const auto& ds_id : ds_ids) {
-            if (!param_registry_->hasGatheredParam(ds_id)) { ds_ids_not_gatherd.push_back(ds_id); }
+            assert(hasKey(valid_, ds_id));
+            if (!valid_.at(ds_id)) { invalid_ds_ids.push_back(ds_id); }
         }
 
         std::unordered_map<long, at::Tensor> output_bufs;
-        for (long ds_id : ds_ids_not_gatherd) {
+        for (long ds_id : invalid_ds_ids) {
             const DSParam& param = param_registry_->getParam(ds_id);
-            output_bufs[ds_id] = torch::empty(param.getShape(), param.getDSTensor().options());
+            if (param_registry_->hasGatheredParam(ds_id)) {
+                output_bufs[ds_id] = param_registry_->getGatheredParam(ds_id);
+            } else {
+                output_bufs[ds_id] = torch::empty(param.getShape(), param.getDSTensor().options());
+            }
         }
 
-        for (long ds_id : ds_ids_not_gatherd) {
+        for (long ds_id : invalid_ds_ids) {
             ag_comp_done_events_[ds_id]->record();
             ag_comp_done_events_[ds_id]->block(ag_stream_);
         }
 
         ncclGroupStart();
-        for (long ds_id : ds_ids_not_gatherd) {
+        for (long ds_id : invalid_ds_ids) {
             assert(hasKey(output_bufs, ds_id));
             launchAllGather(output_bufs.at(ds_id), ds_id, symm_mem);
         }
         ncclGroupEnd();
 
-        for (long ds_id : ds_ids_not_gatherd) { ag_comm_done_events_[ds_id]->record(ag_stream_); }
+        for (long ds_id : invalid_ds_ids) { ag_comm_done_events_[ds_id]->record(ag_stream_); }
     }
 
     at::Tensor releaseParam(at::Tensor v, long ds_id)
@@ -459,6 +469,7 @@ public:
             }
 
             param_registry_->unregisterGatheredParam(ds_id);
+            valid_[ds_id] = false;
         }
 
         return v;
@@ -646,6 +657,7 @@ private:
     bool param_updated_ = false;
     std::unordered_map<at::ScalarType, std::vector<ReduceTask>> reduce_tasks_;
     std::unordered_map<long, bool> has_acc_grad_;
+    std::unordered_map<long, bool> valid_;
     bool pre_div_reduce_;
 
     void flushReduceBucket(at::ScalarType scalar_type)
@@ -861,11 +873,7 @@ void register_param(long ds_id,
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
-void set_persistent(long ds_id, at::Tensor ds_tensor)
-{
-    param_registry->registerGatheredParam(ds_id, ds_tensor);
-    param_registry->setPersistent(ds_id, true);
-}
+void set_persistent(long ds_id) { param_registry->setPersistent(ds_id, true); }
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {

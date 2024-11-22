@@ -245,10 +245,6 @@ class MemoryProfilingInterpreter(Interpreter):
             kwargs = map_aggregate(kwargs, lambda x: _to(x, self.device))
             ret = getattr(self, n.op)(n.target, args, kwargs)
 
-            if n.target == torch.ops.native_z3.free_tensors:
-                self.mem_adjustment -= sum(
-                    [v.element_size() * v.numel() for v in tree_leaves(args) if torch.is_tensor(v)])
-
             del args, kwargs
 
         current_alloc = get_accelerator().memory_allocated()
@@ -256,8 +252,7 @@ class MemoryProfilingInterpreter(Interpreter):
         dist.all_reduce(vals_to_bcast, dist.ReduceOp.MAX)
         current_alloc = vals_to_bcast[0].item()
 
-        self.mem_record.append(
-            (n.name, current_alloc, current_alloc + self.mem_adjustment, current_alloc - self.last_alloc))
+        self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc))
 
         self.node_counter += 1
         if self.debug_log and dist.get_rank() == 0:
@@ -271,5 +266,5 @@ class MemoryProfilingInterpreter(Interpreter):
 
     def dump(self, path):
         import pandas as pd
-        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "memory_adjust", "delta"])
+        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "delta"])
         df.to_csv(path, index=False)

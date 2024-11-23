@@ -92,10 +92,8 @@ def sync_reload_states():
     reload_event.wait_stream(copy_stream)
 
 
-
-
-def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
 
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
     vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
@@ -125,14 +123,19 @@ def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], 
         if node.op != 'placeholder' and not inserted_offload and is_first_graph:
             # print(f"Inserting offload_opt before {node.name}")
             with graph.inserting_before(node):
-                graph.create_node('call_function', offload_adam_states_async, (), {}, name="offload_opt")
+                offload_node = graph.create_node('call_function',
+                                                 offload_adam_states_async, (), {},
+                                                 name="offload_opt")
+            with graph.inserting_after(offload_node):
+                graph.create_node('call_function', sync_offload_states, (), {}, name="sync_offload_opt")
+
             inserted_offload = True
 
     return graph
 
 
-def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
     vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
     dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
@@ -160,14 +163,16 @@ def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], 
         if node.op == 'output' and not inserted_reload and is_last_graph:
             # print(f"Inserting reload_opt before {node.name}")
             with graph.inserting_before(node):
-                graph.create_node('call_function', reload_adam_states_async, (), {}, name="reload_opt")
+                reload_node = graph.create_node('call_function', reload_adam_states_async, (), {}, name="reload_opt")
+            with graph.inserting_after(reload_node):
+                graph.create_node('call_function', sync_reload_states, (), {}, name="sync_reload_opt")
             inserted_reload = True
 
     return graph
 
 
-def offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                       mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
     lazy_init()
 
     if bwd:
@@ -183,4 +188,3 @@ def init_offload_opt_states(adam_optimizer):
     optimizer = adam_optimizer
     global device
     device = torch.device(get_accelerator().current_device())
-    

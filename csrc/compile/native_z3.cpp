@@ -676,6 +676,7 @@ private:
 
         at::Tensor tmp_recv_buf = at::Tensor();
         if (tmp_recv_numel > 0) {
+            at::cuda::CUDAStreamGuard guard(rs_stream_);
             tmp_recv_buf = torch::empty({tmp_recv_numel},
                                         at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
         }

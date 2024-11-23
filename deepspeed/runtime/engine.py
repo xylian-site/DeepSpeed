@@ -3746,11 +3746,10 @@ class DeepSpeedEngine(Module):
 
             for p in self.module.parameters():
                 grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
-                if p.ds_persist:
-                    p.all_gather([p])
-                    self.nz3.register_param(p.ds_id, p.ds_shape, p, grad_buffer, p.ds_persist)
-                else:
-                    self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
+
+                # Disable persistent param
+                p.ds_persist = False
+                self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             WARMUP_STEPS = 5
             from deepspeed.runtime.zero.compile.passes.prefetch import schedule_prefetch

@@ -6,7 +6,7 @@
 from typing import List
 
 import torch
-from torch.fx import Graph, Node
+from torch.fx import Graph
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
@@ -29,9 +29,10 @@ def lazy_init():
     global reload_event
 
     if copy_stream is None:
-        copy_stream = torch.cuda.Stream()
-        offload_event = torch.cuda.Event()
-        reload_event = torch.cuda.Event()
+
+        copy_stream = get_accelerator().Stream()
+        offload_event = get_accelerator().Event()
+        reload_event = get_accelerator().Event()
 
 
 optimizer = None
@@ -47,7 +48,7 @@ def offload_adam_states_async():
         if offload_buf_key not in state:
             state[offload_buf_key] = get_accelerator().pin_memory(torch.empty_like(state[key], device="cpu"))
 
-        with torch.cuda.stream(copy_stream):
+        with get_accelerator().stream(copy_stream):
             state[offload_buf_key].copy_(state[key], non_blocking=True)
             state[key].record_stream(copy_stream)
 
@@ -65,13 +66,13 @@ def offload_adam_states_async():
         if "exp_avg_sq" in state:
             del state["exp_avg_sq"]
 
-    torch.cuda.synchronize()
+    get_accelerator().synchronize()
 
 
 def reload_adam_states_async():
 
     def move_back_key(state, key):
-        with torch.cuda.stream(copy_stream):
+        with get_accelerator().stream(copy_stream):
             state[key] = state[_make_offload_state_key(key)].to(device, non_blocking=True)
         reload_event.record(stream=copy_stream)
 
@@ -81,7 +82,7 @@ def reload_adam_states_async():
         if _make_offload_state_key("exp_avg_sq") in state:
             move_back_key(state, "exp_avg_sq")
 
-    torch.cuda.synchronize()
+    get_accelerator().synchronize()
 
 
 def sync_offload_states():

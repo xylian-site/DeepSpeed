@@ -116,19 +116,10 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
         persistent_mem += size
 
         param_obj = ds_id_to_param[ds_id]
-        param_obj.ds_persist = True
 
-        z3_optimizer.persistent_parameters.append(param_obj)
-
-        alloc_mem = accelerator.memory_allocated()
-        param_obj.all_gather([param_obj])
-        mem_diff = accelerator.memory_allocated() - alloc_mem
-
-        nz3.set_persistent(ds_id, param_obj)
+        nz3.set_persistent(ds_id)
         if dist.get_rank() == 0:
-            print(
-                f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.shape} mem_diff: {mem_diff}"
-            )
+            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.ds_shape}")
 
     return graph
 

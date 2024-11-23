@@ -52,7 +52,6 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
         [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
 
     pm = param_manager[graph_id]
-    persistent_ds_ids = set(pm.ds_ids[name] for name, ds_param in pm.params.items() if ds_param.param.ds_persist)
 
     print_rank_0(
         f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
@@ -106,7 +105,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
                 else:
                     break
 
-            if node.target == torch.ops.native_z3.allgather_param and get_ds_id(node) not in persistent_ds_ids:
+            if node.target == torch.ops.native_z3.allgather_param:
 
                 current_ag_size = sum([tensor_size_dict[ag_node.name] for ag_node in prefetch_ags])
                 pred_time_current = comm_predictor(current_ag_size)

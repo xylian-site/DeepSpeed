@@ -84,7 +84,12 @@ def launch_opt_passes():
     reset_graph_order()
 
 
-def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_graphs=False, debug_log=False):
+def make_stage3_backend(opt_passes,
+                        scheduler,
+                        free_activation=True,
+                        offload_activation=False,
+                        dump_graphs=False,
+                        debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
     rank = dist.get_rank()
@@ -162,7 +167,6 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
                 get_accelerator().available_memory(),
                 0,  # unused
                 debug_log=debug_log)
-            gm.recompile()
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"fwd_{graph_id}_inflight_values.csv")
@@ -191,8 +195,6 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
             if enable_opt_passes:
                 gm = run_opt_passes(nz3, graph_id, gm, create_fwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
-
-            gm.recompile()
 
             return make_boxed_func(gm.forward)
 
@@ -252,11 +254,12 @@ def make_stage3_backend(opt_passes, scheduler, offload_activation=False, dump_gr
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-            add_free_activations(graph_id, gm.graph,
-                                 get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
+
+            if free_activation:
+                add_free_activations(graph_id, gm.graph,
+                                     get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
 
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
-            gm.recompile()
 
             mem_prof = MemoryProfilingInterpreter(nz3, gm)
             mem_prof.run(*create_bwd_inputs())

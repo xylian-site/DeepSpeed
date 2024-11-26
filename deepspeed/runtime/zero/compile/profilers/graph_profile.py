@@ -237,7 +237,7 @@ class MemoryProfilingInterpreter(Interpreter):
         return return_val
 
     def run_node(self, n: torch.fx.Node) -> Any:
-        get_accelerator().reset_max_memory_allocated()
+        get_accelerator().reset_peak_memory_stats()
 
         if n.op in {"placeholder", "output"}:
             ret = super().run_node(n)

@@ -154,7 +154,7 @@ def make_stage3_backend(opt_passes,
                 return real_inputs
 
             profiler = ProfilingInterpreter(nz3, gm, debug_log=False)
-            real_outputs = profiler.run(*create_fwd_inputs())
+            profiler.run(*create_fwd_inputs())
             del profiler
             gc.collect()
             get_accelerator().empty_cache()

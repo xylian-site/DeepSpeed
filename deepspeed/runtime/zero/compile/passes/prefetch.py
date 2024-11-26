@@ -44,7 +44,7 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
     op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
     tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
 
-    mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
+    mem_dict = {name: (alloc_mem, peak) for name, alloc_mem, delta, peak in mem}
     time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
     tensor_size_dict = {name: size for name, size in tensor_sizes}
 
@@ -54,17 +54,19 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
     pm = param_manager[graph_id]
 
     print_rank_0(
-        f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
+        f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} max_allocated={get_accelerator().max_memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
     )
 
     # Fill missing values
     prev_mem = 0
+    prev_peak = 0
     for node in graph.nodes:
         if node.name in mem_dict:
             prev_mem = mem_dict[node.name][0]
+            prev_peak = mem_dict[node.name][1]
         else:
             print_rank_0(f"node {node.name} not in mem_dict")
-            mem_dict[node.name] = (prev_mem, 0)
+            mem_dict[node.name] = (prev_mem, prev_peak)
 
     comm_predictor = create_predictor()
 
@@ -82,10 +84,10 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
             assert i < len(order_rev) - 1
             assert node.name in mem_dict
             next_node = order_rev[i + 1]
-            next_alloc_mem, _ = mem_dict[next_node.name]
+            next_alloc_mem, next_peak = mem_dict[next_node.name]
 
             # Free up memory
-            while next_alloc_mem + ag_tensor_size_sum > max_mem or ag_tensor_size_sum > MAX_BUFFERED_SIZE:
+            while next_peak + ag_tensor_size_sum > max_mem or ag_tensor_size_sum > MAX_BUFFERED_SIZE:
                 if len(prefetch_ag_groups) > 0:
                     # launch prefetch
                     fused_ag_nodes = prefetch_ag_groups.pop(0)

@@ -237,6 +237,8 @@ class MemoryProfilingInterpreter(Interpreter):
         return return_val
 
     def run_node(self, n: torch.fx.Node) -> Any:
+        get_accelerator().reset_max_memory_allocated()
+
         if n.op in {"placeholder", "output"}:
             ret = super().run_node(n)
         else:
@@ -252,7 +254,8 @@ class MemoryProfilingInterpreter(Interpreter):
         dist.all_reduce(vals_to_bcast, dist.ReduceOp.MAX)
         current_alloc = vals_to_bcast[0].item()
 
-        self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc))
+        self.mem_record.append(
+            (n.name, current_alloc, current_alloc - self.last_alloc, get_accelerator().max_memory_allocated()))
 
         self.node_counter += 1
         if self.debug_log and dist.get_rank() == 0:
@@ -266,5 +269,5 @@ class MemoryProfilingInterpreter(Interpreter):
 
     def dump(self, path):
         import pandas as pd
-        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "delta"])
+        df = pd.DataFrame(self.mem_record, columns=["node", "memory", "delta", "max_mem"])
         df.to_csv(path, index=False)

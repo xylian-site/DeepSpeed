@@ -34,13 +34,16 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
     if last_backward_graph_id is None or graph_id != last_backward_graph_id:
         return graph
 
-    max_mem = 0
-    for _, prof in profiling_results.items():
-        fwd_max_mem = max(m[1] for m in prof.fwd_mem)
-        bwd_max_mem = max(m[1] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
-        max_mem = max(max_mem, fwd_max_mem, bwd_max_mem)
+    peak_mem = 0
+    for graph_id, prof in profiling_results.items():
+        # Use peak memory
+        fwd_max_mem = max(m[3] for m in prof.fwd_mem)
+        bwd_max_mem = max(m[3] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
+        peak_mem = max(peak_mem, fwd_max_mem, bwd_max_mem)
         if dist.get_rank() == 0:
-            print(f"max_mem={max_mem} fwd_max_mem={fwd_max_mem} bwd_max_mem={bwd_max_mem}")
+            print(
+                f"selective_gather graph_id={graph_id} max_mem={peak_mem} fwd_max_mem={fwd_max_mem} bwd_max_mem={bwd_max_mem}"
+            )
 
     persistent_ds_ids = set()
     for graph_id, pm in param_manager.items():
@@ -96,13 +99,14 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
     sorted_ds_ids = {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
 
     accelerator = get_accelerator()
-    max_alloc_mem = accelerator.max_memory_allocated()
     total_mem = accelerator.total_memory()
-    MEM_MARGIN = 0.2 * total_mem
-    available_mem = (total_mem - max_mem) - MEM_MARGIN
+    MEM_MARGIN = 0.1
+    available_mem = total_mem * (1 - MEM_MARGIN) - peak_mem
 
     if dist.get_rank() == 0:
-        print(f"max_mem={max_mem} total_mem={total_mem} available_mem={available_mem} MEM_MARGIN={MEM_MARGIN}")
+        print(
+            f"selective_gather max_mem={peak_mem} total_mem={total_mem} MEM_MARGIN={MEM_MARGIN} available_mem={available_mem}"
+        )
 
     ds_id_to_param = {}
     for g_id, g_pm in param_manager.items():

@@ -3777,7 +3777,7 @@ class DeepSpeedEngine(Module):
             patch_fake_tensor()
             backend = make_stage3_backend(opt_passes,
                                           scheduler=scheduler,
-                                          free_activation=free_activation,
+                                          free_activation=False,
                                           offload_activation=offload_activation,
                                           dump_graphs=dump_graphs)
 

@@ -26,7 +26,7 @@ from .passes import run_opt_passes
 from .passes.offload_activation import offload_activation_fwd, reload_activation_bwd
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func
 from .list_schedule import simple_prefetch, fast_free_schedule
-from .util import get_input_nodes, get_param_nodes, count_inflight_values, exclude_from_act_offload, get_activation_node_names
+from .util import get_input_nodes, get_param_nodes, count_inflight_values, exclude_from_act_offload, get_activation_node_names, TensorOffloadHelper
 from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
@@ -222,18 +222,15 @@ def make_stage3_backend(opt_passes,
                 sample_inputs), f"Expected {len(sample_inputs)} inputs, got {len(input_nodes)}"
 
             bwd_real_inputs = bwd_inputs_stack.pop()
-            offload_args = {}
 
-            for v in bwd_real_inputs:
-                if torch.is_tensor(v) and not hasattr(v, "ds_id"):
-                    device = v.device
-                    v.data = v.data.to('cpu')
-                    offload_args[v] = device
+            if free_activation:
+                offload_helper = TensorOffloadHelper()
+                offload_helper.offload(bwd_real_inputs)
 
             def create_bwd_inputs():
-                # Inputs can be destroyed during profiling. So we need to materialize them every time we run
-                args = [a.to(offload_args[a]) if a in offload_args else a for a in bwd_real_inputs]
-                return tuple(args)
+                if free_activation:
+                    return tuple(offload_helper.reload(in_place=False))
+                return tuple(bwd_real_inputs)
 
             real_outputs = ProfilingInterpreter(nz3, gm, debug_log=False).run(*create_bwd_inputs())
 
@@ -245,9 +242,6 @@ def make_stage3_backend(opt_passes,
                 print(f"Bwd before scheduling graph graph_id={graph_id} {gm.graph}")
 
             gm.graph = scheduler_fn(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
-
-            if rank == 0 and debug_log:
-                print(f"Bwd after scheduling graph_id={graph_id} {gm.graph}")
 
             if rank == 0 and debug_log:
                 count_inflight_values(gm.graph, f"bwd_{graph_id}_inflight_values.csv")
@@ -278,8 +272,8 @@ def make_stage3_backend(opt_passes,
                 gm = run_opt_passes(nz3, graph_id, gm, create_bwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, True, debug_log and rank == 0)
 
-            for v, device in offload_args.items():
-                v.data = v.data.to(device)
+            if free_activation:
+                offload_helper.reload(in_place=True)
 
             global remaining_bwd_compile_count
             remaining_bwd_compile_count -= 1

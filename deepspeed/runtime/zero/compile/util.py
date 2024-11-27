@@ -236,3 +236,81 @@ def get_activation_node_names(graph: Graph, param_nodes_bw: List[Node], fwd_outp
                 activation_node_names.append(in_node.name)
 
     return activation_node_names
+
+
+class TensorOffloadHelper():
+
+    def __init__(self):
+        self.devices = {}
+        self.base_tensors = {}
+        self.views = {}
+        self.arg_list = []
+        self.offloaded = {}
+        self.non_tensor = {}
+
+    def offload(self, argument):
+
+        def is_base_tensor(tensor):
+            return torch.is_tensor(a) and not a._is_view() and not hasattr(tensor, "ds_id")
+
+        base_tensor_ids = set()
+        for a in argument:
+            if is_base_tensor(a):
+                base_tensor_ids.add(id(a))
+
+        for a in argument:
+            a_id = id(a)
+
+            if is_base_tensor(a):
+                # Base tensor
+                self.devices[a_id] = a.device
+                self.base_tensors[a_id] = a
+            # elif torch.is_tensor(a) and not hasattr(a, "ds_id") and id(a._base) in base_tensor_ids:
+            #     # View
+            #     self.views[a_id] = {
+            #         "base_id": id(a._base),
+            #         "size": a.size(),
+            #         "stride": a.stride(),
+            #         "offset": a.storage_offset(),
+            #     }
+            else:
+                # other types or ds tensor
+                self.non_tensor[a_id] = a
+
+            self.arg_list.append(a_id)
+
+        for a in argument:
+            if is_base_tensor(a):
+                a.data = a.data.to("cpu")
+
+    def reload(self, in_place):
+
+        loaded_base_tensors = {}
+        for a_id in self.arg_list:
+            if a_id in self.base_tensors:
+                device = self.devices[a_id]
+
+                if in_place:
+                    self.base_tensors[a_id].data = self.base_tensors[a_id].to(device)
+                    loaded_base_tensors[a_id] = self.base_tensors[a_id]
+                else:
+                    loaded_base_tensors[a_id] = self.base_tensors[a_id].to(device)
+
+        results = []
+        for a_id in self.arg_list:
+            if a_id in self.base_tensors:
+                results.append(loaded_base_tensors[a_id])
+
+            # elif a_id in self.views:
+            #     view_info = self.views[a_id]
+            #     # print(f"load_args loading view {a_id} base_id={view_info['base_id']} size={view_info['size']} stride={view_info['stride']} offset={view_info['offset']}")
+            #     base_tensor = loaded_base_tensors[view_info["base_id"]]
+            #     view_tensor = base_tensor.as_strided(
+            #         view_info["size"], view_info["stride"], view_info["offset"]
+            #     )
+            #     results.append(view_tensor)
+
+            elif a_id in self.non_tensor:
+                results.append(self.non_tensor[a_id])
+
+        return results

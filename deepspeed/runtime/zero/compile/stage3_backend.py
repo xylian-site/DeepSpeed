@@ -82,6 +82,8 @@ def launch_opt_passes():
     global enable_opt_passes
     enable_opt_passes = True
     reset_graph_order()
+    profiling_results.clear()
+    param_manager.clear()
 
 
 def make_stage3_backend(opt_passes,

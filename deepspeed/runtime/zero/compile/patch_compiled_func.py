@@ -204,6 +204,7 @@ Got grad_output types: {str(grad_output_types)}"""
 
 
 enabled_patched_func = False
+original_grad_fn = None
 
 
 def patch_compiled_func():
@@ -240,6 +241,9 @@ def patch_compiled_func():
     class PatchedFunction(torch.autograd.Function, metaclass=FunctionMeta):
         pass
 
+    global original_grad_fn
+    original_grad_fn = torch.autograd.Function
+
     torch.autograd.Function = PatchedFunction
 
     return backward_inputs
@@ -248,3 +252,7 @@ def patch_compiled_func():
 def unpatch_compiled_func():
     global enabled_patched_func
     enabled_patched_func = False
+
+    global original_grad_fn
+    torch.autograd.Function = original_grad_fn
+

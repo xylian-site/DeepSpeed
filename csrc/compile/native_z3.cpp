@@ -861,7 +861,8 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
 void reset()
 {
     executors.clear();
-    reduce_buckets->clear();
+    // We keep the buckets for memory estimation
+    // reduce_buckets->clear();
 }
 
 void cleanup()

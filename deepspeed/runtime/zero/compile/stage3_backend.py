@@ -128,8 +128,9 @@ def make_stage3_backend(opt_passes,
             profiling_results[graph_id].needs_backward = needs_backward
 
         def fw(gm, sample_inputs):
-            if rank == 0 and debug_log:
-                print(f"Fwd initial graph graph_id={graph_id} {gm.graph}")
+            # if rank == 0 and debug_log:
+            if rank == 0:
+                print(f"Fwd initial graph graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
             output_names[graph_id] = [n.name for n in get_output_node(gm.graph).args[0]]
@@ -198,11 +199,16 @@ def make_stage3_backend(opt_passes,
                 gm = run_opt_passes(nz3, graph_id, gm, create_fwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
 
+            if rank == 0:
+                print(f"Fwd end graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
+
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
-            if rank == 0 and debug_log:
-                print(f"Bwd initial graph graph_id={graph_id} {gm.graph}")
+            # if rank == 0 and debug_log:
+            if rank == 0:
+                # print(f"Bwd initial graph graph_id={graph_id} {gm.graph}")
+                print(f"Bwd initial graph graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
             if len(bwd_inputs_stack) == 0:
                 # dynamo calls bw compiler ahead of time when symints are saved for backward. See the details for aot_dispatch_autograd in jit_compile_runtime_wrappers.
@@ -280,9 +286,14 @@ def make_stage3_backend(opt_passes,
             global remaining_bwd_compile_count
             remaining_bwd_compile_count -= 1
             if remaining_bwd_compile_count == 0:
+                if rank == 0:
+                    print(f"Unpatching compiled functions. #bwd_inputs_stack={len(bwd_inputs_stack)}")
                 unpatch_compiled_func()
 
             output_names.pop(graph_id)
+
+            if rank == 0:
+                print(f"Bwd end graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
             gm.recompile()
             return make_boxed_func(gm.forward)

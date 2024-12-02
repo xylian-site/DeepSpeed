@@ -3756,12 +3756,15 @@ class DeepSpeedEngine(Module):
             WARMUP_STEPS = 5
             from deepspeed.runtime.zero.compile.passes.prefetch import schedule_prefetch
             from deepspeed.runtime.zero.compile.passes.selective_gather import make_selective_gather
-            from deepspeed.runtime.zero.compile.passes.offload_adam_states import init_offload_opt_states
+            from deepspeed.runtime.zero.compile.passes.offload_adam_states import init_offload_opt_states, move_offload_opt_states
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
             from deepspeed.runtime.zero.compile.patch_compiled_func import patch_compiled_func
 
-            init_offload_opt_states(self.optimizer.optimizer)
-            opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer, self.nz3), -1.0)]
+            if offload_opt_states:
+                init_offload_opt_states(self.optimizer.optimizer)
+                opt_passes = [(move_offload_opt_states, 0.7)]
+            else:
+                opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer, self.nz3), -1.0)]
 
             def launch_compile_passes(micro_steps=self.micro_steps,
                                       global_steps=self.global_steps,

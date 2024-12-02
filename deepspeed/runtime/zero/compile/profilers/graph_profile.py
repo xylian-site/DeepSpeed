@@ -256,8 +256,7 @@ class MemoryProfilingInterpreter(Interpreter):
         current_alloc = vals_to_bcast[0].item()
         max_alloc = vals_to_bcast[1].item()
 
-        self.mem_record.append(
-            (n.name, current_alloc, current_alloc - self.last_alloc, max_alloc))
+        self.mem_record.append((n.name, current_alloc, current_alloc - self.last_alloc, max_alloc))
 
         self.node_counter += 1
         if self.debug_log and dist.get_rank() == 0:

@@ -250,12 +250,14 @@ class MemoryProfilingInterpreter(Interpreter):
             del args, kwargs
 
         current_alloc = get_accelerator().memory_allocated()
-        vals_to_bcast = torch.tensor([current_alloc], device=self.device)
+        max_alloc = get_accelerator().max_memory_allocated()
+        vals_to_bcast = torch.tensor([current_alloc, max_alloc], device=self.device)
         dist.all_reduce(vals_to_bcast, dist.ReduceOp.MAX)
         current_alloc = vals_to_bcast[0].item()
+        max_alloc = vals_to_bcast[1].item()
 
         self.mem_record.append(
-            (n.name, current_alloc, current_alloc - self.last_alloc, get_accelerator().max_memory_allocated()))
+            (n.name, current_alloc, current_alloc - self.last_alloc, max_alloc))
 
         self.node_counter += 1
         if self.debug_log and dist.get_rank() == 0:

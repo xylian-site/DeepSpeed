@@ -71,6 +71,8 @@ def offload_adam_states_async():
 
 def reload_adam_states_async():
 
+    print("Reloading Adam states")
+
     def move_back_key(state, key):
         with get_accelerator().stream(copy_stream):
             state[key] = state[_make_offload_state_key(key)].to(device, non_blocking=True)
@@ -86,100 +88,115 @@ def reload_adam_states_async():
 
 
 def sync_offload_states():
-    offload_event.wait_stream(copy_stream)
+    offload_event.wait(copy_stream)
 
 
 def sync_reload_states():
-    reload_event.wait_stream(copy_stream)
-
-
-def offload_opt_states_fwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
-                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
-
-    max_mem = get_accelerator().total_memory() * (1 - MARGIN)
-    vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
-    dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
-    max_mem = vals_to_bcast[0].item()
-
-    mem = profiling_results[graph_id].bwd_mem if bwd else profiling_results[graph_id].fwd_mem
-    op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
-    tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
-
-    mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
-    time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
-    tensor_size_dict = {name: size for name, size in tensor_sizes}
-
-    total_param_size = sum(
-        [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
-
-    pm = param_manager[graph_id]
-
-    is_first_graph = graph_id == graph_order[0][0]
-
-    graph = move_primals_to_head(graph)
-
-    inserted_offload = False
-    for node in graph.nodes:
-        # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
-        if node.op != 'placeholder' and not inserted_offload and is_first_graph:
-            # print(f"Inserting offload_opt before {node.name}")
-            with graph.inserting_before(node):
-                offload_node = graph.create_node('call_function',
-                                                 offload_adam_states_async, (), {},
-                                                 name="offload_opt")
-            with graph.inserting_after(offload_node):
-                graph.create_node('call_function', sync_offload_states, (), {}, name="sync_offload_opt")
-
-            inserted_offload = True
-
-    return graph
-
-
-def offload_opt_states_bwd(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
-                           mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
-    max_mem = get_accelerator().total_memory() * (1 - MARGIN)
-    vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
-    dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
-    max_mem = vals_to_bcast[0].item()
-
-    mem = profiling_results[graph_id].bwd_mem if bwd else profiling_results[graph_id].fwd_mem
-    op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
-    tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
-
-    mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
-    time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
-    tensor_size_dict = {name: size for name, size in tensor_sizes}
-
-    total_param_size = sum(
-        [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
-
-    pm = param_manager[graph_id]
-
-    graph_order_with_backward = [g[0] for g in graph_order if g[1]]
-    is_last_graph = graph_id == graph_order_with_backward[0]
-
-    inserted_reload = False
-    for node in graph.nodes:
-        # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
-        if node.op == 'output' and not inserted_reload and is_last_graph:
-            # print(f"Inserting reload_opt before {node.name}")
-            with graph.inserting_before(node):
-                reload_node = graph.create_node('call_function', reload_adam_states_async, (), {}, name="reload_opt")
-            with graph.inserting_after(reload_node):
-                graph.create_node('call_function', sync_reload_states, (), {}, name="sync_reload_opt")
-            inserted_reload = True
-
-    return graph
+    reload_event.wait(copy_stream)
 
 
 def offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
                        mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
-    lazy_init()
+    max_mem = get_accelerator().total_memory() * (1 - MARGIN)
+    vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
+    dist.all_reduce(vals_to_bcast, dist.ReduceOp.MIN)
+    max_mem = vals_to_bcast[0].item()
+
+    mem = profiling_results[graph_id].bwd_mem if bwd else profiling_results[graph_id].fwd_mem
+    op_time = profiling_results[graph_id].bwd_time if bwd else profiling_results[graph_id].fwd_time
+    tensor_sizes = profiling_results[graph_id].bwd_tensor_sizes if bwd else profiling_results[graph_id].fwd_tensor_sizes
+
+    mem_dict = {name: (alloc_mem, delta) for name, alloc_mem, delta in mem}
+    time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
+    tensor_size_dict = {name: size for name, size in tensor_sizes}
+
+    total_param_size = sum(
+        [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
+
+    pm = param_manager[graph_id]
 
     if bwd:
-        return offload_opt_states_bwd(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
+        graph_order_with_backward = [g[0] for g in graph_order if g[1]]
+        is_last_graph = graph_id == graph_order_with_backward[0]
+
+        inserted_reload = False
+        for node in graph.nodes:
+            # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
+            if node.op == 'output' and not inserted_reload and is_last_graph:
+                # print(f"Inserting reload_opt before {node.name}")
+                with graph.inserting_before(node):
+                    reload_node = graph.create_node('call_function',
+                                                    reload_adam_states_async, (), {},
+                                                    name="reload_opt")
+                with graph.inserting_after(reload_node):
+                    graph.create_node('call_function', sync_reload_states, (), {}, name="sync_reload_opt")
+                inserted_reload = True
     else:
-        return offload_opt_states_fwd(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
+        is_first_graph = graph_id == graph_order[0][0]
+
+        graph = move_primals_to_head(graph)
+
+        inserted_offload = False
+        for node in graph.nodes:
+            # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
+            if node.op != 'placeholder' and not inserted_offload and is_first_graph:
+                # print(f"Inserting offload_opt before {node.name}")
+                with graph.inserting_before(node):
+                    offload_node = graph.create_node('call_function',
+                                                     offload_adam_states_async, (), {},
+                                                     name="offload_opt")
+                with graph.inserting_after(offload_node):
+                    graph.create_node('call_function', sync_offload_states, (), {}, name="sync_offload_opt")
+
+                inserted_offload = True
+
+    return graph
+
+
+def insert_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                              mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+
+    if bwd:
+        graph_order_with_backward = [g[0] for g in graph_order if g[1]]
+        is_last_graph = graph_id == graph_order_with_backward[0]
+
+        inserted_reload = False
+        for node in graph.nodes:
+            # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
+            if node.op == 'output' and not inserted_reload and is_last_graph:
+                # print(f"Inserting reload_opt before {node.name}")
+                with graph.inserting_before(node):
+                    reload_node = graph.create_node('call_function',
+                                                    reload_adam_states_async, (), {},
+                                                    name="reload_opt")
+                with graph.inserting_after(reload_node):
+                    graph.create_node('call_function', sync_reload_states, (), {}, name="sync_reload_opt")
+                inserted_reload = True
+    else:
+        is_first_graph = graph_id == graph_order[0][0]
+
+        graph = move_primals_to_head(graph)
+
+        inserted_offload = False
+        for node in graph.nodes:
+            # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
+            if node.op != 'placeholder' and not inserted_offload and is_first_graph:
+                # print(f"Inserting offload_opt before {node.name}")
+                with graph.inserting_before(node):
+                    offload_node = graph.create_node('call_function',
+                                                     offload_adam_states_async, (), {},
+                                                     name="offload_opt")
+                with graph.inserting_after(offload_node):
+                    graph.create_node('call_function', sync_offload_states, (), {}, name="sync_offload_opt")
+
+                inserted_offload = True
+
+    return graph
+
+
+def move_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+                            mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+    return offload_opt_states(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
 
 
 def init_offload_opt_states(adam_optimizer):

@@ -24,6 +24,7 @@ from .profilers import ProfilingResult
 from .profilers.graph_profile import ProfilingInterpreter, MemoryProfilingInterpreter
 from .passes import run_opt_passes
 from .passes.offload_activation import offload_activation_fwd, reload_activation_bwd
+from .passes.offload_adam_states import insert_offload_opt_states
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func
 from .list_schedule import simple_prefetch, fast_free_schedule
 from .util import get_input_nodes, get_param_nodes, count_inflight_values, exclude_from_act_offload, get_activation_node_names, TensorOffloadHelper
@@ -90,6 +91,7 @@ def make_stage3_backend(opt_passes,
                         scheduler,
                         free_activation=True,
                         offload_activation=False,
+                        offload_opt_states=False,
                         dump_graphs=False,
                         debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
@@ -182,6 +184,11 @@ def make_stage3_backend(opt_passes,
 
             dump_graph(gm, f"forward_aot_scheduled_{graph_id}", skip=not dump_graphs)
 
+            if offload_opt_states:
+                gm.graph = insert_offload_opt_states(gm.graph, graph_id, graph_order, profiling_results,
+                                                     get_accelerator().available_memory(), param_manager[graph_id],
+                                                     False)
+
             mem_prof = MemoryProfilingInterpreter(nz3, gm)
             mem_prof.run(*create_fwd_inputs())
 
@@ -262,6 +269,11 @@ def make_stage3_backend(opt_passes,
                                      get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
 
             dump_graph(gm, f"backward_aot_scheduled_{graph_id}", skip=not dump_graphs)
+
+            if offload_opt_states:
+                gm.graph = insert_offload_opt_states(gm.graph, graph_id, graph_order, profiling_results,
+                                                     get_accelerator().available_memory(), param_manager[graph_id],
+                                                     True)
 
             mem_prof = MemoryProfilingInterpreter(nz3, gm)
             mem_prof.run(*create_bwd_inputs())

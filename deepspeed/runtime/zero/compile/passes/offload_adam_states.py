@@ -22,7 +22,15 @@ from ..profilers import ProfilingResult
 from ..graph_param import DSGraphParamManager
 from ..fx import move_primals_to_head
 
-MARGIN = 0.1
+import deepspeed.comm as dist
+
+
+def print_r0(msg):
+    if dist.get_rank() == 0:
+        print(msg)
+
+
+MARGIN = 0.2
 
 copy_stream = None
 offload_event = None
@@ -46,6 +54,7 @@ def lazy_init():
 
 optimizer = None
 device = None
+nz3 = None
 
 
 def move_key(state, key, key_event=None):
@@ -73,59 +82,69 @@ def move_back_key(state, key, key_event=None):
         key_event.record(stream=copy_stream)
 
 
-def offload_adam_states_async():
+def offload_adam_states_sync():
 
-    print("Offloading Adam states")
-    for i, (k, state) in enumerate(optimizer.state.items()):
-        if "exp_avg" in state:
-            move_key(state, "exp_avg")
-        if "exp_avg_sq" in state:
-            move_key(state, "exp_avg_sq")
+    with unset_fake_temporarily():
+        # print_r0("Offloading Adam states")
+        for i, (k, state) in enumerate(optimizer.state.items()):
+            if "exp_avg" in state:
+                move_key(state, "exp_avg")
+            if "exp_avg_sq" in state:
+                move_key(state, "exp_avg_sq")
 
-    for _, state in optimizer.state.items():
-        if "exp_avg" in state:
-            del state["exp_avg"]
-        if "exp_avg_sq" in state:
-            del state["exp_avg_sq"]
+        for _, state in optimizer.state.items():
+            if "exp_avg" in state:
+                del state["exp_avg"]
+            if "exp_avg_sq" in state:
+                del state["exp_avg_sq"]
 
-    get_accelerator().synchronize()
+        get_accelerator().synchronize()
 
 
-def reload_adam_states_async():
+def reload_adam_states_sync():
 
-    print("Reloading Adam states")
+    with unset_fake_temporarily():
+        # print_r0("Reloading Adam states")
 
-    for _, state in optimizer.state.items():
-        if _make_offload_state_key("exp_avg") in state:
-            move_back_key(state, "exp_avg")
-        if _make_offload_state_key("exp_avg_sq") in state:
-            move_back_key(state, "exp_avg_sq")
+        for _, state in optimizer.state.items():
+            if _make_offload_state_key("exp_avg") in state:
+                move_back_key(state, "exp_avg")
+            if _make_offload_state_key("exp_avg_sq") in state:
+                move_back_key(state, "exp_avg_sq")
 
-    get_accelerator().synchronize()
+        get_accelerator().synchronize()
 
 
 def sync_offload_states(event=None):
-    if event is None:
-        offload_event.wait(copy_stream)
+    if nz3.is_profiling():
+        offload_adam_states_sync()
     else:
-        event.wait(copy_stream)
+        if event is None:
+            offload_event.wait(copy_stream)
+        else:
+            event.wait(copy_stream)
 
 
 def sync_reload_states(event=None):
-    if event is None:
-        reload_event.wait(copy_stream)
+    if nz3.is_profiling():
+        reload_adam_states_sync()
     else:
-        event.wait(copy_stream)
+        if event is None:
+            reload_event.wait(copy_stream)
+        else:
+            event.wait(copy_stream)
 
 
 def make_offload_task(task):
 
     def run_offload_task():
-        state = optimizer.state[task[1]]
-        if offload_key_events.get(task[1]) is None:
-            offload_key_events[task[1]] = get_accelerator().Event()
-        print(f"run_offload_task {task[0]} {task[2]} {task[3]} {task[4]}")
-        move_key(state, task[2], offload_key_events[task[1]])
+        if not nz3.is_profiling():
+            # print_r0(f"run_offload_task {task[0]} {task[2]} {task[3]} {task[4]}")
+            assert task[1] in optimizer.state, f"State {task[1]} not found in optimizer"
+            state = optimizer.state[task[1]]
+            if offload_key_events.get(task[1]) is None:
+                offload_key_events[task[1]] = get_accelerator().Event()
+            move_key(state, task[2], offload_key_events[task[1]])
 
     return run_offload_task
 
@@ -142,11 +161,16 @@ def make_offload_sync(task):
 def make_reload_task(task):
 
     def run_reload_task():
-        state = optimizer.state[task[1]]
-        if reload_key_events.get(task[1]) is None:
-            reload_key_events[task[1]] = get_accelerator().Event()
-        print(f"run_reload_task {task[0]} {task[2]} {task[3]} {task[4]}")
-        move_back_key(state, task[2], reload_key_events[task[1]])
+        if not nz3.is_profiling():
+            state = optimizer.state[task[1]]
+            if reload_key_events.get(task[1]) is None:
+                reload_key_events[task[1]] = get_accelerator().Event()
+            # print_r0(f"run_reload_task {task[0]} {task[2]} {task[3]} {task[4]}")
+            move_back_key(state, task[2], reload_key_events[task[1]])
+
+            alloc_mem = get_accelerator().memory_allocated()
+            print_r0(f"run_reload_task reload_opt_{task[0]}_{task[2]} alloc_mem={alloc_mem}")
+
 
     return run_reload_task
 
@@ -162,7 +186,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
     to_remove = []
     for node in graph.nodes:
         if node.op == 'call_function' and \
-            node.target in [offload_adam_states_async, sync_offload_states, reload_adam_states_async, sync_reload_states]:
+            node.target in [offload_adam_states_sync, sync_offload_states, reload_adam_states_sync, sync_reload_states]:
             to_remove.append(node)
 
     for node in to_remove:
@@ -191,13 +215,14 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
     # print(f"offload_opt_states_inc bwd={bwd}")
     if not bwd:
         is_first_graph = graph_id == graph_order[0][0]
-        print(f"offload_opt_states_inc graph {graph_id} graph_order {graph_order} fwd is_first_graph {is_first_graph}")
+        # print_r0(
+        #     f"offload_opt_states_inc graph {graph_id} graph_order {graph_order} fwd is_first_graph {is_first_graph}")
 
         # At the beginning of the first graph, we schedule offload tasks to launch all offloading
         if is_first_graph:
 
             with unset_fake_temporarily():
-                reload_adam_states_async()
+                reload_adam_states_sync()
                 sync_reload_states()
 
             for i, (k, state) in enumerate(optimizer.state.items()):
@@ -211,7 +236,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                         (i, k, "exp_avg_sq", state[key].numel() * state[key].element_size(), state[key].dtype))
 
             for t in offload_tasks:
-                print(f"Offloading task {t[0]} {t[2]} {t[3]}")
+                print_r0(f"Offloading task {t[0]} {t[2]} {t[3]}")
 
             inserted_offload = False
             for node in graph.nodes:
@@ -228,14 +253,18 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
 
             offload_tasks_remaining = copy.copy(offload_tasks)
 
-        prev_node = None
         for node in graph.nodes:
+            # print_r0(f"checking sync node insert node: {node.name}")
 
-            if node.name not in peak_mem:
+            if node.name not in peak_mem \
+                    or node.op == 'placeholder' \
+                    or "offload_opt_" in node.name:
                 continue
 
             to_offload = []
             optim_size = sum([task[3] for task in offload_tasks_remaining])
+
+            # print_r0(f" optim_size: {optim_size} total_mem: {total_mem} peak_mem: {peak_mem[node.name]} available: {total_mem - peak_mem[node.name] - optim_size} #tasks={len(offload_tasks_remaining)}")
             while total_mem - peak_mem[node.name] - optim_size < 0:
                 if len(offload_tasks_remaining) == 0:
                     break
@@ -243,6 +272,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                 task = offload_tasks_remaining.pop(0)
                 to_offload.append(task)
                 optim_size = sum([task[3] for task in offload_tasks_remaining])
+                # print_r0(f" scheduled task {task[0]} {task[2]} {task[3]} optim_size: {optim_size} peak_mem: {peak_mem[node.name]} available: {total_mem - peak_mem[node.name] - optim_size} #tasks={len(offload_tasks_remaining)}")
 
             for task in to_offload:
                 with graph.inserting_before(node):
@@ -250,7 +280,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                                       make_offload_sync(task), (), {},
                                       name=f"offload_opt_sync_{task[0]}_{task[2]}")
 
-        print(f"offload_opt_states_inc graph {graph_id} fwd graph {graph}")
+        print_r0(f"offload_opt_states_inc graph {graph_id} fwd graph {graph}")
 
     else:
         graph_order_with_backward = [g[0] for g in graph_order if g[1]]
@@ -261,40 +291,64 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
             inserted_sync = False
             for node in graph.nodes:
                 if node.op != 'placeholder' and not inserted_sync:
-                    # print(f"Inserting offload_opt before {node.name}")
-                    for task in offload_tasks:
+                    print(f"Inserting offload_sync before {node.name}")
+                    for task in offload_tasks_remaining:
                         name = f"offload_opt_sync_{task[0]}_{task[2]}"
                         with graph.inserting_before(node):
                             graph.create_node('call_function', make_offload_sync(task), (), {}, name=name)
                     inserted_sync = True
             reload_tasks_remaining = copy.copy(offload_tasks)
 
+        # prev_node = None
         for node in graph.nodes:
-            if node.name not in peak_mem:
+            if node.name not in peak_mem \
+                or node.op == 'placeholder' \
+                or "offload_opt_sync_" in node.name:
+                # prev_node = node
                 continue
 
             if len(reload_tasks_remaining) > 0:
                 task = reload_tasks_remaining[0]
+                total_reload_mem = task[3]
+                optim_size = sum([task[3] for task in reload_tasks_remaining])
 
-                while total_mem - peak_mem[node.name] - task[3] > 0:
-                    reload_tasks_remaining.pop(0)
-                    with graph.inserting_after(node):
-                        graph.create_node('call_function',
+                # peak_mem[node.name] これはオフロードされた状態でのメモリ
+                # totaoptim_size 
+    
+                # while total_mem - peak_mem[node.name] - total_reduce_mem > 0:
+                insert_pos = node
+                while total_mem > peak_mem[node.name] + total_reload_mem:
+                    expected_mem = peak_mem[node.name] + total_reload_mem
+                    print_r0(f"Inserting reload_opt reload_opt_{task[0]}_{task[2]} after {insert_pos.name} expected_mem={expected_mem}")
+
+                    with graph.inserting_after(insert_pos):
+                        insert_pos = graph.create_node('call_function',
                                           make_reload_task(task), (), {},
                                           name=f"reload_opt_{task[0]}_{task[2]}")
+
+                    reload_tasks_remaining.pop(0)
                     if len(reload_tasks_remaining) == 0:
                         break
+
                     task = reload_tasks_remaining[0]
+                    total_reload_mem += task[3]
+
+            # prev_node = node
 
         if is_last_graph:
             for node in graph.nodes:
                 # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
                 if node.op == 'output':
+                    for task in reload_tasks_remaining:
+                        with graph.inserting_before(node):
+                            graph.create_node('call_function', make_reload_task(task), (), {},
+                                              name=f"reload_opt_{task[0]}_{task[2]}")
+
                     sync_fn = lambda: copy_stream.synchronize()
                     with graph.inserting_before(node):
                         graph.create_node('call_function', sync_fn, (), {}, name="sync_offload_copy_stream")
 
-        print(
+        print_r0(
             f"offload_opt_states_inc graph {graph_id} graph_order {graph_order} bwd is_first_graph {is_first_graph} is_last_graph {is_last_graph} {graph}"
         )
 
@@ -317,11 +371,7 @@ def insert_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int
             if node.op == 'output' and not inserted_reload and is_last_graph:
                 # print(f"Inserting reload_opt before {node.name}")
                 with graph.inserting_before(node):
-                    reload_node = graph.create_node('call_function',
-                                                    reload_adam_states_async, (), {},
-                                                    name="reload_opt")
-                with graph.inserting_after(reload_node):
-                    graph.create_node('call_function', sync_reload_states, (), {}, name="sync_reload_opt")
+                    graph.create_node('call_function', reload_adam_states_sync, (), {}, name="reload_opt")
                 inserted_reload = True
     else:
         is_first_graph = graph_id == graph_order[0][0]
@@ -334,12 +384,7 @@ def insert_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int
             if node.op != 'placeholder' and not inserted_offload and is_first_graph:
                 # print(f"Inserting offload_opt before {node.name}")
                 with graph.inserting_before(node):
-                    offload_node = graph.create_node('call_function',
-                                                     offload_adam_states_async, (), {},
-                                                     name="offload_opt")
-                with graph.inserting_after(offload_node):
-                    graph.create_node('call_function', sync_offload_states, (), {}, name="sync_offload_opt")
-
+                    graph.create_node('call_function', offload_adam_states_sync, (), {}, name="offload_opt")
                 inserted_offload = True
 
     return graph
@@ -350,10 +395,12 @@ def move_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int],
     return offload_opt_states_inc(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
 
 
-def init_offload_opt_states(adam_optimizer):
+def init_offload_opt_states(adam_optimizer, _nz3):
     lazy_init()
 
     global optimizer
     optimizer = adam_optimizer
     global device
     device = torch.device(get_accelerator().current_device())
+    global nz3
+    nz3 = _nz3

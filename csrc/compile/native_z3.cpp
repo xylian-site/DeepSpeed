@@ -792,6 +792,8 @@ void lazy_init_symm_memory()
 
 void enable_profiling(bool enable) { profile = enable; }
 
+bool is_profiling() { return profile; }
+
 void register_graph(long graph_id, const std::vector<long>& ds_ids)
 {
     executors[graph_id] = std::make_shared<CustomOpExecutor>(process_group,
@@ -1099,6 +1101,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("register_param", &n3z::register_param, "Register a parameter");
     m.def("set_persistent", &n3z::set_persistent, "Set persistent flag for a parameter");
     m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
+    m.def("is_profiling", &n3z::is_profiling, "Check if profiling is enabled");
     m.def("init", &n3z::init, "Set the process group");
     m.def("cleanup", &n3z::cleanup, "Cleanup the process group");
     m.def("register_graph", &n3z::register_graph, "Register graph with a list of ds parameter ids");

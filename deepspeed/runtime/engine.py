@@ -3699,6 +3699,7 @@ class DeepSpeedEngine(Module):
                 schedule=False,
                 scheduler="simple_prefetch",
                 free_activation=True,
+                passes=None,
                 offload_activation=False,
                 offload_opt_states=False,
                 double_buffer=True,
@@ -3760,11 +3761,21 @@ class DeepSpeedEngine(Module):
             from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
             from deepspeed.runtime.zero.compile.patch_compiled_func import patch_compiled_func
 
+            if passes is None:
+                passes = ["prefetch", "selective_gather"]
+
+            opt_passes = []
+            if "prefetch" in passes:
+                opt_passes.append((schedule_prefetch, 0.0))
+            if "selective_gather" in passes:
+                opt_passes.append((make_selective_gather(self.optimizer, self.nz3), -1.0))
+
             if offload_opt_states:
                 init_offload_opt_states(self.optimizer.optimizer, self.nz3)
                 opt_passes = [(move_offload_opt_states, 0.7)]
-            else:
-                opt_passes = [(schedule_prefetch, 0.7), (make_selective_gather(self.optimizer, self.nz3), -1.0)]
+
+            if self.global_rank == 0:
+                print(f"Opt passes: {opt_passes}")
 
             def launch_compile_passes(micro_steps=self.micro_steps,
                                       global_steps=self.global_steps,

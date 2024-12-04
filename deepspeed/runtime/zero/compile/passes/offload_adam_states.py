@@ -171,7 +171,6 @@ def make_reload_task(task):
             alloc_mem = get_accelerator().memory_allocated()
             print_r0(f"run_reload_task reload_opt_{task[0]}_{task[2]} alloc_mem={alloc_mem}")
 
-
     return run_reload_task
 
 
@@ -312,19 +311,17 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                 total_reload_mem = task[3]
                 optim_size = sum([task[3] for task in reload_tasks_remaining])
 
-                # peak_mem[node.name] これはオフロードされた状態でのメモリ
-                # totaoptim_size 
-    
-                # while total_mem - peak_mem[node.name] - total_reduce_mem > 0:
                 insert_pos = node
                 while total_mem > peak_mem[node.name] + total_reload_mem:
                     expected_mem = peak_mem[node.name] + total_reload_mem
-                    print_r0(f"Inserting reload_opt reload_opt_{task[0]}_{task[2]} after {insert_pos.name} expected_mem={expected_mem}")
+                    print_r0(
+                        f"Inserting reload_opt reload_opt_{task[0]}_{task[2]} after {insert_pos.name} expected_mem={expected_mem}"
+                    )
 
                     with graph.inserting_after(insert_pos):
                         insert_pos = graph.create_node('call_function',
-                                          make_reload_task(task), (), {},
-                                          name=f"reload_opt_{task[0]}_{task[2]}")
+                                                       make_reload_task(task), (), {},
+                                                       name=f"reload_opt_{task[0]}_{task[2]}")
 
                     reload_tasks_remaining.pop(0)
                     if len(reload_tasks_remaining) == 0:
@@ -341,7 +338,8 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                 if node.op == 'output':
                     for task in reload_tasks_remaining:
                         with graph.inserting_before(node):
-                            graph.create_node('call_function', make_reload_task(task), (), {},
+                            graph.create_node('call_function',
+                                              make_reload_task(task), (), {},
                                               name=f"reload_opt_{task[0]}_{task[2]}")
 
                     sync_fn = lambda: copy_stream.synchronize()

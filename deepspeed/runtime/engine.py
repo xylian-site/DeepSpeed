@@ -3805,6 +3805,10 @@ class DeepSpeedEngine(Module):
         self.module.compile(**{**compile_kwargs, 'backend': backend})
         self._is_compiled = True
 
+    def get_compile_time(self):
+        from deepspeed.runtime.zero.compile.stage3_backend import opt_pass_times
+        return opt_pass_times
+
     @property
     def is_compiled(self) -> bool:
         return self._is_compiled

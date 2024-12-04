@@ -6,6 +6,7 @@
 import gc
 from collections import defaultdict
 from typing import Dict, List
+import time
 
 import torch
 from torch.fx import Graph, GraphModule
@@ -87,6 +88,7 @@ profiling_results: Dict[int, ProfilingResult] = {}
 remaining_bwd_compile_count = 0
 
 enable_opt_passes = False
+opt_pass_times = []
 
 
 def launch_opt_passes():
@@ -140,7 +142,8 @@ def make_stage3_backend(opt_passes,
             profiling_results[graph_id].needs_backward = needs_backward
 
         def fw(gm, sample_inputs):
-            graph_index = len(graph_order)
+            time_start = time.time()
+            graph_index = len(graph_order) - 1
             # if rank == 0 and debug_log:
             if rank == 0:
                 print(
@@ -225,9 +228,12 @@ def make_stage3_backend(opt_passes,
             if rank == 0:
                 print(f"Fwd end graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
+            opt_pass_times.append(("fwd", graph_index, graph_id, time.time() - time_start))
+
             return make_boxed_func(gm.forward)
 
         def bw(gm, sample_inputs):
+            time_start = time.time()
             graph_index = get_index_by_graph_id(graph_order, graph_id)
 
             # if rank == 0 and debug_log:
@@ -326,6 +332,9 @@ def make_stage3_backend(opt_passes,
                 print(f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
             gm.recompile()
+
+            opt_pass_times.append(("bwd", graph_index, graph_id, time.time() - time_start))
+
             return make_boxed_func(gm.forward)
 
         # Call AOTAutograd

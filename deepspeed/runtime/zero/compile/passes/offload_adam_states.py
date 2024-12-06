@@ -199,7 +199,9 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
 
     current_peak_mem = 0
     peak_mem = {}
-    for node in graph.nodes:
+
+    ordered_node = reversed(graph.nodes) if bwd else graph.nodes
+    for node in ordered_node:
         # print(f"Node: {node.name} mem: {mem_dict[node.name]}")
         if mem_dict[node.name] > current_peak_mem:
             current_peak_mem = mem_dict[node.name]

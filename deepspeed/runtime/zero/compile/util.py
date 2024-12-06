@@ -17,10 +17,10 @@ except ImportError:
     # torch < v2.5
     from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
 
-no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default}
+no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default}
 sym_size_ops = {
     operator.ge, operator.le, operator.eq, operator.ne, operator.gt, operator.lt, torch.ops.aten.sym_size.int,
-    operator.getitem
+    operator.getitem, 
 }
 
 

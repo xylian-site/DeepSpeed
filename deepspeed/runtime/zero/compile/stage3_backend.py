@@ -28,7 +28,7 @@ from .passes.offload_activation import offload_activation_fwd, reload_activation
 from .passes.offload_adam_states import insert_offload_opt_states, offload_adam_states_sync
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func
 from .list_schedule import simple_prefetch, fast_free_schedule
-from .util import get_input_nodes, get_param_nodes, count_inflight_values, exclude_from_act_offload, get_activation_node_names, TensorOffloadHelper
+from .util import get_input_nodes, get_param_nodes, count_inflight_values, exclude_from_act_offload, get_activation_node_names, TensorOffloadHelper, add_mem_profile_nodes
 from .partitioner import get_wrapped_partitioner
 
 graph_counts = defaultdict(int)
@@ -105,6 +105,7 @@ def make_stage3_backend(opt_passes,
                         offload_activation=False,
                         offload_opt_states=False,
                         dump_graphs=False,
+                        profile_memory=True,
                         debug_log=False):
     from deepspeed.ops.op_builder import NativeZ3Builder
     nz3 = NativeZ3Builder().load()
@@ -225,6 +226,9 @@ def make_stage3_backend(opt_passes,
                 gm = run_opt_passes(nz3, graph_id, gm, create_fwd_inputs, opt_passes, graph_order, profiling_results,
                                     param_manager, False, debug_log and rank == 0)
 
+            if profile_memory:
+                add_mem_profile_nodes(gm.graph, f"mem_prof fwd {graph_index} {graph_id}")
+
             if rank == 0:
                 print(f"Fwd end graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
 
@@ -262,13 +266,13 @@ def make_stage3_backend(opt_passes,
 
             bwd_real_inputs = bwd_inputs_stack.pop()
 
-            if free_activation:
-                offload_helper = TensorOffloadHelper()
-                offload_helper.offload(bwd_real_inputs)
+            # if free_activation:
+            #     offload_helper = TensorOffloadHelper()
+            #     offload_helper.offload(bwd_real_inputs)
 
             def create_bwd_inputs():
-                if free_activation:
-                    return tuple(offload_helper.reload(in_place=False))
+                # if free_activation:
+                #     return tuple(offload_helper.reload(in_place=False))
                 return tuple(bwd_real_inputs)
 
             real_outputs = ProfilingInterpreter(nz3, gm, debug_log=False).run(*create_bwd_inputs())
@@ -287,10 +291,6 @@ def make_stage3_backend(opt_passes,
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
             nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-
-            if free_activation:
-                add_free_activations(graph_id, gm.graph,
-                                     get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
 
             dump_graph(gm, f"backward_aot_scheduled_{graph_index}_{graph_id}", skip=not dump_graphs)
 
@@ -317,7 +317,15 @@ def make_stage3_backend(opt_passes,
                                     param_manager, True, debug_log and rank == 0)
 
             if free_activation:
-                offload_helper.reload(in_place=True)
+                param_names = [n.name for n in param_nodes_bw]
+                non_param_input_names = [n.name for n in get_input_nodes(gm.graph) if n.name not in param_names]
+                # add_free_activations(graph_id, gm.graph,
+                #                      get_activation_node_names(gm.graph, param_nodes_bw, output_names[graph_id]))
+                add_free_activations(graph_id, gm.graph,
+                                     get_activation_node_names(gm.graph, param_nodes_bw, non_param_input_names))
+
+            # if free_activation:
+            #     offload_helper.reload(in_place=True)
 
             global remaining_bwd_compile_count
             remaining_bwd_compile_count -= 1
@@ -329,7 +337,12 @@ def make_stage3_backend(opt_passes,
             output_names.pop(graph_id)
 
             if rank == 0:
-                print(f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}")
+                print(
+                    f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} {gm.graph}"
+                )
+
+            if profile_memory:
+                add_mem_profile_nodes(gm.graph, f"mem_prof bwd {graph_index} {graph_id}")
 
             gm.recompile()
 

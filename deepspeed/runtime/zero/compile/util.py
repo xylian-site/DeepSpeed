@@ -17,10 +17,18 @@ except ImportError:
     # torch < v2.5
     from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
 
+import deepspeed.comm as dist
+
 no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default}
 sym_size_ops = {
-    operator.ge, operator.le, operator.eq, operator.ne, operator.gt, operator.lt, torch.ops.aten.sym_size.int,
-    operator.getitem, 
+    operator.ge,
+    operator.le,
+    operator.eq,
+    operator.ne,
+    operator.gt,
+    operator.lt,
+    torch.ops.aten.sym_size.int,
+    operator.getitem,
 }
 
 
@@ -314,3 +322,22 @@ class TensorOffloadHelper():
                 results.append(self.non_tensor[a_id])
 
         return results
+
+
+def add_mem_profile_nodes(graph: Graph, prefix: str):
+
+    def show_memory(label: str):
+        if dist.get_rank() == 0:
+            print(
+                f"{prefix} {label} alloc_mem={torch.cuda.memory_allocated()} max_mem={torch.cuda.max_memory_allocated()}"
+            )
+
+    nodes = list(graph.nodes)
+    for node in nodes:
+        if node.op == "output":
+            continue
+
+        with graph.inserting_after(node):
+            msg = f"Mem {node.name}"
+            name = f"show_memory_{node.name}"
+            graph.create_node('call_function', show_memory, (msg, ), {}, name=name)

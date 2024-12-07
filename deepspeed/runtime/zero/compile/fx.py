@@ -200,7 +200,6 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
             offload_id = node.args[2]
             node_to_wait_reload[offload_id_to_node[offload_id]] = node
 
-    # print(f"add_free_activations node_to_wait_reload={node_to_wait_reload} activation_nodes_set={activation_nodes_set}")
     activation_nodes_set = set(node_to_wait_reload[n] if n in node_to_wait_reload else n for n in activation_nodes_set)
 
     last_user_to_uses = defaultdict(list)
@@ -214,6 +213,11 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
             return False
         return True
 
+    def free_tensors(tensors: List[torch.Tensor]):
+        for a in tensors:
+            if a.numel() > 10_000_000:
+                a.data = torch.empty([0], device=a.device, dtype=a.dtype)
+
     for last_user, used_nodes in last_user_to_uses.items():
         activation_args = [an for an in used_nodes if an in activation_nodes_set and _should_free(an)]
 
@@ -224,3 +228,6 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
         with graph.inserting_after(last_user):
             args = (activation_args, )
             graph.create_node('call_function', torch.ops.native_z3.free_tensors, args, {}, name=node_name)
+
+            # Python version for debugging
+            # graph.create_node('call_function', free_tensors, args, {}, name=node_name)

@@ -18,6 +18,7 @@ except ImportError:
     from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
 
 import deepspeed.comm as dist
+from deepspeed.accelerator import get_accelerator
 
 no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default}
 sym_size_ops = {
@@ -329,7 +330,7 @@ def add_mem_profile_nodes(graph: Graph, prefix: str):
     def show_memory(label: str):
         if dist.get_rank() == 0:
             print(
-                f"{prefix} {label} alloc_mem={torch.cuda.memory_allocated()} max_mem={torch.cuda.max_memory_allocated()}"
+                f"{prefix} {label} alloc_mem={get_accelerator().memory_allocated()} max_mem={get_accelerator().max_memory_allocated()}"
             )
 
     nodes = list(graph.nodes)

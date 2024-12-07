@@ -969,10 +969,12 @@ at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 
 void free_tensors(std::vector<at::Tensor> tensors)
 {
-    for (auto& tensor : tensors) {
-        if (tensor.is_cuda()) {
-            tensor.record_stream(at::cuda::getCurrentCUDAStream());
-            tensor.set_data(torch::empty({0}, tensor.options()));
+    if (!profile) {
+        for (auto& tensor : tensors) {
+            if (tensor.is_cuda()) {
+                tensor.record_stream(at::cuda::getCurrentCUDAStream());
+                tensor.set_data(torch::empty({0}, tensor.options()));
+            }
         }
     }
 }

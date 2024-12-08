@@ -66,8 +66,6 @@ def move_key(state, key, key_event=None):
 
     with get_accelerator().stream(copy_stream):
         state[offload_buf_key].copy_(state[key], non_blocking=True)
-        state[key].record_stream(copy_stream)
-        del state[key]
 
     if key_event is None:
         offload_event.record(stream=copy_stream)
@@ -155,8 +153,13 @@ def make_offload_task(task):
 def make_offload_sync(task):
 
     def run_offload_sync():
-        event = offload_key_events[task[1]]
-        sync_offload_states(event)
+        if not nz3.is_profiling():
+            event = offload_key_events[task[1]]
+            event.synchronize()
+            state = optimizer.state[task[1]]
+            key = task[2]
+            # print_r0(f"run_offload_sync state.keys={state.keys()} {task[0]} {task[2]} {task[3]} {task[4]}")
+            del state[key]
 
     return run_offload_sync
 
@@ -179,7 +182,7 @@ def make_reload_task(task):
 
 def update_max_memory():
     global max_memory
-    mem = get_accelerator().memory_allocated()
+    mem = get_accelerator().max_memory_allocated()
     max_memory = max(max_memory, mem)
 
 
@@ -247,9 +250,9 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                     if total_mem < max_memory + reload_size + size:
                         offload_tasks.append(
                             (i, k, "exp_avg", state[key].numel() * state[key].element_size(), state[key].dtype))
-                        # print_r0(f"Offloading task {i} exp_avg reload_size={reload_size} size={size} estimated_mem={max_memory + reload_size + size}")
+                    #     print_r0(f"Offloading task {i} exp_avg reload_size={reload_size} size={size} estimated_mem={max_memory + reload_size + size}")
                     # else:
-                    # print_r0(f"Skipping offloading task {i} exp_avg reload_size={reload_size} size={size} estimated_mem={max_memory + reload_size + size}")
+                    #     print_r0(f"Skipping offloading task {i} exp_avg reload_size={reload_size} size={size} estimated_mem={max_memory + reload_size + size}")
                     reload_size += size
 
                 if _make_offload_state_key("exp_avg_sq") in state:
@@ -310,6 +313,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                     graph.create_node('call_function',
                                       make_offload_sync(task), (), {},
                                       name=f"offload_opt_sync_{task[0]}_{task[2]}")
+                # print_r0(f"Inserting fwd offload_opt_sync_{task[0]}_{task[2]}")
 
         # print_r0(f"offload_opt_states_inc graph {graph_id} fwd graph {graph}")
 
@@ -329,6 +333,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                         name = f"offload_opt_sync_{task[0]}_{task[2]}"
                         with graph.inserting_before(node):
                             graph.create_node('call_function', make_offload_sync(task), (), {}, name=name)
+                        # print_r0(f"Inserting bwd offload_opt_sync_{task[0]}_{task[2]}")
                     inserted_sync = True
             reload_tasks_remaining = copy.copy(offload_tasks)
 

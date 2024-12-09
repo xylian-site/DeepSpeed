@@ -189,6 +189,7 @@ def update_max_memory():
 offload_tasks = []
 offload_tasks_remaining = []
 reload_task_remaining = []
+total_reload_mem = 0
 
 
 def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
@@ -337,7 +338,7 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                     inserted_sync = True
             reload_tasks_remaining = copy.copy(offload_tasks)
 
-        # prev_node = None
+        global total_reload_mem
         for node in graph.nodes:
             if node.name not in peak_mem \
                 or node.op == 'placeholder' \
@@ -347,14 +348,13 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
 
             if len(reload_tasks_remaining) > 0:
                 task = reload_tasks_remaining[0]
-                total_reload_mem = task[3]
-                optim_size = sum([task[3] for task in reload_tasks_remaining])
+                next_reload_mem = task[3]
 
                 insert_pos = node
-                while total_mem > peak_mem[node.name] + total_reload_mem:
+                while total_mem > peak_mem[node.name] + total_reload_mem + next_reload_mem:
                     expected_mem = peak_mem[node.name] + total_reload_mem
                     # print_r0(
-                    #     f"Inserting reload_opt reload_opt_{task[0]}_{task[2]} after {insert_pos.name} expected_mem={expected_mem}"
+                    #     f" Inserting reload_opt reload_opt_{task[0]}_{task[2]} after {insert_pos.name} next_inc={next_reload_mem} peak_mem[{node.name}]={peak_mem[node.name]} inc_total={total_reload_mem} expected_mem={expected_mem}"
                     # )
 
                     with graph.inserting_after(insert_pos):
@@ -362,12 +362,13 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
                                                        make_reload_task(task), (), {},
                                                        name=f"reload_opt_{task[0]}_{task[2]}")
 
+                    total_reload_mem += next_reload_mem
                     reload_tasks_remaining.pop(0)
                     if len(reload_tasks_remaining) == 0:
                         break
 
                     task = reload_tasks_remaining[0]
-                    total_reload_mem += task[3]
+                    next_reload_mem = task[3]
 
             # prev_node = node
 

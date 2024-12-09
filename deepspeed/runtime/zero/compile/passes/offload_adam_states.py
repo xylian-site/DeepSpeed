@@ -158,8 +158,8 @@ def make_offload_sync(task):
             event.synchronize()
             state = optimizer.state[task[1]]
             key = task[2]
-            # print_r0(f"run_offload_sync state.keys={state.keys()} {task[0]} {task[2]} {task[3]} {task[4]}")
             del state[key]
+            # print_r0(f"run_offload_sync {task[0]} {task[2]} alloc_mem={get_accelerator().memory_allocated()}")
 
     return run_offload_sync
 
@@ -174,7 +174,7 @@ def make_reload_task(task):
             # print_r0(f"run_reload_task {task[0]} {task[2]} {task[3]} {task[4]}")
             move_back_key(state, task[2], reload_key_events[task[1]])
 
-            alloc_mem = get_accelerator().memory_allocated()
+            # alloc_mem = get_accelerator().memory_allocated()
             # print_r0(f"run_reload_task reload_opt_{task[0]}_{task[2]} alloc_mem={alloc_mem}")
 
     return run_reload_task
@@ -195,7 +195,7 @@ total_reload_mem = 0
 def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
                            mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
 
-    # print_r0(f"offload_opt_states_inc graph {graph_id} bwd={bwd} max_memory={max_memory}")
+    print_r0(f"offload_opt_states_inc graph {graph_id} bwd={bwd} max_memory={max_memory}")
 
     to_remove = []
     for node in graph.nodes:
@@ -319,11 +319,12 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
         # print_r0(f"offload_opt_states_inc graph {graph_id} fwd graph {graph}")
 
     else:
-        # print_r0(f"offload_opt_states_inc bwd graph {graph_id} allocated_mem={get_accelerator().memory_allocated()}")
 
         graph_order_with_backward = [g[0] for g in graph_order if g[1]]
         is_first_graph = graph_id == graph_order_with_backward[-1]
         is_last_graph = graph_id == graph_order_with_backward[0]
+
+        # print_r0(f"offload_opt_states_inc bwd graph {graph_id} graph_order_with_backward {graph_order_with_backward} is_first_graph {is_first_graph} is_last_graph {is_last_graph}")
 
         if is_first_graph:
             inserted_sync = False
@@ -342,8 +343,8 @@ def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], 
         for node in graph.nodes:
             if node.name not in peak_mem \
                 or node.op == 'placeholder' \
+                or node.op == 'output' \
                 or "offload_opt_sync_" in node.name:
-                # prev_node = node
                 continue
 
             if len(reload_tasks_remaining) > 0:

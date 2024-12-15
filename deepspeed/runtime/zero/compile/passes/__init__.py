@@ -9,6 +9,7 @@ import deepspeed.comm as dist
 
 
 def run_opt_passes(nz3,
+                   graph_index,
                    graph_id,
                    gm,
                    create_inputs_fn,
@@ -36,7 +37,7 @@ def run_opt_passes(nz3,
         mem_prof = MemoryProfilingInterpreter(nz3, gm)
         mem_prof.run(*create_inputs_fn())
         if debug_log and rank == 0:
-            mem_prof.dump(f"mem_prof_{'bwd' if bwd else 'fwd'}_{graph_id}_pass_{i}.csv")
+            mem_prof.dump(f"mem_prof_r{rank}_{'bwd' if bwd else 'fwd'}_{graph_index}_{graph_id}_pass_{i}.csv")
 
         mem = [(name, current_alloc, delta, peak) for name, current_alloc, delta, peak in mem_prof.mem_record]
         if bwd:

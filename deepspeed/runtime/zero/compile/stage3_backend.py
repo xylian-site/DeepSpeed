@@ -222,8 +222,8 @@ def make_stage3_backend(opt_passes,
             get_accelerator().empty_cache()
 
             if enable_opt_passes:
-                gm = run_opt_passes(nz3, graph_id, gm, create_fwd_inputs, opt_passes, graph_order, profiling_results,
-                                    param_manager, False, debug_log and rank == 0)
+                gm = run_opt_passes(nz3, graph_index, graph_id, gm, create_fwd_inputs, opt_passes, graph_order,
+                                    profiling_results, param_manager, False, debug_log and rank == 0)
 
             if profile_memory:
                 add_mem_profile_nodes(gm.graph, f"mem_prof fwd {graph_index} {graph_id}")
@@ -304,8 +304,8 @@ def make_stage3_backend(opt_passes,
 
             global enable_opt_passes
             if enable_opt_passes:
-                gm = run_opt_passes(nz3, graph_id, gm, create_bwd_inputs, opt_passes, graph_order, profiling_results,
-                                    param_manager, True, debug_log and rank == 0)
+                gm = run_opt_passes(nz3, graph_index, graph_id, gm, create_bwd_inputs, opt_passes, graph_order,
+                                    profiling_results, param_manager, True, debug_log and rank == 0)
 
             if free_activation:
                 param_names = [n.name for n in param_nodes_bw]

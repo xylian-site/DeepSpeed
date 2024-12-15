@@ -886,11 +886,22 @@ void register_param(long ds_id,
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
-void set_persistent(long ds_id) { param_registry->setPersistent(ds_id, true); }
-
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     return executors[graph_id]->allgatherParam(ds_id, symm_mem);
+}
+
+void set_persistent(long ds_id)
+{
+    // Any executor is fine
+    assert(executors.size() > 0);
+    long graph_id = executors.begin()->first;
+
+    param_registry->setPersistent(ds_id, true);
+
+    // Allocate buffer here
+    // Memory fragmentation will be more severe if we allocate in forward/backward
+    allgather_param(at::Tensor(), graph_id, ds_id);
 }
 
 void prefetch_params_fused(long graph_id,

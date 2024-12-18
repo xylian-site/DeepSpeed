@@ -13,7 +13,7 @@ from torch.fx import Graph, Node
 from torch.fx.node import map_arg
 from torch.utils._pytree import tree_iter
 
-from .util import get_last_uses
+from .util import get_last_uses, is_release_node
 from .fx import get_output_node
 
 
@@ -281,7 +281,7 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
         graph)
 
     unscheduled_ags = [n for n in unscheduled if n.target == torch.ops.native_z3.allgather_param]
-    release_nodes = {n.args[2]: n for n in unscheduled if n.target == torch.ops.native_z3.release_param}
+    release_nodes = {n.args[2]: n for n in unscheduled if is_release_node(n)}
 
     ag_nodes_in_path = {}
     for ag_node in unscheduled_ags:

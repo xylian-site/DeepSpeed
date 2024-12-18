@@ -9,6 +9,7 @@ from collections import defaultdict
 import torch
 from torch.fx import Node, Graph
 
+from deepspeed.ops.op_builder import NativeZ3Builder
 from .util import get_last_uses
 
 
@@ -110,21 +111,28 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
 
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
+
+    nz3 = NativeZ3Builder().load()
+
+    def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int):
+        nz3.release_param(graph_id, ds_id)
+        return x
+
     add_postprocess(graph,
                     node,
-                    torch.ops.native_z3.release_param,
+                    wrap_release_ds_param,
                     extra_args=[graph_id, ds_id],
                     name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
                     meta=_make_node_meta(node, ds_id, False))
 
 
-def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int, user: str, n_args: int, bwd: bool):
+def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int], user: str, n_args: int, bwd: bool):
     add_args_process(graph,
                      node,
                      torch.ops.native_z3.wait_allgather,
-                     extra_args=[graph_id, ds_id, user, n_args, bwd],
-                     name=f"wait_allgather_ds_param_{ds_id}",
-                     meta=_make_node_meta(node, ds_id, False))
+                     extra_args=[graph_id, ds_ids, user, n_args, bwd],
+                     name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
+                     meta=_make_node_meta(node, ds_ids, False))
 
 
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
@@ -149,12 +157,11 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
             if node.target in ops_no_wait:
                 continue
 
-            assert len(ag_args) == 1, f"Node {node.name} takes multiple allgathered params"
             ag_wait_nodes.append(node)
 
-            ds_id = ag_args[0].meta["ds_id"]
-            add_wait_allgather(graph_id, graph, node, ds_id, node.name, len(node.args), bwd)
-            ds_ids.append(ds_id)
+            ds_ids = [a.meta["ds_id"] for a in ag_args]
+            add_wait_allgather(graph_id, graph, node, ds_ids, node.name, len(node.args), bwd)
+            ds_ids.extend(ds_ids)
 
     return ds_ids, ag_wait_nodes
 

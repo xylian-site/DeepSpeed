@@ -469,7 +469,7 @@ public:
         for (long ds_id : invalid_ds_ids) { ag_comm_done_events_[ds_id]->record(ag_stream_); }
     }
 
-    at::Tensor releaseParam(at::Tensor v, long ds_id)
+    void releaseParam(long ds_id)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
@@ -484,12 +484,10 @@ public:
 
             param_registry_->unregisterGatheredParam(ds_id);
         }
-
-        return v;
     }
 
     at::Tensor waitAllgather(at::Tensor v,
-                             long ds_id,
+                             const std::vector<long>& ds_ids,
                              const std::string& user,
                              long n_args,
                              bool is_backward)
@@ -499,8 +497,10 @@ public:
         op_states.decrementArgCounter(user);
 
         if (op_states.isArgCounterZero(user)) {
-            assert(hasKey(ag_comm_done_events_, ds_id));
-            ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
+            for (long ds_id : ds_ids) {
+                assert(hasKey(ag_comm_done_events_, ds_id));
+                ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
+            }
             op_states_fwd_.resetArgCounter();
         }
 
@@ -945,27 +945,22 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-at::Tensor release_param(at::Tensor v, long graph_id, long ds_id)
-{
-    return executors[graph_id]->releaseParam(v, ds_id);
-}
-
-at::Tensor release_param_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
+void release_param(long graph_id, long ds_id) { executors[graph_id]->releaseParam(ds_id); }
 
 at::Tensor wait_allgather(at::Tensor v,
                           long graph_id,
-                          long ds_id,
+                          const std::vector<long>& ds_ids,
                           const std::string& user,
                           long n_args,
                           bool is_backward)
 {
-    executors[graph_id]->waitAllgather(v, ds_id, user, n_args, is_backward);
+    executors[graph_id]->waitAllgather(v, ds_ids, user, n_args, is_backward);
     return v;
 }
 
 at::Tensor wait_allgather_meta(at::Tensor v,
                                long graph_id,
-                               long ds_id,
+                               const std::vector<long>& ds_ids,
                                const std::string& user,
                                long n_args,
                                bool is_backward)
@@ -1057,9 +1052,9 @@ TORCH_LIBRARY(native_z3, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def("prefetch_params_fused(int graph_id, Tensor[] params, int[] ids) -> ()");
-    m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def(
-        "wait_allgather(Tensor a, int graph_id, int id, str user, int n_args, bool bwd) -> Tensor");
+        "wait_allgather(Tensor a, int graph_id, int[] ids, str user, int n_args, bool bwd) -> "
+        "Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
     m.def("free_tensors(Tensor[] a) -> ()");
     m.def("offload_tensor(Tensor a, int id, int id) -> Tensor");
@@ -1074,7 +1069,6 @@ TORCH_LIBRARY_IMPL(native_z3, CPU, m)
 {
     m.impl("allgather_param", &n3z::allgather_param);
     m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
-    m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
     m.impl("free_tensors", &n3z::free_tensors);
@@ -1090,7 +1084,6 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
 {
     m.impl("allgather_param", &n3z::allgather_param);
     m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
-    m.impl("release_param", &n3z::release_param);
     m.impl("wait_allgather", &n3z::wait_allgather);
     m.impl("reduce_grad", &n3z::reduce_grad);
     m.impl("free_tensors", &n3z::free_tensors);
@@ -1105,7 +1098,6 @@ TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
 TORCH_LIBRARY_IMPL(native_z3, Meta, m)
 {
     m.impl("allgather_param", &n3z::allgather_param_meta);
-    m.impl("release_param", &n3z::release_param_meta);
     m.impl("wait_allgather", &n3z::wait_allgather_meta);
     m.impl("reduce_grad", &n3z::reduce_grad_meta);
 }
@@ -1129,6 +1121,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("end_forward", &n3z::end_forward, "End forward pass");
     m.def("start_backward", &n3z::start_backward, "Start backward pass");
     // m.def("end_backward", &n3z::end_backward, "End backward pass");
+    m.def("release_param", &n3z::release_param, "Release a parameter");
     m.def("reset", &n3z::reset, "Reset the state");
     m.def(
         "invalidate_gathered_param", &n3z::invalidate_gathered_param, "Invalidate gathered param");

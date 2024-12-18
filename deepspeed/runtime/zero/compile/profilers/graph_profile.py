@@ -22,7 +22,7 @@ except ImportError:
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from ..util import is_comm_op
+from ..util import is_comm_op, is_release_node
 
 
 def _all_real_if_tensor(args):
@@ -132,7 +132,8 @@ class ProfilingInterpreter(Interpreter):
             n.meta["max_memory"] = max_mem
             n.meta["tensor_size"] = tensor_size
 
-        run_only_once = cache_hit or n.target == torch.ops.native_z3.release_param
+        is_release_op = is_release_node(n)
+        run_only_once = cache_hit or is_release_op
         iteration = 1 if run_only_once else self.iteration
         accelerator = get_accelerator()
         start_events = [accelerator.Event(enable_timing=True) for _ in range(iteration)]
@@ -189,7 +190,7 @@ class ProfilingInterpreter(Interpreter):
                 self.cache[cache_key] = (n.meta["device_time"], n.meta["wall_time"], n.meta["alloc_mem"],
                                          n.meta["max_mem"], n.meta["tensor_size"])
 
-            if n.target == torch.ops.native_z3.release_param:
+            if is_release_op:
                 n.meta["alloc_mem"] = -self.allgather_mem.get(args[2], 0)
 
             if dist.get_rank() == 0 and self.debug_log:

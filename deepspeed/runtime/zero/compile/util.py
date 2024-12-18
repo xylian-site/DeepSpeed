@@ -342,3 +342,7 @@ def add_mem_profile_nodes(graph: Graph, prefix: str):
             msg = f"Mem {node.name}"
             name = f"show_memory_{node.name}"
             graph.create_node('call_function', show_memory, (msg, ), {}, name=name)
+
+
+def is_release_node(n: Node) -> bool:
+    return hasattr(n.target, "__name__") and n.target.__name__ == "wrap_release_ds_param"

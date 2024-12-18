@@ -147,7 +147,7 @@ def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds
 def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
 
     ds_ids = []
-    ag_wait_nodes = []
+    ag_user_nodes = []
 
     for node in graph.nodes:
         ag_args = [
@@ -157,13 +157,14 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
             if node.target in ops_no_wait:
                 continue
 
-            ag_wait_nodes.append(node)
+            ag_user_nodes.append(node)
 
             ds_ids = [a.meta["ds_id"] for a in ag_args]
-            add_wait_allgather(graph_id, graph, node, ds_ids, node.name, len(node.args), bwd)
+            target_args = [arg for arg in node.args if isinstance(arg, Node)]
+            add_wait_allgather(graph_id, graph, node, ds_ids, node.name, len(target_args), bwd)
             ds_ids.extend(ds_ids)
 
-    return ds_ids, ag_wait_nodes
+    return ds_ids, ag_user_nodes
 
 
 def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]) -> Graph:

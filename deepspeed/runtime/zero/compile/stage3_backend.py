@@ -9,7 +9,7 @@ from typing import Dict, List
 import time
 
 import torch
-from torch.fx import Graph, GraphModule
+from torch.fx import Graph, GraphModule, Node
 from torch.fx.passes.graph_drawer import FxGraphDrawer
 from functorch.compile import make_boxed_func
 import torch.utils._pytree as pytree
@@ -196,7 +196,8 @@ def make_stage3_backend(opt_passes,
                 count_inflight_values(gm.graph, f"fwd_{graph_id}_inflight_values.csv")
 
             _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
-            nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
+            nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes],
+                                   [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
 
             if rank == 0 and debug_log:
                 print(f"Fwd after scheduling {graph_index} graph_id={graph_id} {gm.graph}")

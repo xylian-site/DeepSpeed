@@ -100,7 +100,7 @@ def launch_opt_passes():
 
 
 def make_stage3_backend(opt_passes,
-                        scheduler,
+                        scheduler="fast_free",
                         free_activation=True,
                         offload_activation=False,
                         offload_opt_states=False,

@@ -3729,18 +3729,7 @@ class DeepSpeedEngine(Module):
             gc.collect()
             get_accelerator().empty_cache()
 
-    def compile(self,
-                backend=get_accelerator().get_compile_backend(),
-                compile_kwargs={},
-                schedule=False,
-                scheduler="simple_prefetch",
-                free_activation=True,
-                passes=None,
-                offload_activation=False,
-                offload_opt_states=False,
-                double_buffer=True,
-                use_symmetric_memory=False,
-                dump_graphs=False) -> None:
+    def compile(self, backend=get_accelerator().get_compile_backend(), compile_kwargs={}, passes=None) -> None:
         """Compile the module using the specified backend and kwargs.
         If a compiler_fn is set, it will be used instead of torch.compile().
         """
@@ -3753,8 +3742,10 @@ class DeepSpeedEngine(Module):
         if self.is_compiled:
             return
 
-        if schedule:
-            assert self.zero_optimization_stage() == ZeroStageEnum.weights, "Only stage3 support for schedule"
+        compile_config = self._config.compile_config
+        if compile_config.deepcompile:
+            assert self.zero_optimization_stage(
+            ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
 
             from deepspeed.ops.op_builder import NativeZ3Builder
             self.nz3 = NativeZ3Builder().load()
@@ -3763,8 +3754,8 @@ class DeepSpeedEngine(Module):
                                                       '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
                 self.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
                 get_accelerator().empty_cache()
-            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), double_buffer,
-                          use_symmetric_memory)
+            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), compile_config.double_buffer,
+                          compile_config.symmetric_memory)
 
             # Unset hooks
             for m in self.module.modules():
@@ -3779,7 +3770,7 @@ class DeepSpeedEngine(Module):
             if hasattr(InsertPostInitMethodToModuleSubClasses, "linear_bk"):
                 torch.nn.functional.linear = InsertPostInitMethodToModuleSubClasses.linear_bk
 
-            if use_symmetric_memory:
+            if compile_config.symmetric_memory:
                 group_name = self.data_parallel_group.group_name
                 dist.enable_symm_mem_for_group(group_name)
 
@@ -3806,7 +3797,7 @@ class DeepSpeedEngine(Module):
             if "selective_gather" in passes:
                 opt_passes.append((make_selective_gather(self.optimizer, self.nz3), -1.0))
 
-            if offload_opt_states:
+            if compile_config.offload_opt_states:
                 init_offload_opt_states(self.optimizer.optimizer, self.nz3)
                 opt_passes = [(move_offload_opt_states, 0.7)]
 
@@ -3827,13 +3818,12 @@ class DeepSpeedEngine(Module):
             from deepspeed.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()
             backend = make_stage3_backend(opt_passes,
-                                          scheduler=scheduler,
-                                          free_activation=free_activation,
-                                          offload_activation=offload_activation,
-                                          offload_opt_states=offload_opt_states,
-                                          dump_graphs=dump_graphs)
+                                          free_activation=compile_config.free_activation,
+                                          offload_activation=compile_config.offload_activation,
+                                          offload_opt_states=compile_config.offload_opt_states,
+                                          dump_graphs=compile_config.dump_graphs)
 
-        print(f"Compiling with {scheduler}")
+        print(f"Compiling deepcompile={compile_config.deepcompile}")
         if 'backend' in compile_kwargs:
             logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
 

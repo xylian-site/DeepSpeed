@@ -209,7 +209,7 @@ def make_stage3_backend(opt_passes,
                                                      get_accelerator().available_memory(), param_manager[graph_id],
                                                      False)
 
-            mem_prof = MemoryProfilingInterpreter(nz3, gm)
+            mem_prof = MemoryProfilingInterpreter(nz3, gm, debug_log=False)
             mem_prof.run(*create_fwd_inputs())
 
             if rank == 0 and debug_log:
@@ -291,7 +291,7 @@ def make_stage3_backend(opt_passes,
                                                      get_accelerator().available_memory(), param_manager[graph_id],
                                                      True)
 
-            mem_prof = MemoryProfilingInterpreter(nz3, gm)
+            mem_prof = MemoryProfilingInterpreter(nz3, gm, debug_log=False)
             mem_prof.run(*create_bwd_inputs())
             if rank == 0 and debug_log:
                 mem_prof.dump(f"mem_prof_bwd_{graph_index}_{graph_id}.csv")

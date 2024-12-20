@@ -262,7 +262,7 @@ class MemoryProfilingInterpreter(Interpreter):
         self.node_counter += 1
         if self.debug_log and dist.get_rank() == 0:
             print(
-                f"Node {self.node_counter}/{self.node_num} {n.name} memory {current_alloc / 1024 / 1024:.2f}MB delta {(current_alloc - self.last_alloc) / 1024 / 1024:.2f}MB"
+                f"Mem prof Node {self.node_counter}/{self.node_num} {n.name} memory {current_alloc / 1024 / 1024:.2f}MB delta {(current_alloc - self.last_alloc) / 1024 / 1024:.2f}MB"
             )
 
         self.last_alloc = current_alloc

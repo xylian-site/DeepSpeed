@@ -3791,11 +3791,11 @@ class DeepSpeedEngine(Module):
                 self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
             WARMUP_STEPS = 5
-            from deepspeed.runtime.zero.compile.passes.prefetch import schedule_prefetch
-            from deepspeed.runtime.zero.compile.passes.selective_gather import make_selective_gather
-            from deepspeed.runtime.zero.compile.passes.offload_adam_states import init_offload_opt_states, move_offload_opt_states
-            from deepspeed.runtime.zero.compile.stage3_backend import make_stage3_backend, launch_opt_passes
-            from deepspeed.runtime.zero.compile.patch_compiled_func import patch_compiled_func
+            from deepspeed.compile.passes.prefetch import schedule_prefetch
+            from deepspeed.compile.passes.selective_gather import make_selective_gather
+            from deepspeed.compile.passes.offload_adam_states import init_offload_opt_states, move_offload_opt_states
+            from deepspeed.compile.stage3_backend import make_stage3_backend, launch_opt_passes
+            from deepspeed.compile.patch_compiled_func import patch_compiled_func
 
             if passes is None:
                 passes = ["prefetch", "selective_gather"]
@@ -3824,7 +3824,7 @@ class DeepSpeedEngine(Module):
 
             self.launch_compile_passes = launch_compile_passes
 
-            from deepspeed.runtime.zero.compile.patch_fake_tensor import patch_fake_tensor
+            from deepspeed.compile.patch_fake_tensor import patch_fake_tensor
             patch_fake_tensor()
             backend = make_stage3_backend(opt_passes,
                                           scheduler=scheduler,
@@ -3842,7 +3842,7 @@ class DeepSpeedEngine(Module):
         self._is_compiled = True
 
     def get_compile_time(self):
-        from deepspeed.runtime.zero.compile.stage3_backend import opt_pass_times
+        from deepspeed.compile.stage3_backend import opt_pass_times
         return opt_pass_times
 
     @property

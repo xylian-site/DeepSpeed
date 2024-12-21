@@ -100,6 +100,7 @@ def launch_opt_passes():
 
 
 def make_stage3_backend(opt_passes,
+                        compile_kwargs={},
                         scheduler="fast_free",
                         free_activation=True,
                         offload_activation=False,
@@ -341,7 +342,7 @@ def make_stage3_backend(opt_passes,
                                         fw_compiler=fw,
                                         bw_compiler=bw,
                                         partition_fn=get_wrapped_partitioner(param_indices))
-        aot_mod = torch._dynamo.optimize()(aot_mod)
+        aot_mod = torch._dynamo.optimize(**compile_kwargs)(aot_mod)
 
         return aot_mod
 

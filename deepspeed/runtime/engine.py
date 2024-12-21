@@ -27,7 +27,7 @@ from deepspeed import comm as dist
 from deepspeed.runtime.utils import see_memory_usage, DummyOptim
 from .zero.offload_config import OffloadDeviceEnum, OffloadStateTypeEnum
 from deepspeed.runtime.zero.stage_1_and_2 import DeepSpeedZeroOptimizer
-from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus, InsertPostInitMethodToModuleSubClasses
+from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 from deepspeed.runtime.zero.utils import is_zero_supported_optimizer, ZeRORuntimeException
 from deepspeed.runtime.zero.parameter_offload import DeepSpeedZeRoOffload
 from deepspeed.runtime.zero.config import ZERO_OPTIMIZATION
@@ -3742,93 +3742,24 @@ class DeepSpeedEngine(Module):
         if self.is_compiled:
             return
 
+        if 'backend' in compile_kwargs:
+            logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
+
         compile_config = self._config.compile_config
+        print(f"Compiling deepcompile={compile_config.deepcompile}")
+
         if compile_config.deepcompile:
             assert self.zero_optimization_stage(
             ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
 
             from deepspeed.ops.op_builder import NativeZ3Builder
+            from deepspeed.compile.init_z3 import init_z3
             self.nz3 = NativeZ3Builder().load()
-
-            if self.optimizer is not None and hasattr(self.optimizer,
-                                                      '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
-                self.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
-                get_accelerator().empty_cache()
-            self.nz3.init(self.data_parallel_group, self.zero_reduce_bucket_size(), compile_config.double_buffer,
-                          compile_config.symmetric_memory)
-
-            # Unset hooks
-            for m in self.module.modules():
-                m._parameters = m._original_parameters
-            self.optimizer.parameter_offload._remove_module_hooks()
-
-            for hook in self.optimizer._grad_acc_hooks:
-                hook.remove()
-            self.optimizer._grad_acc_hooks.clear()
-
-            # Unpatch linear
-            if hasattr(InsertPostInitMethodToModuleSubClasses, "linear_bk"):
-                torch.nn.functional.linear = InsertPostInitMethodToModuleSubClasses.linear_bk
-
-            if compile_config.symmetric_memory:
-                group_name = self.data_parallel_group.group_name
-                dist.enable_symm_mem_for_group(group_name)
-
-            for p in self.module.parameters():
-                grad_buffer = self.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
-
-                # Disable persistent param
-                p.ds_persist = False
-                self.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
-
-            WARMUP_STEPS = 5
-            from deepspeed.compile.passes.prefetch import schedule_prefetch
-            from deepspeed.compile.passes.selective_gather import make_selective_gather
-            from deepspeed.compile.passes.offload_adam_states import init_offload_opt_states, move_offload_opt_states
-            from deepspeed.compile.stage3_backend import make_stage3_backend, launch_opt_passes
-            from deepspeed.compile.patch_compiled_func import patch_compiled_func
-
-            if passes is None:
-                passes = ["prefetch", "selective_gather"]
-
-            opt_passes = []
-            if "prefetch" in passes:
-                opt_passes.append((schedule_prefetch, 0.0))
-            if "selective_gather" in passes:
-                opt_passes.append((make_selective_gather(self.optimizer, self.nz3), -1.0))
-
-            if compile_config.offload_opt_states:
-                init_offload_opt_states(self.optimizer.optimizer, self.nz3)
-                opt_passes = [(move_offload_opt_states, 0.7)]
-
-            if self.global_rank == 0:
-                print(f"Opt passes: {opt_passes}")
-
-            def launch_compile_passes(micro_steps=self.micro_steps,
-                                      global_steps=self.global_steps,
-                                      update=self.is_gradient_accumulation_boundary()):
-                if global_steps == WARMUP_STEPS and self.micro_steps % self.gradient_accumulation_steps() == 0:
-                    torch._dynamo.reset()
-                    self.nz3.reset()
-                    patch_compiled_func()
-                    launch_opt_passes()
-
-            self.launch_compile_passes = launch_compile_passes
-
-            from deepspeed.compile.patch_fake_tensor import patch_fake_tensor
-            patch_fake_tensor()
-            backend = make_stage3_backend(opt_passes,
-                                          free_activation=compile_config.free_activation,
-                                          offload_activation=compile_config.offload_activation,
-                                          offload_opt_states=compile_config.offload_opt_states,
-                                          dump_graphs=compile_config.dump_graphs)
-
-        print(f"Compiling deepcompile={compile_config.deepcompile}")
-        if 'backend' in compile_kwargs:
-            logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
+            backend = init_z3(self, compile_config, compile_kwargs, passes)
 
         # create new dict to avoid modifying original dict
         self.module.compile(**{**compile_kwargs, 'backend': backend})
+
         self._is_compiled = True
 
     def get_compile_time(self):

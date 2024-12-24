@@ -3753,8 +3753,9 @@ class DeepSpeedEngine(Module):
             ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
 
             from deepspeed.ops.op_builder import NativeZ3Builder
-            from deepspeed.compile.init_z3 import init_z3
             self.nz3 = NativeZ3Builder().load()
+
+            from deepspeed.compile.init_z3 import init_z3
             backend = init_z3(self, compile_config, compile_kwargs, passes)
 
         # create new dict to avoid modifying original dict

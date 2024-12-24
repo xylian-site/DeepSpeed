@@ -70,8 +70,8 @@ def init_z3(engine, compile_config, compile_kwargs, passes=None):
         print(f"Opt passes: {opt_passes}")
 
     def launch_compile_passes(micro_steps=engine.micro_steps,
-                                global_steps=engine.global_steps,
-                                update=engine.is_gradient_accumulation_boundary()):
+                              global_steps=engine.global_steps,
+                              update=engine.is_gradient_accumulation_boundary()):
         if global_steps == WARMUP_STEPS and engine.micro_steps % engine.gradient_accumulation_steps() == 0:
             torch._dynamo.reset()
             engine.nz3.reset()
@@ -80,11 +80,10 @@ def init_z3(engine, compile_config, compile_kwargs, passes=None):
 
     engine.launch_compile_passes = launch_compile_passes
 
-
     patch_fake_tensor()
     return make_stage3_backend(opt_passes,
-                                  compile_kwargs=compile_kwargs,
-                                free_activation=compile_config.free_activation,
-                                offload_activation=compile_config.offload_activation,
-                                offload_opt_states=compile_config.offload_opt_states,
-                                dump_graphs=compile_config.dump_graphs)
+                               compile_kwargs=compile_kwargs,
+                               free_activation=compile_config.free_activation,
+                               offload_activation=compile_config.offload_activation,
+                               offload_opt_states=compile_config.offload_opt_states,
+                               dump_graphs=compile_config.dump_graphs)

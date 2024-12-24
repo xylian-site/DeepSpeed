@@ -20,7 +20,10 @@ except ImportError:
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
-no_copy_ops = {torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default}
+no_copy_ops = {
+    torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
+    torch.ops.native_z3.wait_allgather
+}
 sym_size_ops = {
     operator.ge,
     operator.le,

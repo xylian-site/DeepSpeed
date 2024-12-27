@@ -296,8 +296,7 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
                                                             if n.target == torch.ops.dc.allgather_param)
 
     output_nodes = [
-        n for n in get_output_node(graph).args[0]
-        if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad
+        n for n in get_output_node(graph).args[0] if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad
     ]
     ag_nodes_in_path_to_output_nodes = {}
     for output_node in output_nodes:
@@ -334,8 +333,7 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
                                    if n.target == torch.ops.dc.allgather_param)
                 schedule_until_free = schedule_until_ag + diff_required_nodes + [release_nodes[ds_id]]
 
-                n_scheduled_ags = len(
-                    [n for n in schedule_until_free if n.target == torch.ops.dc.allgather_param])
+                n_scheduled_ags = len([n for n in schedule_until_free if n.target == torch.ops.dc.allgather_param])
 
                 task = AllgatherTask(node, allgather_cost, free_cost, allgathered_mem, allgather_acc_mem, free_acc_mem,
                                      last_use, n_scheduled_ags, schedule_until_ag, schedule_until_free)

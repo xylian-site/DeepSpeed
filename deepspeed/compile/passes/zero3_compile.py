@@ -75,9 +75,7 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
     ag_user_nodes = []
 
     for node in graph.nodes:
-        ag_args = [
-            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param
-        ]
+        ag_args = [arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param]
         if len(ag_args) > 0:
             if node.target in ops_no_wait:
                 continue

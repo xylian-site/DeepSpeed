@@ -9,10 +9,12 @@ from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToModuleSubClasses
 
-from .passes.zero3_compile import add_z3_gather_release
+from .passes import zero3_compile, prefetch, selective_gather
 from .backend import make_backend, launch_compile_passes, init_schedule, opt_passes
 from .patch_fake_tensor import patch_fake_tensor
 from .util import log_rank0
+
+WARMUP = 5
 
 
 def init_z3(engine, compile_config, compile_kwargs, schedule=None):
@@ -50,7 +52,10 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
 
     if schedule is None:
         schedule = []
-        schedule.append((0, [add_z3_gather_release]))
+        schedule.append((0, [zero3_compile.add_z3_gather_release]))
+        schedule.append(
+            (WARMUP,
+             [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
     else:
 
         def passes_name_to_fn(passes):

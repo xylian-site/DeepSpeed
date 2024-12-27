@@ -6,7 +6,6 @@ You can add `compile` section to the DeepSpeed configuration file to specify the
 To enable DeepCompile, you need to set `deepcompile` to `true` in the `compile` section. Currently, DeepCompile is enabled only with ZeRO stage 3.
 We recommend setting `sub_group_size` to a smaller value (e.g., 200000000) to reduce the peak memory by the optimizer.
 
-
 ```json
 {
 ...
@@ -33,7 +32,7 @@ target_engine.compile()
 
 Here is the signature of the `compile` method. Internally, it calls `compile` API of PyTorch with the specified `backend` and `compile_kwargs`.
 You can pass optimization passes to the `passes` argument as a list of strings. Each string is the name of the optimization pass.
-When `passes` is `None`, DeepCompile uses the default optimization passes (We detail cutom optimization passes later).
+When `passes` is `None`, DeepCompile uses the default optimization passes (We detail custom optimization passes later).
 
 ```python
 def compile(self,
@@ -42,7 +41,7 @@ def compile(self,
             schedule=None) -> None:
 ```
 
-Note that the first iteration (forward and backward) may take a long time when DeepCompile is enabled. 
+Note that the first iteration (forward and backward) may take a long time when DeepCompile is enabled.
 
 ## Custom Optimization Passes
 
@@ -81,7 +80,6 @@ Each argument has the following meaning.
 
 You can find examples in existing optimization passes including [adaptive prefetching](https://github.com/tohtana/DeepSpeed-internal/blob/tohtana/no_z3_hook/deepspeed/compile/passes/prefetch.py) and [selective gather](https://github.com/tohtana/DeepSpeed-internal/blob/tohtana/no_z3_hook/deepspeed/compile/passes/selective_gather.py).
 
-
 You can also define a schedule for the custom optimization passes. The schedule is a list of tuples.
 Each tuple consists of a step and a list of optimization passes to apply at the step.
 
@@ -118,5 +116,3 @@ Each item has the following meaning.
 - `symmetric_memory` (Default: `false`): Enable symmetric memory (Only for a single node run).
 - `free_activation` (Default: `true`): Free activation tensors after the backward pass.
 - `dump_graphs` (Default: `false`): Dump the computation graphs to the specified directory.
-
-

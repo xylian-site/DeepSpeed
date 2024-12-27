@@ -7,12 +7,13 @@ from collections import defaultdict
 from typing import List
 
 import torch
-from torch.fx import Graph
+from torch.fx import GraphModule
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
-from ..profilers import ProfilingResult
+from ..util import get_deepcompile_handle
+from ..graph_param import DSGraphParamManager
 
 NAME = "selective_gather"
 
@@ -20,11 +21,13 @@ max_alloc_mem = 0
 last_optimize_step = 0
 
 
-def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
-                     mem_budget: float, param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
+# def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
+#                      mem_budget: float, param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
+def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
+                     mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
 
     if not bwd:
-        return graph
+        return gm
 
     last_backward_graph_id = None
     for g_id, needs_bwd in graph_order:
@@ -34,7 +37,7 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
 
     # Run only on the last backward graph
     if last_backward_graph_id is None or graph_id != last_backward_graph_id:
-        return graph
+        return gm
 
     peak_mem = 0
     for graph_id, prof in profiling_results.items():
@@ -120,6 +123,7 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
             ds_id_to_param[g_pm.ds_ids[name]] = ds_param.param
 
     persistent_mem = 0
+    nz3 = get_deepcompile_handle()
     for ds_id, size in sorted_ds_ids.items():
         if persistent_mem + size > available_mem:
             break
@@ -131,14 +135,14 @@ def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profil
         if dist.get_rank() == 0:
             print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.ds_shape}")
 
-    return graph
+    return gm
 
 
-def make_selective_gather(z3_optimizer, nz3):
+# def make_selective_gather(z3_optimizer, nz3):
 
-    def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], profiling_results,
-                                 mem_budget: float, param_manager, bwd: bool) -> Graph:
-        return selective_gather(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd,
-                                z3_optimizer, nz3)
+#     def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], profiling_results,
+#                                  mem_budget: float, param_manager, bwd: bool) -> Graph:
+#         return selective_gather(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd,
+#                                 z3_optimizer, nz3)
 
-    return selective_gather_wrapper
+#     return selective_gather_wrapper

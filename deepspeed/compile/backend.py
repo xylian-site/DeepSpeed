@@ -24,10 +24,10 @@ from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0
 from .partitioner import get_wrapped_partitioner
 
-
 remaining_schedule = None
 next_pass_step = -1
 next_passes = None
+current_passes = None
 
 param_manager: Dict[int, DSGraphParamManager] = {}
 graph_order = []
@@ -39,6 +39,7 @@ opt_passes[prefetch.NAME] = prefetch.schedule_prefetch
 opt_passes[selective_gather.NAME] = selective_gather.selective_gather
 
 remaining_bwd_compile_count = 0
+
 
 def register_compile_pass(name: str, opt_pass_fn):
     opt_passes[name] = opt_pass_fn
@@ -52,16 +53,19 @@ def init_schedule(schedule):
         assert isinstance(step, int), f"Each step in schedule should be an integer, but got {type(step)}"
         assert isinstance(passes, list), f"Passes at a certain step should be a list, but got {type(passes)}"
 
-    global next_pass_step, next_passes, remaining_schedule
-    next_pass_step, next_passes = schedule.pop(0)
+    global remaining_schedule
     remaining_schedule = schedule
-    patch_compiled_func()
 
 
 def launch_compile_passes(global_steps: int):
     global next_pass_step, next_passes
 
-    if global_steps == next_pass_step:
+    if len(remaining_schedule) > 0 and global_steps == remaining_schedule[0][0]:
+        next_pass_step = remaining_schedule[0][0]
+        print(
+            f"launch_compile_passes: global_steps={global_steps}, next_pass_step={next_pass_step} next_passes={next_passes}"
+        )
+
         torch._dynamo.reset()
         get_deepcompile_handle().reset()
         patch_compiled_func()
@@ -69,8 +73,7 @@ def launch_compile_passes(global_steps: int):
         profiling_results.clear()
         param_manager.clear()
 
-        if len(remaining_schedule) > 0:
-            next_pass_step, next_passes = remaining_schedule.pop(0)
+        _, next_passes = remaining_schedule.pop(0)
 
 
 def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results):
@@ -119,9 +122,7 @@ def run_opt_passes(opt_passes: List[Callable],
         set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
 
 
-def make_backend(compile_kwargs={},
-                 free_activation=True,
-                 debug_log=False):
+def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
 
     def backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
@@ -131,7 +132,7 @@ def make_backend(compile_kwargs={},
         graph_order.append((graph_id, needs_backward))
 
         param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
-                            if hasattr(input_val, 'ds_id')]
+                         if hasattr(input_val, 'ds_id')]
 
         global profiling_results
         if graph_id not in profiling_results:
@@ -142,18 +143,20 @@ def make_backend(compile_kwargs={},
         def fw(gm, sample_inputs):
             time_start = time.time()
             graph_index = len(graph_order) - 1
-            log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}", enable=debug_log)
+            log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+                      enable=debug_log)
 
-            run_opt_passes(opt_passes=next_passes,
-                                gm=gm,
-                                graph_id=graph_id,
-                                graph_order=graph_order,
-                                profiling_results=profiling_results,
-                                create_inputs_fn=lambda: real_inputs,
-                                mem_budget=.0, # unused
-                                param_manager=param_manager,
-                                bwd=False,
-                                debug_log=debug_log)
+            run_opt_passes(
+                opt_passes=next_passes,
+                gm=gm,
+                graph_id=graph_id,
+                graph_order=graph_order,
+                profiling_results=profiling_results,
+                create_inputs_fn=lambda: real_inputs,
+                mem_budget=.0,  # unused
+                param_manager=param_manager,
+                bwd=False,
+                debug_log=debug_log)
 
             if needs_backward:
                 global remaining_bwd_compile_count
@@ -165,24 +168,8 @@ def make_backend(compile_kwargs={},
 
         def bw(gm, sample_inputs):
             time_start = time.time()
-            
+
             bwd_inputs_stack = get_backward_inputs()
-            bwd_real_inputs = bwd_inputs_stack.pop()
-
-            run_opt_passes(opt_passes=next_passes,
-                                gm=gm,
-                                graph_id=graph_id,
-                                graph_order=graph_order,
-                                profiling_results=profiling_results,
-                                create_inputs_fn=lambda: tuple(bwd_real_inputs),
-                                mem_budget=.0, # unused
-                                param_manager=param_manager,
-                                bwd=True,
-                                debug_log=debug_log)
-            
-            graph_index = get_index_by_graph_id(graph_order, graph_id)
-
-            log_rank0(f"Bwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}", enable=debug_log)
 
             if len(bwd_inputs_stack) == 0:
                 # dynamo calls bw compiler ahead of time when symints are saved for backward. See the details for aot_dispatch_autograd in jit_compile_runtime_wrappers.
@@ -190,8 +177,26 @@ def make_backend(compile_kwargs={},
                 # This would need be handled properly in the future.
                 return None
 
+            bwd_real_inputs = bwd_inputs_stack.pop()
+            run_opt_passes(
+                opt_passes=next_passes,
+                gm=gm,
+                graph_id=graph_id,
+                graph_order=graph_order,
+                profiling_results=profiling_results,
+                create_inputs_fn=lambda: tuple(bwd_real_inputs),
+                mem_budget=.0,  # unused
+                param_manager=param_manager,
+                bwd=True,
+                debug_log=debug_log)
+
+            graph_index = get_index_by_graph_id(graph_order, graph_id)
+
+            log_rank0(f"Bwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+                      enable=debug_log)
+
             # assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
-            param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
+            param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
             if free_activation:
                 param_names = [n.name for n in param_nodes_bw]
@@ -204,7 +209,8 @@ def make_backend(compile_kwargs={},
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
 
-            log_rank0(f"Bwd end {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}", enable=debug_log)
+            log_rank0(f"Bwd end {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+                      enable=debug_log)
 
             gm.recompile()
             opt_pass_times.append(("bwd", graph_index, graph_id, time.time() - time_start))

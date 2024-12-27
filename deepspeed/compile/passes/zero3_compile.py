@@ -1,3 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 import gc
 from typing import List
 
@@ -13,8 +18,13 @@ import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
 
-def add_z3_gather_release_fw(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results,
-                            create_inputs_fn, param_manager,debug_log=False) -> GraphModule:
+def add_z3_gather_release_fw(gm: GraphModule,
+                             graph_id: int,
+                             graph_order: List[int],
+                             profiling_results,
+                             create_inputs_fn,
+                             param_manager,
+                             debug_log=False) -> GraphModule:
 
     nz3 = get_deepcompile_handle()
     graph = gm.graph
@@ -23,8 +33,7 @@ def add_z3_gather_release_fw(gm: GraphModule, graph_id: int, graph_order: List[i
     param_indices = profiling_results[graph_id].param_indices
     param_manager[graph_id] = DSGraphParamManager(graph, real_inputs, param_indices)
 
-    graph = add_gather_and_release(graph_id, graph, param_manager[graph_id],
-                                   get_param_nodes(graph, param_indices))
+    graph = add_gather_and_release(graph_id, graph, param_manager[graph_id], get_param_nodes(graph, param_indices))
 
     nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
 
@@ -47,22 +56,25 @@ def add_z3_gather_release_fw(gm: GraphModule, graph_id: int, graph_order: List[i
 
     _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
     nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes],
-                            [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
+                           [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
 
     return gm
 
 
-def add_z3_gather_release_bw(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results,
-                          create_inputs_fn, param_manager,debug_log=False) -> GraphModule:
+def add_z3_gather_release_bw(gm: GraphModule,
+                             graph_id: int,
+                             graph_order: List[int],
+                             profiling_results,
+                             create_inputs_fn,
+                             param_manager,
+                             debug_log=False) -> GraphModule:
 
     param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
-    gm.graph = add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw,
-                                        param_name_to_grad)
+    gm.graph = add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw, param_name_to_grad)
 
     input_nodes = get_input_nodes(gm.graph)
     real_inputs = create_inputs_fn()
-    assert len(input_nodes) == len(
-        real_inputs), f"Expected {len(real_inputs)} inputs, got {len(input_nodes)}"
+    assert len(input_nodes) == len(real_inputs), f"Expected {len(real_inputs)} inputs, got {len(input_nodes)}"
 
     nz3 = get_deepcompile_handle()
     real_outputs = ProfilingInterpreter(gm, debug_log=False).run(*real_inputs)
@@ -84,8 +96,8 @@ def add_z3_gather_release_bw(gm: GraphModule, graph_id: int, graph_order: List[i
     return gm
 
 
-def add_z3_gather_release(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results,
-                          create_inputs_fn, mem_budget: float, param_manager, bwd: bool) -> GraphModule:
+def add_z3_gather_release(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
+                          mem_budget: float, param_manager, bwd: bool) -> GraphModule:
     if bwd:
         return add_z3_gather_release_bw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
     return add_z3_gather_release_fw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)

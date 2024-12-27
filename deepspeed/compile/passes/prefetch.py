@@ -6,7 +6,7 @@
 from typing import List
 
 import torch
-from torch.fx import Graph, Node
+from torch.fx import Graph, Node, GraphModule
 
 from deepspeed.accelerator import get_accelerator
 import deepspeed.comm as dist
@@ -34,8 +34,8 @@ def get_ds_id(node: Node):
     return node.args[2]
 
 
-def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profiling_results, mem_budget: float,
-                      param_manager: DSGraphParamManager, bwd: bool) -> Graph:
+def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
+                      mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
 
     max_mem = get_accelerator().total_memory() * (1 - MARGIN)
     vals_to_bcast = torch.tensor([max_mem], device=torch.device(get_accelerator().current_device()))
@@ -50,10 +50,9 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
     time_dict = {name: (device_time, wall_time) for name, device_time, wall_time in op_time}
     tensor_size_dict = {name: size for name, size in tensor_sizes}
 
+    graph = gm.graph
     total_param_size = sum(
         [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
-
-    pm = param_manager[graph_id]
 
     print_rank_0(
         f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} max_allocated={get_accelerator().max_memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
@@ -169,5 +168,6 @@ def schedule_prefetch(graph: Graph, graph_id: int, graph_order: List[int], profi
             new_graph.call_function(torch.ops.native_z3.prefetch_params_fused,
                                     args=(graph_id, param_nodes_copy, ds_ids))
     new_graph.lint()
+    gm.graph = new_graph
 
-    return new_graph
+    return gm

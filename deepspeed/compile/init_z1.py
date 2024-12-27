@@ -3,15 +3,8 @@
 
 # DeepSpeed Team
 
-import torch
-
-from deepspeed import comm as dist
-from deepspeed.accelerator import get_accelerator
-from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToModuleSubClasses
-
 from .passes import zero1_compile
 from .backend import make_backend, launch_compile_passes, init_schedule
-from .patch_fake_tensor import patch_fake_tensor
 from .util import log_rank0
 
 WARMUP = 5

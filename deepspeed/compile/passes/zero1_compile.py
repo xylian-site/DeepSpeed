@@ -3,61 +3,42 @@
 
 # DeepSpeed Team
 
-import gc
 from typing import List
 
-from torch.fx import Node, GraphModule
+import torch
+from torch.fx import GraphModule
 
-from ..graph_param import DSGraphParamManager
-from ..profilers.graph_profile import ProfilingInterpreter
-from ..list_schedule import fast_free_schedule
+from ..fx import add_postprocess, move_primals_to_head, _make_node_meta
 
-import deepspeed.comm as dist
-from deepspeed.accelerator import get_accelerator
-
-NAME = "zero3_compile"
+NAME = "zero1_compile"
 
 
-def add_z1_reduce_bw(gm: GraphModule,
-                             graph_id: int,
-                             graph_order: List[int],
-                             profiling_results,
-                             create_inputs_fn,
-                             param_manager,
-                             debug_log=False) -> GraphModule:
+def add_z1_reduce_bw(gm: GraphModule, graph_id: int, param_manager) -> GraphModule:
 
-    param_nodes_bw, param_name_to_grad = param_manager[graph_id].get_bwd_mapping(gm.graph)
+    graph = gm.graph
+    pm = param_manager[graph_id]
+    param_nodes_bw, param_name_to_grad = pm.get_bwd_mapping(graph)
 
-    print(f"add_z1_reduce_bw param_nodes_bw={param_nodes_bw} param_name_to_grad={param_name_to_grad}")
+    for param_name in pm.param_names:
 
-    # gm.graph = add_gather_and_reduce(graph_id, gm.graph, param_manager[graph_id], param_nodes_bw, param_name_to_grad)
+        def debug_reduce_op(x: torch.Tensor, graph_id: int, param_name: str):
+            print(f"add_reduce debug_reduce_op x={x.shape} graph_id={graph_id} param_name={param_name}")
+            return x
 
-    # input_nodes = get_input_nodes(gm.graph)
-    # real_inputs = create_inputs_fn()
-    # assert len(input_nodes) == len(real_inputs), f"Expected {len(real_inputs)} inputs, got {len(input_nodes)}"
+        grad_node = param_name_to_grad[param_name]
+        add_postprocess(graph,
+                        grad_node,
+                        debug_reduce_op,
+                        extra_args=[graph_id, param_name],
+                        name=f"reduce_param_{param_name}",
+                        meta=_make_node_meta(grad_node, param_name, True))
 
-    # nz3 = get_deepcompile_handle()
-    # real_outputs = ProfilingInterpreter(gm, debug_log=False).run(*real_inputs)
-
-    # del real_outputs
-    # gc.collect()
-    # get_accelerator().empty_cache()
-
-    # rank = dist.get_rank()
-    # graph_index = get_index_by_graph_id(graph_order, graph_id)
-    # if rank == 0 and debug_log:
-    #     print(f"Bwd before scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
-
-    # gm.graph = fast_free_schedule(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
-
-    # _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
-    # nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-
+    gm.graph = move_primals_to_head(graph)
     return gm
 
 
 def add_z1_reduce(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
-                          mem_budget: float, param_manager, bwd: bool) -> GraphModule:
+                  mem_budget: float, param_manager, bwd: bool) -> GraphModule:
     if bwd:
-        return add_z1_reduce_bw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
+        return add_z1_reduce_bw(gm, graph_id, param_manager)
     return gm

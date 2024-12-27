@@ -110,6 +110,7 @@ from deepspeed.runtime.config import DtypeEnum
 from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle
 from deepspeed.compile.backend import register_compile_pass, opt_passes
 from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
+from deepspeed.compile.init_z1 import init_z1
 from deepspeed.compile.init_z3 import init_z3
 
 MEMORY_OPT_ALLREDUCE_SIZE = 500000000
@@ -3757,8 +3758,9 @@ class DeepSpeedEngine(Module):
         print(f"Compiling deepcompile={compile_config.deepcompile}")
 
         if compile_config.deepcompile:
-            assert self.zero_optimization_stage(
-            ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
+            assert self.zero_optimization_stage() == ZeroStageEnum.optimizer_states \
+                or self.zero_optimization_stage() == ZeroStageEnum.weights \
+                , "Currently DeepCompile supports stage 1 or 3 only."
 
             if schedule is not None:
 
@@ -3769,8 +3771,11 @@ class DeepSpeedEngine(Module):
 
                 schedule = [(step, passes_name_to_fn(passes)) for step, passes in schedule]
 
-            self.nz3 = get_deepcompile_handle()
-            backend = init_z3(self, compile_config, compile_kwargs, schedule)
+            if self.zero_optimization_stage() == ZeroStageEnum.optimizer_states:
+                backend = init_z1(self, compile_config, compile_kwargs, schedule)
+            elif self.zero_optimization_stage() == ZeroStageEnum.weights:
+                self.nz3 = get_deepcompile_handle()
+                backend = init_z3(self, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict
         self.module.compile(**{**compile_kwargs, 'backend': backend})

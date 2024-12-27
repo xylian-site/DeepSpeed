@@ -4,13 +4,13 @@
 # DeepSpeed Team
 
 import gc
-from typing import List
+from typing import List, Dict, Any
 
-from torch.fx import Node, GraphModule
+import torch
+from torch.fx import Graph, Node, GraphModule
 
-from ..graph_param import DSGraphParamManager
-from ..util import get_input_nodes, get_param_nodes, get_index_by_graph_id, get_deepcompile_handle
-from ..fx import add_gather_and_release, add_gather_and_reduce, register_and_add_wait_allgather
+from ..util import get_input_nodes, get_param_nodes, get_index_by_graph_id, get_deepcompile_handle, get_last_uses
+from ..fx import add_postprocess, add_args_process, _make_node_meta, get_output_node, ops_no_wait, move_primals_to_head
 from ..profilers.graph_profile import ProfilingInterpreter
 from ..list_schedule import fast_free_schedule
 
@@ -18,6 +18,104 @@ import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
 NAME = "zero3_compile"
+
+
+def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
+    new_node = add_postprocess(graph,
+                               node,
+                               torch.ops.native_z3.allgather_param,
+                               extra_args=[graph_id, ds_id],
+                               name=f"allgather_ds_param_{node.target}_{ds_id}",
+                               meta=_make_node_meta(node, ds_id, True))
+
+    # Set the previous node back to output
+    # We don't want to change the output node to allgather
+    output_node = get_output_node(graph)
+    output_node.replace_input_with(new_node, node)
+    return new_node
+
+
+def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
+
+    nz3 = get_deepcompile_handle()
+
+    def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int):
+        nz3.release_param(graph_id, ds_id)
+        return x
+
+    add_postprocess(graph,
+                    node,
+                    wrap_release_ds_param,
+                    extra_args=[graph_id, ds_id],
+                    name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
+                    meta=_make_node_meta(node, ds_id, False))
+
+
+def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int], user: str, n_args: int, bwd: bool):
+    add_args_process(graph,
+                     node,
+                     torch.ops.native_z3.wait_allgather,
+                     extra_args=[graph_id, ds_ids, user, n_args, bwd],
+                     name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
+                     meta=_make_node_meta(node, ds_ids, False))
+
+
+def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
+    add_postprocess(graph,
+                    grad_node,
+                    torch.ops.native_z3.reduce_grad,
+                    extra_args=[graph_id, ds_id],
+                    name=f"reduce_ds_param_{param_name}",
+                    meta=_make_node_meta(grad_node, ds_id, True))
+
+
+def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
+
+    ds_ids = []
+    ag_user_nodes = []
+
+    for node in graph.nodes:
+        ag_args = [
+            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.native_z3.allgather_param
+        ]
+        if len(ag_args) > 0:
+            if node.target in ops_no_wait:
+                continue
+
+            ag_user_nodes.append(node)
+
+            ds_ids = [a.meta["ds_id"] for a in ag_args]
+            target_args = [arg for arg in node.args if isinstance(arg, Node)]
+            add_wait_allgather(graph_id, graph, node, ds_ids, node.name, len(target_args), bwd)
+            ds_ids.extend(ds_ids)
+
+    return ds_ids, ag_user_nodes
+
+
+def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]) -> Graph:
+    ag_nodes = []
+    for pn in param_nodes:
+        ag_node = add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
+        ag_nodes.append((pn, ag_node))
+
+    node_to_last_use, _ = get_last_uses(graph)
+    for pn, ag in ag_nodes:
+        last_use = node_to_last_use[ag]
+        ds_id = param_manager.ds_ids[pn.name]
+        add_release(graph_id, graph, last_use, pn, ds_id)
+
+    return move_primals_to_head(graph)
+
+
+def add_gather_and_reduce(graph_id: int, graph: Graph, param_manager, param_nodes_bw: List[Node],
+                          param_name_to_grad: Dict[str, Node]) -> Graph:
+
+    add_gather_and_release(graph_id, graph, param_manager, param_nodes_bw)
+
+    for param_name in param_manager.param_names:
+        add_reduce(graph_id, graph, param_name_to_grad[param_name], param_name, param_manager.ds_ids[param_name])
+
+    return move_primals_to_head(graph)
 
 
 def add_z3_gather_release_fw(gm: GraphModule,
@@ -33,7 +131,6 @@ def add_z3_gather_release_fw(gm: GraphModule,
 
     real_inputs = create_inputs_fn()
     param_indices = profiling_results[graph_id].param_indices
-    param_manager[graph_id] = DSGraphParamManager(graph, real_inputs, param_indices)
 
     graph = add_gather_and_release(graph_id, graph, param_manager[graph_id], get_param_nodes(graph, param_indices))
 

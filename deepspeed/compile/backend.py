@@ -129,8 +129,15 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
         global graph_order
         graph_order.append((graph_id, needs_backward))
 
-        param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
-                         if hasattr(input_val, 'ds_id')]
+        z3_partition = any(hasattr(v, "ds_id") for v in real_inputs)
+        if z3_partition:
+            param_indices = [(i, input_val.ds_id, input_val.ds_shape) for i, input_val in enumerate(real_inputs)
+                             if isinstance(input_val, torch.nn.Parameter)]
+        else:
+            assert all(hasattr(v, "param_id") for v in real_inputs
+                       if isinstance(v, torch.nn.Parameter)), "All param inputs should have param_id"
+            param_indices = [(i, input_val.param_id, input_val.shape) for i, input_val in enumerate(real_inputs)
+                             if isinstance(input_val, torch.nn.Parameter)]
 
         global profiling_results
         if graph_id not in profiling_results:
@@ -143,6 +150,8 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             graph_index = len(graph_order) - 1
             log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
                       enable=debug_log)
+
+            param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
 
             run_opt_passes(
                 opt_passes=next_passes,
@@ -194,9 +203,9 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
                       enable=debug_log)
 
             # assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
-            param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
 
             if free_activation:
+                param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
                 param_names = [n.name for n in param_nodes_bw]
                 non_param_input_names = [n.name for n in get_input_nodes(gm.graph) if n.name not in param_names]
                 add_free_activations(graph_id, gm.graph,

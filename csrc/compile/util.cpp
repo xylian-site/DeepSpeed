@@ -3,11 +3,11 @@
 
 // DeepSpeed Team
 
-#include "native_z3.h"
+#include "deepcompile.h"
 
 #include <ATen/ATen.h>
 
-namespace n3z {
+namespace dc {
 
 std::string tensorToString(const at::Tensor& t, size_t max_elem, size_t max_str_len)
 {
@@ -86,4 +86,4 @@ std::string tensorDimToString(const at::Tensor& t)
     const auto dim = t.sizes();
     return join_as_str(dim);
 }
-}  // namespace n3z
+}  // namespace dc

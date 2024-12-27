@@ -14,7 +14,7 @@ from torch._subclasses.fake_tensor import unset_fake_temporarily
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from deepspeed.ops.op_builder import NativeZ3Builder
+from deepspeed.ops.op_builder import DeepCompileBuilder
 
 sym_size_ops = {
     operator.ge,
@@ -33,7 +33,7 @@ def is_deepcompile_supported() -> bool:
 
 
 def get_deepcompile_handle():
-    return NativeZ3Builder().load()
+    return DeepCompileBuilder().load()
 
 
 def log_rank0(msg: str, enable: bool = False):
@@ -46,7 +46,7 @@ def get_no_copy_ops():
     get_deepcompile_handle()
     return {
         torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
-        torch.ops.native_z3.wait_allgather
+        torch.ops.dc.wait_allgather
     }
 
 

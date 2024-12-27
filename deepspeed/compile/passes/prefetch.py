@@ -30,7 +30,7 @@ def print_rank_0(message):
 
 
 def get_ds_id(node: Node):
-    assert node.target == torch.ops.native_z3.allgather_param
+    assert node.target == torch.ops.dc.allgather_param
     return node.args[2]
 
 
@@ -52,7 +52,7 @@ def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[int], pr
 
     graph = gm.graph
     total_param_size = sum(
-        [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.native_z3.allgather_param])
+        [tensor_size_dict[n.name] for n in graph.nodes if n.target == torch.ops.dc.allgather_param])
 
     print_rank_0(
         f"schedule_prefetch graph_id={graph_id} max_mem={max_mem} available_memory={get_accelerator().available_memory()} memory_allocated={get_accelerator().memory_allocated()} max_allocated={get_accelerator().max_memory_allocated()} total_param_size={total_param_size} margin={MARGIN}"
@@ -108,7 +108,7 @@ def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[int], pr
                 else:
                     break
 
-            if node.target == torch.ops.native_z3.allgather_param:
+            if node.target == torch.ops.dc.allgather_param:
 
                 current_ag_size = sum([tensor_size_dict[ag_node.name] for ag_node in prefetch_ags])
                 pred_time_current = comm_predictor(current_ag_size)
@@ -165,7 +165,7 @@ def schedule_prefetch(gm: GraphModule, graph_id: int, graph_order: List[int], pr
             param_nodes_copy = [env[param_node.name] for param_node in param_nodes]
 
             ds_ids = [get_ds_id(ag_node) for ag_node in node]
-            new_graph.call_function(torch.ops.native_z3.prefetch_params_fused,
+            new_graph.call_function(torch.ops.dc.prefetch_params_fused,
                                     args=(graph_id, param_nodes_copy, ds_ids))
     new_graph.lint()
     gm.graph = new_graph

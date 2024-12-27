@@ -23,7 +23,7 @@ NAME = "zero3_compile"
 def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     new_node = add_postprocess(graph,
                                node,
-                               torch.ops.native_z3.allgather_param,
+                               torch.ops.dc.allgather_param,
                                extra_args=[graph_id, ds_id],
                                name=f"allgather_ds_param_{node.target}_{ds_id}",
                                meta=_make_node_meta(node, ds_id, True))
@@ -54,7 +54,7 @@ def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_
 def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int], user: str, n_args: int, bwd: bool):
     add_args_process(graph,
                      node,
-                     torch.ops.native_z3.wait_allgather,
+                     torch.ops.dc.wait_allgather,
                      extra_args=[graph_id, ds_ids, user, n_args, bwd],
                      name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
                      meta=_make_node_meta(node, ds_ids, False))
@@ -63,7 +63,7 @@ def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
     add_postprocess(graph,
                     grad_node,
-                    torch.ops.native_z3.reduce_grad,
+                    torch.ops.dc.reduce_grad,
                     extra_args=[graph_id, ds_id],
                     name=f"reduce_ds_param_{param_name}",
                     meta=_make_node_meta(grad_node, ds_id, True))
@@ -76,7 +76,7 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
 
     for node in graph.nodes:
         ag_args = [
-            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.native_z3.allgather_param
+            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param
         ]
         if len(ag_args) > 0:
             if node.target in ops_no_wait:

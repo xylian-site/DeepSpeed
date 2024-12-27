@@ -3,4 +3,4 @@
 
 # DeepSpeed Team
 
-from ..op_builder import NativeZ3Builder
+from ..op_builder import DeepCompileBuilder

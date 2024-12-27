@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <torch/extension.h>
 
-namespace n3z {
+namespace dc {
 
 template <typename K, typename V>
 static bool hasKey(const std::unordered_map<K, V>& map, const K& key)
@@ -84,4 +84,4 @@ void register_param(long ds_id,
                     at::Tensor grad_buffer,
                     bool persistent);
 
-}  // namespace n3z
+}  // namespace dc

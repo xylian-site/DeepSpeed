@@ -69,7 +69,7 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
 
         profile = profiling_results[graph_id]
         for n in profile.fwd_graph.nodes:
-            if n.target == torch.ops.native_z3.allgather_param:
+            if n.target == torch.ops.dc.allgather_param:
                 assert "tensor_size" in n.meta
                 ds_id_to_size[n.args[2]] = n.meta["tensor_size"]
                 assert "device_time" in n.meta
@@ -80,7 +80,7 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
 
         if profile.bwd_graph is not None:
             for n in profile.bwd_graph.nodes:
-                if n.target == torch.ops.native_z3.allgather_param:
+                if n.target == torch.ops.dc.allgather_param:
                     assert "tensor_size" in n.meta
                     ds_id_to_size[n.args[2]] = n.meta["tensor_size"]
                     assert "device_time" in n.meta

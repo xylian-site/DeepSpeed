@@ -101,11 +101,11 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
     offload_id_to_node = {}
     node_to_wait_reload = {}
     for node in graph.nodes:
-        if node.target == torch.ops.native_z3.reload_tensor:
+        if node.target == torch.ops.dc.reload_tensor:
             offload_act = node.args[0]
             # node_to_offload_id[offload_act] = node.args[2]
             offload_id_to_node[node.args[2]] = offload_act
-        elif node.target == torch.ops.native_z3.wait_reload:
+        elif node.target == torch.ops.dc.wait_reload:
             offload_id = node.args[2]
             node_to_wait_reload[offload_id_to_node[offload_id]] = node
 
@@ -136,7 +136,7 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
         node_name = f"free_activations_{[n.name for n in used_nodes]}"
         with graph.inserting_after(last_user):
             args = (activation_args, )
-            # graph.create_node('call_function', torch.ops.native_z3.free_tensors, args, {}, name=node_name)
+            # graph.create_node('call_function', torch.ops.dc.free_tensors, args, {}, name=node_name)
 
             # Python version for debugging
             graph.create_node('call_function', free_tensors, args, {}, name=node_name)

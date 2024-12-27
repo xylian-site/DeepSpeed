@@ -3,7 +3,7 @@
 
 // DeepSpeed Team
 
-#include "native_z3.h"
+#include "deepcompile.h"
 
 #define USE_C10D_NCCL
 
@@ -16,7 +16,7 @@
 
 #include <torch/csrc/distributed/c10d/SymmetricMemory.hpp>
 
-namespace n3z {
+namespace dc {
 
 static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 
@@ -1046,9 +1046,9 @@ at::Tensor test_call(at::Tensor a)
     return a;
 }
 
-}  // namespace n3z
+}  // namespace dc
 
-TORCH_LIBRARY(native_z3, m)
+TORCH_LIBRARY(dc, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def("prefetch_params_fused(int graph_id, Tensor[] params, int[] ids) -> ()");
@@ -1065,66 +1065,64 @@ TORCH_LIBRARY(native_z3, m)
     m.def("test_call(Tensor a) -> Tensor");
 }
 
-TORCH_LIBRARY_IMPL(native_z3, CPU, m)
+TORCH_LIBRARY_IMPL(dc, CPU, m)
 {
-    m.impl("allgather_param", &n3z::allgather_param);
-    m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
-    m.impl("wait_allgather", &n3z::wait_allgather);
-    m.impl("reduce_grad", &n3z::reduce_grad);
-    m.impl("free_tensors", &n3z::free_tensors);
-    m.impl("offload_tensor", &n3z::offload_tensor);
-    m.impl("reload_tensor", &n3z::reload_tensor);
-    m.impl("wait_offload", &n3z::wait_offload);
-    m.impl("wait_reload", &n3z::wait_reload);
+    m.impl("allgather_param", &dc::allgather_param);
+    m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
+    m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("reduce_grad", &dc::reduce_grad);
+    m.impl("free_tensors", &dc::free_tensors);
+    m.impl("offload_tensor", &dc::offload_tensor);
+    m.impl("reload_tensor", &dc::reload_tensor);
+    m.impl("wait_offload", &dc::wait_offload);
+    m.impl("wait_reload", &dc::wait_reload);
 
-    m.impl("test_call", &n3z::test_call);
+    m.impl("test_call", &dc::test_call);
 }
 
-TORCH_LIBRARY_IMPL(native_z3, CUDA, m)
+TORCH_LIBRARY_IMPL(dc, CUDA, m)
 {
-    m.impl("allgather_param", &n3z::allgather_param);
-    m.impl("prefetch_params_fused", &n3z::prefetch_params_fused);
-    m.impl("wait_allgather", &n3z::wait_allgather);
-    m.impl("reduce_grad", &n3z::reduce_grad);
-    m.impl("free_tensors", &n3z::free_tensors);
-    m.impl("offload_tensor", &n3z::offload_tensor);
-    m.impl("reload_tensor", &n3z::reload_tensor);
-    m.impl("wait_offload", &n3z::wait_offload);
-    m.impl("wait_reload", &n3z::wait_reload);
+    m.impl("allgather_param", &dc::allgather_param);
+    m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
+    m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("reduce_grad", &dc::reduce_grad);
+    m.impl("free_tensors", &dc::free_tensors);
+    m.impl("offload_tensor", &dc::offload_tensor);
+    m.impl("reload_tensor", &dc::reload_tensor);
+    m.impl("wait_offload", &dc::wait_offload);
+    m.impl("wait_reload", &dc::wait_reload);
 
-    m.impl("test_call", &n3z::test_call);
+    m.impl("test_call", &dc::test_call);
 }
 
-TORCH_LIBRARY_IMPL(native_z3, Meta, m)
+TORCH_LIBRARY_IMPL(dc, Meta, m)
 {
-    m.impl("allgather_param", &n3z::allgather_param_meta);
-    m.impl("wait_allgather", &n3z::wait_allgather_meta);
-    m.impl("reduce_grad", &n3z::reduce_grad_meta);
+    m.impl("allgather_param", &dc::allgather_param_meta);
+    m.impl("wait_allgather", &dc::wait_allgather_meta);
+    m.impl("reduce_grad", &dc::reduce_grad_meta);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("register_param", &n3z::register_param, "Register a parameter");
-    m.def("set_persistent", &n3z::set_persistent, "Set persistent flag for a parameter");
-    m.def("enable_profiling", &n3z::enable_profiling, "Enable profiling");
-    m.def("is_profiling", &n3z::is_profiling, "Check if profiling is enabled");
-    m.def("init", &n3z::init, "Set the process group");
-    m.def("cleanup", &n3z::cleanup, "Cleanup the process group");
-    m.def("register_graph", &n3z::register_graph, "Register graph with a list of ds parameter ids");
+    m.def("register_param", &dc::register_param, "Register a parameter");
+    m.def("set_persistent", &dc::set_persistent, "Set persistent flag for a parameter");
+    m.def("enable_profiling", &dc::enable_profiling, "Enable profiling");
+    m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
+    m.def("init", &dc::init, "Set the process group");
+    m.def("cleanup", &dc::cleanup, "Cleanup the process group");
+    m.def("register_graph", &dc::register_graph, "Register graph with a list of ds parameter ids");
     m.def("register_graph_ops",
-          &n3z::register_graph_ops,
+          &dc::register_graph_ops,
           "Register the number of arguments for an op");
     m.def("register_bwd_graph_ops",
-          &n3z::register_bwd_graph_ops,
+          &dc::register_bwd_graph_ops,
           "Register the number of arguments for a backward op");
-    m.def("start_forward", &n3z::start_forward, "Start forward pass");
-    m.def("end_forward", &n3z::end_forward, "End forward pass");
-    m.def("start_backward", &n3z::start_backward, "Start backward pass");
-    // m.def("end_backward", &n3z::end_backward, "End backward pass");
-    m.def("release_param", &n3z::release_param, "Release a parameter");
-    m.def("reset", &n3z::reset, "Reset the state");
-    m.def(
-        "invalidate_gathered_param", &n3z::invalidate_gathered_param, "Invalidate gathered param");
-    m.def(
-        "clear_all_gathered_params", &n3z::clear_all_gathered_params, "Clear all gathered params");
+    m.def("start_forward", &dc::start_forward, "Start forward pass");
+    m.def("end_forward", &dc::end_forward, "End forward pass");
+    m.def("start_backward", &dc::start_backward, "Start backward pass");
+    // m.def("end_backward", &dc::end_backward, "End backward pass");
+    m.def("release_param", &dc::release_param, "Release a parameter");
+    m.def("reset", &dc::reset, "Reset the state");
+    m.def("invalidate_gathered_param", &dc::invalidate_gathered_param, "Invalidate gathered param");
+    m.def("clear_all_gathered_params", &dc::clear_all_gathered_params, "Clear all gathered params");
 }

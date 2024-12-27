@@ -17,6 +17,8 @@ from ..list_schedule import fast_free_schedule
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
+NAME = "zero3_compile"
+
 
 def add_z3_gather_release_fw(gm: GraphModule,
                              graph_id: int,

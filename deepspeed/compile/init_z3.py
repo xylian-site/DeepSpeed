@@ -10,7 +10,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToModuleSubClasses
 
 from .passes import zero3_compile, prefetch, selective_gather
-from .backend import make_backend, launch_compile_passes, init_schedule, opt_passes
+from .backend import make_backend, launch_compile_passes, init_schedule
 from .patch_fake_tensor import patch_fake_tensor
 from .util import log_rank0
 
@@ -56,14 +56,6 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
         schedule.append(
             (WARMUP,
              [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
-    else:
-
-        def passes_name_to_fn(passes):
-            for pass_name in passes:
-                assert pass_name in opt_passes, f"Unknown pass {pass_name}"
-            return [opt_passes[pass_name] for pass_name in passes]
-
-        schedule = [(step, passes_name_to_fn(passes)) for step, passes in schedule]
 
     init_schedule(schedule)
 

@@ -19,7 +19,6 @@ from .fx import add_free_activations
 from .graph_param import DSGraphParamManager
 from .profilers import ProfilingResult
 from .profilers.graph_profile import MemoryProfilingInterpreter
-from .passes import prefetch, selective_gather
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get_backward_inputs
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0
 from .partitioner import get_wrapped_partitioner
@@ -35,13 +34,12 @@ profiling_results: Dict[int, ProfilingResult] = {}
 opt_pass_times = []
 
 opt_passes = {}
-opt_passes[prefetch.NAME] = prefetch.schedule_prefetch
-opt_passes[selective_gather.NAME] = selective_gather.selective_gather
 
 remaining_bwd_compile_count = 0
 
 
 def register_compile_pass(name: str, opt_pass_fn):
+    assert name not in opt_passes, f"Opt pass {name} already registered"
     opt_passes[name] = opt_pass_fn
 
 

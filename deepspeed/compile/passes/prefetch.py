@@ -14,7 +14,7 @@ import deepspeed.comm as dist
 from ..profilers.comm_profile import create_predictor
 from ..graph_param import DSGraphParamManager
 
-NAME = "adaptive_prefetch"
+NAME = "prefetch"
 
 FUSE_FACTOR = 0.8
 MARGIN = 0.1

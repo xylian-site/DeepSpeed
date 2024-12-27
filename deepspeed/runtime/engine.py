@@ -108,8 +108,8 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.config import DtypeEnum
 
 from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle
-from deepspeed.compile.backend import register_compile_pass
-from deepspeed.compile.passes import zero3_compile
+from deepspeed.compile.backend import register_compile_pass, opt_passes
+from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
 from deepspeed.compile.init_z3 import init_z3
 
 MEMORY_OPT_ALLREDUCE_SIZE = 500000000
@@ -380,7 +380,9 @@ class DeepSpeedEngine(Module):
         self._is_compiled = False
         if is_deepcompile_supported():
             # Predefined compile passes
-            self.register_compile_pass("zero3_compile", zero3_compile.add_z3_gather_release)
+            self.register_compile_pass(zero3_compile.NAME, zero3_compile.add_z3_gather_release)
+            self.register_compile_pass(prefetch.NAME, prefetch.schedule_prefetch)
+            self.register_compile_pass(selective_gather.NAME, selective_gather.selective_gather)
 
     def _optimized_linear_offload_setup(self):
         self.optimized_linear_base_weight_sharding = False
@@ -3758,8 +3760,16 @@ class DeepSpeedEngine(Module):
             assert self.zero_optimization_stage(
             ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
 
-            self.nz3 = get_deepcompile_handle()
+            if schedule is not None:
 
+                def passes_name_to_fn(passes):
+                    for p in passes:
+                        assert callable(p) or p in opt_passes, f"Unknown pass {p}"
+                    return [p if callable(p) else opt_passes[p] for p in passes]
+
+                schedule = [(step, passes_name_to_fn(passes)) for step, passes in schedule]
+
+            self.nz3 = get_deepcompile_handle()
             backend = init_z3(self, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict

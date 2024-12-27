@@ -29,7 +29,7 @@ sym_size_ops = {
 
 
 def is_deepcompile_supported() -> bool:
-    return torch.__version__.startswith("2.5.1") and get_accelerator().device_name == "cuda"
+    return torch.__version__.startswith("2.5.1") and get_accelerator().device_name() == "cuda"
 
 
 def get_deepcompile_handle():

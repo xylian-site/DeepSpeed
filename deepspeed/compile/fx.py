@@ -9,8 +9,7 @@ from collections import defaultdict
 import torch
 from torch.fx import Node, Graph
 
-from deepspeed.ops.op_builder import NativeZ3Builder
-from .util import get_last_uses
+from .util import get_last_uses, get_deepcompile_handle
 
 
 def get_output_node(graph: Graph):
@@ -112,7 +111,7 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
 
-    nz3 = NativeZ3Builder().load()
+    nz3 = get_deepcompile_handle()
 
     def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int):
         nz3.release_param(graph_id, ds_id)

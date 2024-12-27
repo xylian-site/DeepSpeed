@@ -10,20 +10,12 @@ from typing import List, Tuple, Dict
 import torch
 from torch.fx import Node, Graph
 from torch.fx.node import map_aggregate, Argument, map_arg
-
-try:
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-except ImportError:
-    # torch < v2.5
-    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+from torch._subclasses.fake_tensor import unset_fake_temporarily
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
+from deepspeed.ops.op_builder import NativeZ3Builder
 
-no_copy_ops = {
-    torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
-    torch.ops.native_z3.wait_allgather
-}
 sym_size_ops = {
     operator.ge,
     operator.le,
@@ -34,6 +26,28 @@ sym_size_ops = {
     torch.ops.aten.sym_size.int,
     operator.getitem,
 }
+
+
+def is_deepcompile_supported() -> bool:
+    return torch.__version__.startswith("2.5.1") and get_accelerator().device_name == "cuda"
+
+
+def get_deepcompile_handle():
+    return NativeZ3Builder().load()
+
+
+def log_rank0(msg: str, enable: bool = False):
+    if dist.get_rank() == 0 and enable:
+        print(msg)
+
+
+def get_no_copy_ops():
+    # Need to compile custom ops
+    get_deepcompile_handle()
+    return {
+        torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
+        torch.ops.native_z3.wait_allgather
+    }
 
 
 def get_input_nodes(graph: Graph) -> List[Node]:
@@ -150,6 +164,7 @@ def get_last_uses(graph: Graph):
 
     node_to_last_use: Dict[Node, Node] = {}
     user_to_last_uses: Dict[Node, List[Node]] = {}
+    no_copy_ops = get_no_copy_ops()
 
     def register_last_uses(n: Node, user: Node):
         update = False
@@ -349,3 +364,10 @@ def add_mem_profile_nodes(graph: Graph, prefix: str):
 
 def is_release_node(n: Node) -> bool:
     return hasattr(n.target, "__name__") and n.target.__name__ == "wrap_release_ds_param"
+
+
+def get_index_by_graph_id(graph_order, target_graph_id):
+    for index, (graph_id, _) in enumerate(graph_order):
+        if graph_id == target_graph_id:
+            return index
+    return -1

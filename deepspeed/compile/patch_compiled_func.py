@@ -255,3 +255,7 @@ def unpatch_compiled_func():
 
     global original_grad_fn
     torch.autograd.Function = original_grad_fn
+
+
+def get_backward_inputs():
+    return backward_inputs

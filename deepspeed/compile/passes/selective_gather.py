@@ -14,6 +14,8 @@ from deepspeed.accelerator import get_accelerator
 
 from ..profilers import ProfilingResult
 
+NAME = "selective_gather"
+
 max_alloc_mem = 0
 last_optimize_step = 0
 

@@ -4,7 +4,6 @@
 # DeepSpeed Team
 
 import time
-import types
 from typing import Any, Tuple, Dict
 import statistics
 
@@ -22,7 +21,7 @@ except ImportError:
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from ..util import is_comm_op, is_release_node
+from ..util import is_comm_op, is_release_node, get_deepcompile_handle
 
 
 def _all_real_if_tensor(args):
@@ -56,10 +55,10 @@ def _node_size(out):
 # https://pytorch.org/tutorials/intermediate/fx_profiling_tutorial.html
 class ProfilingInterpreter(Interpreter):
 
-    def __init__(self, nz3: types.ModuleType, gm: GraphModule, iteration: int = 10, warmup: int = 5, debug_log=False):
+    def __init__(self, gm: GraphModule, iteration: int = 10, warmup: int = 5, debug_log=False):
         super().__init__(gm)
 
-        self.nz3 = nz3
+        self.nz3 = get_deepcompile_handle()
 
         assert iteration > 0
         assert warmup >= 0
@@ -210,9 +209,9 @@ class ProfilingInterpreter(Interpreter):
 
 class MemoryProfilingInterpreter(Interpreter):
 
-    def __init__(self, nz3, gm: GraphModule, debug_log=False):
+    def __init__(self, gm: GraphModule, debug_log=False):
         super().__init__(gm)
-        self.nz3 = nz3
+        self.nz3 = get_deepcompile_handle()
         self.device = torch.device(get_accelerator().current_device())
         self.mem_record = []
         self.last_alloc = get_accelerator().memory_allocated()

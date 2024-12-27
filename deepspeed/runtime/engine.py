@@ -107,6 +107,11 @@ from deepspeed.accelerator import get_accelerator
 
 from deepspeed.runtime.config import DtypeEnum
 
+from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle
+from deepspeed.compile.backend import register_compile_pass
+from deepspeed.compile.passes import zero3_compile
+from deepspeed.compile.init_z3 import init_z3
+
 MEMORY_OPT_ALLREDUCE_SIZE = 500000000
 
 DeepSpeedOptimizerCallable = \
@@ -373,6 +378,9 @@ class DeepSpeedEngine(Module):
         self.unflatten = _unflatten_dense_tensors
 
         self._is_compiled = False
+        if is_deepcompile_supported():
+            # Predefined compile passes
+            self.register_compile_pass("zero3_compile", zero3_compile.add_z3_gather_release)
 
     def _optimized_linear_offload_setup(self):
         self.optimized_linear_base_weight_sharding = False
@@ -1913,10 +1921,8 @@ class DeepSpeedEngine(Module):
         if self.fp16_auto_cast():
             inputs = self._cast_inputs_half(inputs)
 
-        if hasattr(self, "nz3"):
-            self.launch_compile_passes(micro_steps=self.micro_steps,
-                                       global_steps=self.global_steps,
-                                       update=self.is_gradient_accumulation_boundary())
+        if self._config.compile_config:
+            self.launch_compile_passes(self.global_steps)
 
         loss = self.module(*inputs, **kwargs)
 
@@ -3729,7 +3735,7 @@ class DeepSpeedEngine(Module):
             gc.collect()
             get_accelerator().empty_cache()
 
-    def compile(self, backend=get_accelerator().get_compile_backend(), compile_kwargs={}, passes=None) -> None:
+    def compile(self, backend=get_accelerator().get_compile_backend(), compile_kwargs={}, schedule=None) -> None:
         """Compile the module using the specified backend and kwargs.
         If a compiler_fn is set, it will be used instead of torch.compile().
         """
@@ -3752,11 +3758,9 @@ class DeepSpeedEngine(Module):
             assert self.zero_optimization_stage(
             ) == ZeroStageEnum.weights, "Currently DeepCompile supports stage3 only."
 
-            from deepspeed.ops.op_builder import NativeZ3Builder
-            self.nz3 = NativeZ3Builder().load()
+            self.nz3 = get_deepcompile_handle()
 
-            from deepspeed.compile.init_z3 import init_z3
-            backend = init_z3(self, compile_config, compile_kwargs, passes)
+            backend = init_z3(self, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict
         self.module.compile(**{**compile_kwargs, 'backend': backend})
@@ -3764,8 +3768,11 @@ class DeepSpeedEngine(Module):
         self._is_compiled = True
 
     def get_compile_time(self):
-        from deepspeed.compile.stage3_backend import opt_pass_times
+        from deepspeed.compile.backend import opt_pass_times
         return opt_pass_times
+
+    def register_compile_pass(self, pass_name: str, pass_fn: Callable) -> None:
+        register_compile_pass(pass_name, pass_fn)
 
     @property
     def is_compiled(self) -> bool:

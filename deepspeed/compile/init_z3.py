@@ -23,8 +23,8 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
                                                 '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
         engine.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
         get_accelerator().empty_cache()
-    engine.nz3.init(engine.data_parallel_group, engine.zero_reduce_bucket_size(), compile_config.double_buffer,
-                    compile_config.symmetric_memory)
+    engine.nz3.init_z3(engine.data_parallel_group, engine.zero_reduce_bucket_size(), compile_config.double_buffer,
+                       compile_config.symmetric_memory)
 
     # Unset hooks
     for m in engine.module.modules():
@@ -48,7 +48,7 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
 
         # Disable persistent param
         p.ds_persist = False
-        engine.nz3.register_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
+        engine.nz3.register_z3_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
 
     if schedule is None:
         schedule = []

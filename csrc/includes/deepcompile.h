@@ -88,11 +88,6 @@ std::string tensorToString(const at::Tensor& t, size_t max_elem = 20, size_t max
 std::string tensorDimToString(const at::Tensor& t);
 
 at::Tensor test_call(at::Tensor param);
-void register_param(long ds_id,
-                    const std::vector<int64_t>& ds_shape,
-                    at::Tensor ds_tensor,
-                    at::Tensor grad_buffer,
-                    bool persistent);
 
 extern c10::intrusive_ptr<c10d::ProcessGroup> process_group;
 extern c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem;
@@ -103,6 +98,7 @@ extern bool pre_div_reduce;
 
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(int64_t size);
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type);
+void cleanup();
 
 class GraphOpStates {
 public:

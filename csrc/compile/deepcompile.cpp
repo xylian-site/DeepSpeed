@@ -40,4 +40,10 @@ ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
     }
 }
 
+void cleanup()
+{
+    ncclCommDestroy(nccl_comm);
+    process_group = nullptr;
+    symm_mem = nullptr;
+}
 }  // namespace dc

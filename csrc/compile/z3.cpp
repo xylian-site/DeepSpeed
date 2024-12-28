@@ -623,10 +623,10 @@ void register_bwd_graph_ops(long graph_id,
     }
 }
 
-void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
-          int64_t initial_reduce_bucket_size,
-          bool enable_double_buffer,
-          bool _use_symm_mem)
+void init_z3(c10::intrusive_ptr<c10d::ProcessGroup> pg,
+             int64_t initial_reduce_bucket_size,
+             bool enable_double_buffer,
+             bool _use_symm_mem)
 {
     process_group = pg;
 
@@ -654,27 +654,24 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
     use_symm_mem = _use_symm_mem;
 }
 
-void reset()
+void reset_z3()
 {
     executors.clear();
     // We keep the buckets for memory estimation
     // reduce_buckets->clear();
 }
 
-void cleanup()
+void cleanup_z3()
 {
-    reset();
-
-    ncclCommDestroy(nccl_comm);
-    process_group = nullptr;
-    symm_mem = nullptr;
+    reset_z3();
+    cleanup();
 }
 
-void register_param(long ds_id,
-                    const std::vector<int64_t>& ds_shape,
-                    at::Tensor ds_tensor,
-                    at::Tensor grad_buffer,
-                    bool persistent)
+void register_z3_param(long ds_id,
+                       const std::vector<int64_t>& ds_shape,
+                       at::Tensor ds_tensor,
+                       at::Tensor grad_buffer,
+                       bool persistent)
 {
     param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
@@ -893,11 +890,11 @@ TORCH_LIBRARY_IMPL(dc, Meta, m)
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("register_param", &dc::register_param, "Register a parameter");
+    m.def("register_z3_param", &dc::register_z3_param, "Register a parameter");
     m.def("set_persistent", &dc::set_persistent, "Set persistent flag for a parameter");
     m.def("enable_profiling", &dc::enable_profiling, "Enable profiling");
     m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
-    m.def("init", &dc::init, "Set the process group");
+    m.def("init_z3", &dc::init_z3, "Set the process group");
     m.def("cleanup", &dc::cleanup, "Cleanup the process group");
     m.def("register_graph", &dc::register_graph, "Register graph with a list of ds parameter ids");
     m.def("register_graph_ops",
@@ -911,7 +908,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("start_backward", &dc::start_backward, "Start backward pass");
     // m.def("end_backward", &dc::end_backward, "End backward pass");
     m.def("release_param", &dc::release_param, "Release a parameter");
-    m.def("reset", &dc::reset, "Reset the state");
+    m.def("cleanup_z3", &dc::cleanup_z3, "Clean up Z3");
+    m.def("reset_z3", &dc::reset_z3, "Reset the state");
     m.def("invalidate_gathered_param", &dc::invalidate_gathered_param, "Invalidate gathered param");
     m.def("clear_all_gathered_params", &dc::clear_all_gathered_params, "Clear all gathered params");
 }

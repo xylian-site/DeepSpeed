@@ -426,7 +426,7 @@ class DeepSpeedEngine(Module):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):
             self.optimizer.destroy()
         if hasattr(self, 'nz3'):
-            self.nz3.cleanup()
+            self.nz3.cleanup_z3()
         debug_clear_module_and_param_names()
 
     def _get_model_parameters(self):

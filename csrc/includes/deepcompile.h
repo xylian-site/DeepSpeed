@@ -96,7 +96,12 @@ extern bool use_symm_mem;
 extern bool profile;
 extern bool pre_div_reduce;
 
+std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes);
+void enable_profiling(bool enable);
+bool is_profiling();
+
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(int64_t size);
+void lazy_init_symm_memory();
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type);
 void cleanup();
 
@@ -572,5 +577,13 @@ protected:
         for (const auto& it : reduce_tasks_) { flushReduceBucket(it.first); }
     }
 };
+
+extern std::shared_ptr<DSParamRegistry> param_registry;
+extern std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
+extern std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
+
+at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id);
+void free_tensors(std::vector<at::Tensor> tensors);
+at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id);
 
 }  // namespace dc

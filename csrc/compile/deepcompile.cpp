@@ -9,12 +9,27 @@
 
 namespace dc {
 
+std::shared_ptr<DSParamRegistry> param_registry;
+std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
+std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets = nullptr;
+
 c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 ncclComm_t nccl_comm;
 bool use_symm_mem;
 bool profile = false;
 bool pre_div_reduce = true;
+
+std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
+{
+    std::vector<int64_t> result;
+    for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
+    return result;
+}
+
+void enable_profiling(bool enable) { profile = enable; }
+
+bool is_profiling() { return profile; }
 
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(int64_t size)
 {
@@ -24,6 +39,18 @@ c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(
     at::Tensor sym_mem_ws = c10d::symmetric_memory::empty_strided_p2p(
         {size}, {1}, c10::ScalarType::Byte, device, process_group->getGroupName(), std::nullopt);
     return c10d::symmetric_memory::rendezvous(sym_mem_ws);
+}
+
+void lazy_init_symm_memory()
+{
+    if (use_symm_mem && !symm_mem) {
+        int64_t max_param_size = 0;
+        for (const auto& it : param_registry->getParams()) {
+            int64_t size = it.second.getDSTensor().numel() * it.second.getDSTensor().element_size();
+            if (size > max_param_size) { max_param_size = size; }
+        }
+        symm_mem = getSymmMemWorkspace(max_param_size);
+    }
 }
 
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
@@ -46,4 +73,28 @@ void cleanup()
     process_group = nullptr;
     symm_mem = nullptr;
 }
+
+at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
+{
+    if (!profile) { executors[graph_id]->reduceGrad(grad_tensor, ds_id); }
+    return at::Tensor();
+}
+
+void free_tensors(std::vector<at::Tensor> tensors)
+{
+    if (!profile) {
+        for (auto& tensor : tensors) {
+            if (tensor.is_cuda()) {
+                tensor.record_stream(at::cuda::getCurrentCUDAStream());
+                tensor.set_data(torch::empty({0}, tensor.options()));
+            }
+        }
+    }
+}
+
+at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
+{
+    return at::Tensor();
+}
+
 }  // namespace dc

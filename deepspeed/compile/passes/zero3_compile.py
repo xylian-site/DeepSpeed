@@ -132,7 +132,7 @@ def add_z3_gather_release_fw(gm: GraphModule,
 
     graph = add_gather_and_release(graph_id, graph, param_manager[graph_id], get_param_nodes(graph, param_indices))
 
-    nz3.register_graph(graph_id, [v[1] for v in param_indices])  # Need this before profiling
+    nz3.register_graph_z3(graph_id, [v[1] for v in param_indices])  # Need this before profiling
 
     profiler = ProfilingInterpreter(gm, debug_log=False)
     profiler.run(*real_inputs)
@@ -152,8 +152,8 @@ def add_z3_gather_release_fw(gm: GraphModule,
         debug_log=debug_log)
 
     _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
-    nz3.register_graph_ops(graph_id, [n.name for n in ag_wait_nodes],
-                           [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
+    nz3.register_graph_ops_z3(graph_id, [n.name for n in ag_wait_nodes],
+                              [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
 
     return gm
 
@@ -188,7 +188,7 @@ def add_z3_gather_release_bw(gm: GraphModule,
     gm.graph = fast_free_schedule(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
 
     _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
-    nz3.register_bwd_graph_ops(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
+    nz3.register_bwd_graph_ops_z3(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
 
     return gm
 

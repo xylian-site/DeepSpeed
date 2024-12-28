@@ -294,40 +294,13 @@ private:
     std::unordered_map<long, at::Tensor> reload_buffers_;
 };
 
-static std::shared_ptr<DSParamRegistry> param_registry;
-static std::unordered_map<long, std::shared_ptr<Z3CustomOpExecutor>> executors;
-std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets = nullptr;
-
 static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream rs_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream offload_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream reload_stream = at::cuda::getStreamFromPool(true);
 
-std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
-{
-    std::vector<int64_t> result;
-    for (int i = 0; i < sizes.size(); i++) { result.push_back(sizes[i]); }
-    return result;
-}
-
-void lazy_init_symm_memory()
-{
-    if (use_symm_mem && !symm_mem) {
-        int64_t max_param_size = 0;
-        for (const auto& it : param_registry->getParams()) {
-            int64_t size = it.second.getDSTensor().numel() * it.second.getDSTensor().element_size();
-            if (size > max_param_size) { max_param_size = size; }
-        }
-        symm_mem = getSymmMemWorkspace(max_param_size);
-    }
-}
-
-void enable_profiling(bool enable) { profile = enable; }
-
-bool is_profiling() { return profile; }
-
-void register_graph(long graph_id, const std::vector<long>& ds_ids)
+void register_graph_z3(long graph_id, const std::vector<long>& ds_ids)
 {
     executors[graph_id] = std::make_shared<Z3CustomOpExecutor>(process_group,
                                                                param_registry,
@@ -342,9 +315,9 @@ void register_graph(long graph_id, const std::vector<long>& ds_ids)
                                                                pre_div_reduce);
 }
 
-void register_graph_ops(long graph_id,
-                        const std::vector<std::string>& op_names,
-                        const std::vector<long>& n_args)
+void register_graph_ops_z3(long graph_id,
+                           const std::vector<std::string>& op_names,
+                           const std::vector<long>& n_args)
 {
     assert(op_names.size() == n_args.size());
     for (int i = 0; i < op_names.size(); i++) {
@@ -352,9 +325,9 @@ void register_graph_ops(long graph_id,
     }
 }
 
-void register_bwd_graph_ops(long graph_id,
-                            const std::vector<std::string>& op_names,
-                            const std::vector<long>& n_args)
+void register_bwd_graph_ops_z3(long graph_id,
+                               const std::vector<std::string>& op_names,
+                               const std::vector<long>& n_args)
 {
     assert(hasKey(executors, graph_id));
     for (int i = 0; i < op_names.size(); i++) {
@@ -419,7 +392,10 @@ void register_z3_param(long ds_id,
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     assert(hasKey(executors, graph_id));
-    return executors[graph_id]->allgatherParam(ds_id, symm_mem);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        return executor->allgatherParam(ds_id, symm_mem);
+    }
+    throw std::runtime_error("Invalid executor type");
 }
 
 void set_persistent(long ds_id)
@@ -429,7 +405,13 @@ void set_persistent(long ds_id)
     // Allocate buffer here
     // Memory fragmentation will be more severe if we allocate in forward/backward
     for (auto& it : executors) {
-        if (it.second->hasParam(ds_id)) { it.second->allgatherParam(ds_id, symm_mem); }
+        if (it.second->hasParam(ds_id)) {
+            if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
+                executor->allgatherParam(ds_id, symm_mem);
+            } else {
+                throw std::runtime_error("Invalid executor type");
+            }
+        }
     }
 }
 
@@ -437,7 +419,11 @@ void prefetch_params_fused(long graph_id,
                            const std::vector<at::Tensor> params,
                            const std::vector<long>& ds_ids)
 {
-    executors[graph_id]->prefetchParamsFused(ds_ids, symm_mem);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        executor->prefetchParamsFused(ds_ids, symm_mem);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
 }
 
 // for profiling
@@ -470,7 +456,14 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-void release_param(long graph_id, long ds_id) { executors[graph_id]->releaseParam(ds_id); }
+void release_param(long graph_id, long ds_id)
+{
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        executor->releaseParam(ds_id);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
+}
 
 at::Tensor wait_allgather(at::Tensor v,
                           long graph_id,
@@ -479,7 +472,11 @@ at::Tensor wait_allgather(at::Tensor v,
                           long n_args,
                           bool is_backward)
 {
-    executors[graph_id]->waitAllgather(v, ds_ids, user, n_args, is_backward);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
     return v;
 }
 
@@ -493,35 +490,16 @@ at::Tensor wait_allgather_meta(at::Tensor v,
     return v;
 }
 
-at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
-{
-    if (!profile) { executors[graph_id]->reduceGrad(grad_tensor, ds_id); }
-    return at::Tensor();
-}
-
-void free_tensors(std::vector<at::Tensor> tensors)
-{
-    if (!profile) {
-        for (auto& tensor : tensors) {
-            if (tensor.is_cuda()) {
-                tensor.record_stream(at::cuda::getCurrentCUDAStream());
-                tensor.set_data(torch::empty({0}, tensor.options()));
-            }
-        }
-    }
-}
-
-at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id)
-{
-    return at::Tensor();
-}
-
 at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id)
 {
     // auto dims = tensor.sizes();
     // std::cout << "offload_tensor graph_id=" << graph_id << " id=" << id
     //     << " dim=" << join_as_str(dims, ",") << std::endl;
-    return executors[graph_id]->offloadTensor(tensor, id);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        return executor->offloadTensor(tensor, id);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
 }
 
 at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id)
@@ -529,35 +507,64 @@ at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id)
     // auto dims = tensor.sizes();
     // std::cout << "reload_tensor graph_id=" << graph_id << " id=" << id
     //     << " dim=" << join_as_str(dims, ",") << std::endl;
-    return executors[graph_id]->reloadTensor(tensor, id);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        return executor->reloadTensor(tensor, id);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
 }
 
 at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id)
 {
-    return executors[graph_id]->waitOffload(tensor, id);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        return executor->waitOffload(tensor, id);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
 }
 
 at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id)
 {
-    if (profile && !executors[graph_id]->hasReloadBuffer(id)) { return tensor; }
-
-    return executors[graph_id]->waitReload(tensor, id);
+    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
+        if (profile && !executor->hasReloadBuffer(id)) { return tensor; }
+        return executor->waitReload(tensor, id);
+    } else {
+        throw std::runtime_error("Invalid executor type");
+    }
 }
 
 void start_forward()
 {
     lazy_init_symm_memory();
-    for (auto& it : executors) { it.second->startForward(); }
+    for (auto& it : executors) {
+        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
+            executor->startForward();
+        } else {
+            throw std::runtime_error("Invalid executor type");
+        }
+    }
 }
 
 void end_forward()
 {
-    for (auto& it : executors) { it.second->endForward(); }
+    for (auto& it : executors) {
+        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
+            executor->endForward();
+        } else {
+            throw std::runtime_error("Invalid executor type");
+        }
+    }
 }
 
 void start_backward(bool update)
 {
-    for (auto& it : executors) { it.second->startBackward(update); }
+    for (auto& it : executors) {
+        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
+            executor->startBackward(update);
+        } else {
+            throw std::runtime_error("Invalid executor type");
+        }
+    }
 }
 
 // We don't call this
@@ -635,12 +642,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
     m.def("init_z3", &dc::init_z3, "Set the process group");
     m.def("cleanup", &dc::cleanup, "Cleanup the process group");
-    m.def("register_graph", &dc::register_graph, "Register graph with a list of ds parameter ids");
-    m.def("register_graph_ops",
-          &dc::register_graph_ops,
+    m.def("register_graph_z3",
+          &dc::register_graph_z3,
+          "Register graph with a list of ds parameter ids");
+    m.def("register_graph_ops_z3",
+          &dc::register_graph_ops_z3,
           "Register the number of arguments for an op");
-    m.def("register_bwd_graph_ops",
-          &dc::register_bwd_graph_ops,
+    m.def("register_bwd_graph_ops_z3",
+          &dc::register_bwd_graph_ops_z3,
           "Register the number of arguments for a backward op");
     m.def("start_forward", &dc::start_forward, "Start forward pass");
     m.def("end_forward", &dc::end_forward, "End forward pass");

@@ -336,49 +336,50 @@ void register_bwd_graph_ops_z3(long graph_id,
     }
 }
 
-void init_z3(c10::intrusive_ptr<c10d::ProcessGroup> pg,
-             int64_t initial_reduce_bucket_size,
-             bool enable_double_buffer,
-             bool _use_symm_mem)
-{
-    process_group = pg;
+// void init_z3(c10::intrusive_ptr<c10d::ProcessGroup> pg,
+//              int64_t initial_reduce_bucket_size,
+//              bool enable_double_buffer,
+//              bool _use_symm_mem)
+// {
+//     process_group = pg;
 
-    ncclUniqueId ncclID;
-    ncclGetUniqueId(&ncclID);
+//     ncclUniqueId ncclID;
+//     ncclGetUniqueId(&ncclID);
 
-    // ProcessGroup doesn't have an API to get the CUDA stream for comm calls.
-    // So we create a NCCL communicator and call NCCL APIs directly.
-    auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t*>(&ncclID),
-                                    reinterpret_cast<uint8_t*>(&ncclID) + NCCL_UNIQUE_ID_BYTES);
-    auto device = torch::Device(torch::kCUDA);
-    at::Tensor tensor = torch::from_blob(vec.data(), {static_cast<long>(vec.size())}, torch::kUInt8)
-                            .to(torch::Device(torch::kCUDA));
-    std::vector<at::Tensor> bcast_input = {tensor};
+//     // ProcessGroup doesn't have an API to get the CUDA stream for comm calls.
+//     // So we create a NCCL communicator and call NCCL APIs directly.
+//     auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t*>(&ncclID),
+//                                     reinterpret_cast<uint8_t*>(&ncclID) + NCCL_UNIQUE_ID_BYTES);
+//     auto device = torch::Device(torch::kCUDA);
+//     at::Tensor tensor = torch::from_blob(vec.data(), {static_cast<long>(vec.size())},
+//     torch::kUInt8)
+//                             .to(torch::Device(torch::kCUDA));
+//     std::vector<at::Tensor> bcast_input = {tensor};
 
-    process_group->broadcast(bcast_input, c10d::BroadcastOptions())->wait();
+//     process_group->broadcast(bcast_input, c10d::BroadcastOptions())->wait();
 
-    // create a new nccl communicator
-    std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
-    ncclCommInitRank(&nccl_comm, process_group->getSize(), ncclID, process_group->getRank());
+//     // create a new nccl communicator
+//     std::memcpy(&ncclID, tensor.to(torch::Device(torch::kCPU)).data_ptr(), NCCL_UNIQUE_ID_BYTES);
+//     ncclCommInitRank(&nccl_comm, process_group->getSize(), ncclID, process_group->getRank());
 
-    param_registry = std::make_shared<DSParamRegistry>();
-    reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
-                                                                  enable_double_buffer);
-    use_symm_mem = _use_symm_mem;
-}
+//     param_registry = std::make_shared<DSParamRegistry>();
+//     reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
+//                                                                   enable_double_buffer);
+//     use_symm_mem = _use_symm_mem;
+// }
 
-void reset_z3()
-{
-    executors.clear();
-    // We keep the buckets for memory estimation
-    // reduce_buckets->clear();
-}
+// void reset_z3()
+// {
+//     executors.clear();
+//     // We keep the buckets for memory estimation
+//     // reduce_buckets->clear();
+// }
 
-void cleanup_z3()
-{
-    reset_z3();
-    cleanup();
-}
+// void cleanup_z3()
+// {
+//     reset_z3();
+//     cleanup();
+// }
 
 void register_z3_param(long ds_id,
                        const std::vector<int64_t>& ds_shape,
@@ -386,7 +387,7 @@ void register_z3_param(long ds_id,
                        at::Tensor grad_buffer,
                        bool persistent)
 {
-    param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent);
+    param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, true, persistent);
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
@@ -508,36 +509,6 @@ at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id)
     if (profile && !executor->hasReloadBuffer(id)) { return tensor; }
     return executor->waitReload(tensor, id);
 }
-
-void start_forward()
-{
-    lazy_init_symm_memory();
-    for (auto& it : executors) {
-        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
-        executor->startForward();
-    }
-}
-
-void end_forward()
-{
-    for (auto& it : executors) {
-        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
-        executor->endForward();
-    }
-}
-
-void start_backward(bool update)
-{
-    for (auto& it : executors) {
-        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
-        executor->startBackward(update);
-    }
-}
-
-// We don't call this
-// void end_backward(bool update)
-// {
-// }
 
 at::Tensor test_call(at::Tensor a)
 {

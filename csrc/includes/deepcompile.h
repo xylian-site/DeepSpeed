@@ -291,11 +291,13 @@ public:
             std::vector<int64_t> ds_shape,
             at::Tensor ds_tensor,
             at::Tensor grad_buffer,
+            bool partitioned,
             bool persistent)
         : id_(id),
           shape_(std::move(ds_shape)),
           ds_tensor_(ds_tensor),
           grad_buffer_(grad_buffer),
+          partitioned_(partitioned),
           persistent_(persistent)
     {
     }
@@ -304,6 +306,7 @@ public:
     std::vector<int64_t> getShape() const { return shape_; }
     at::Tensor getDSTensor() const { return ds_tensor_; }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
+    bool isPartitioned() const { return partitioned_; }
     void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
@@ -311,6 +314,7 @@ private:
     long id_;
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
+    bool partitioned_;
     at::Tensor grad_buffer_;
     bool persistent_;
 };
@@ -324,10 +328,12 @@ public:
                        const std::vector<int64_t>& ds_shape,
                        at::Tensor ds_tensor,
                        at::Tensor grad_buffer,
+                       bool partitioned,
                        bool persistent)
     {
         grad_buffer.zero_();
-        params_.emplace(ds_id, DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, persistent));
+        params_.emplace(ds_id,
+                        DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, partitioned, persistent));
         valid_[ds_id] = false;
     }
 
@@ -585,5 +591,16 @@ extern std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id);
 void free_tensors(std::vector<at::Tensor> tensors);
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id);
+
+void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
+          int64_t initial_reduce_bucket_size,
+          bool enable_double_buffer,
+          bool _use_symm_mem);
+void reset();
+void cleanup();
+
+void start_forward();
+void end_forward();
+void start_backward(bool update);
 
 }  // namespace dc

@@ -66,7 +66,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("set_persistent", &dc::set_persistent, "Set persistent flag for a parameter");
     m.def("enable_profiling", &dc::enable_profiling, "Enable profiling");
     m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
-    m.def("init_z3", &dc::init_z3, "Set the process group");
+    m.def("init", &dc::init, "Set the process group");
     m.def("cleanup", &dc::cleanup, "Cleanup the process group");
     m.def("register_graph_z3",
           &dc::register_graph_z3,
@@ -82,8 +82,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("start_backward", &dc::start_backward, "Start backward pass");
     // m.def("end_backward", &dc::end_backward, "End backward pass");
     m.def("release_param", &dc::release_param, "Release a parameter");
-    m.def("cleanup_z3", &dc::cleanup_z3, "Clean up Z3");
-    m.def("reset_z3", &dc::reset_z3, "Reset the state");
+    m.def("cleanup", &dc::cleanup, "Clean up DeepCompile");
+    m.def("reset", &dc::reset, "Reset the state");
     m.def("invalidate_gathered_param", &dc::invalidate_gathered_param, "Invalidate gathered param");
     m.def("clear_all_gathered_params", &dc::clear_all_gathered_params, "Clear all gathered params");
 }

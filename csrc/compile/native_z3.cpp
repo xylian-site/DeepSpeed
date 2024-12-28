@@ -18,8 +18,6 @@
 
 namespace dc {
 
-static c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
-
 class DSParam {
 public:
     DSParam(long id,
@@ -49,63 +47,6 @@ private:
     at::Tensor grad_buffer_;
     bool persistent_;
 };
-
-class GraphOpStates {
-public:
-    GraphOpStates() {}
-    ~GraphOpStates() {}
-
-    void registerOpNArgs(const std::string& op_name, long n_args)
-    {
-        op_n_args_[op_name] = n_args;
-        args_counter_[op_name] = n_args;
-    }
-
-    void resetArgCounter()
-    {
-        // std::cout << "resetArgCounter size op_n_args_ " << op_n_args_.size() << std::endl;
-
-        for (const auto& it : op_n_args_) {
-            assert(hasKey(op_n_args_, it.first));
-            args_counter_[it.first] = op_n_args_.at(it.first);
-        }
-    }
-
-    void decrementArgCounter(const std::string& op_name)
-    {
-        // std::cout << "decrementArgCounter " << op_name << std::endl;
-
-        assert(hasKey(args_counter_, op_name));
-        if (args_counter_.at(op_name) == 0) return;
-        args_counter_[op_name]--;
-    }
-
-    long getArgCounter(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name);
-    }
-
-    bool isArgCounterZero(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name) == 0;
-    }
-
-private:
-    std::unordered_map<std::string, size_t> op_n_args_;
-    std::unordered_map<std::string, size_t> args_counter_;
-};
-
-c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(int64_t size)
-{
-    c10::Device device = c10::Device(c10::kCUDA, c10::cuda::current_device());
-    std::vector<int64_t> sizes = {size};
-    std::vector<int64_t> strides = {1};
-    at::Tensor sym_mem_ws = c10d::symmetric_memory::empty_strided_p2p(
-        {size}, {1}, c10::ScalarType::Byte, device, process_group->getGroupName(), std::nullopt);
-    return c10d::symmetric_memory::rendezvous(sym_mem_ws);
-}
 
 class DSParamRegistry {
 public:
@@ -159,153 +100,6 @@ private:
     std::unordered_map<long, at::Tensor> gathered_params_;
     std::unordered_map<long, bool> valid_;
 };
-
-class ReduceTask {
-public:
-    ReduceTask(long ds_id, at::Tensor grad, at::Tensor send_buf)
-        : ds_id_(ds_id), grad_(std::move(grad)), send_buf_(std::move(send_buf))
-    {
-    }
-
-    long getDSId() const { return ds_id_; }
-    at::Tensor getSendBuf() const { return send_buf_; }
-
-private:
-    long ds_id_;
-    at::Tensor grad_;
-    at::Tensor send_buf_;
-};
-
-class ReduceBucket {
-public:
-    ReduceBucket(int64_t size, at::ScalarType scalar_type) : size_(size), scalar_type_(scalar_type)
-    {
-        buffer_ = torch::empty({size}, at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
-        offset_ = 0;
-    }
-
-    int64_t getSize() const { return size_; }
-    int64_t getOffset() const { return offset_; }
-    at::Tensor getBuffer() const { return buffer_; }
-    at::ScalarType getScalarType() const { return scalar_type_; }
-
-    void reserve(int64_t size)
-    {
-        if (size > size_) {
-            buffer_ =
-                torch::empty({size}, at::TensorOptions().dtype(scalar_type_).device(at::kCUDA));
-            size_ = size;
-        }
-    }
-
-    at::Tensor allocate(int64_t numel)
-    {
-        if (offset_ + numel > size_) {
-            throw std::runtime_error("Buffer size exceeds the reduce bucket size");
-        }
-
-        at::Tensor result = buffer_.index({torch::indexing::Slice(offset_, offset_ + numel)});
-        offset_ += numel;
-        return result;
-    }
-
-    bool shouldFlush(int64_t numel) { return offset_ > 0 && offset_ + numel > size_; }
-
-    void reset() { offset_ = 0; }
-
-private:
-    int64_t size_;
-    int64_t offset_;
-    at::Tensor buffer_;
-    at::ScalarType scalar_type_;
-};
-
-class DoubleBufferedReduceBucket {
-public:
-    DoubleBufferedReduceBucket(int64_t initial_bucket_size, bool enable_double_buffer)
-        : initial_bucket_size_(initial_bucket_size), enable_double_buffer_(enable_double_buffer)
-    {
-    }
-
-    void swap(at::ScalarType scalar_type,
-              at::cuda::CUDAStream rs_stream,
-              at::cuda::CUDAStream copy_stream)
-    {
-        assert(hasKey(current_buffer_, scalar_type));
-        assert(hasKey(current_buffer_events_, scalar_type));
-
-        current_buffer_.at(scalar_type)->reset();
-        current_buffer_events_.at(scalar_type)->record(rs_stream);
-
-        if (enable_double_buffer_) {
-            assert(hasKey(shadow_buffer_, scalar_type));
-            assert(hasKey(shadow_buffer_events_, scalar_type));
-
-            auto tmp = current_buffer_.at(scalar_type);
-            current_buffer_[scalar_type] = shadow_buffer_.at(scalar_type);
-            shadow_buffer_[scalar_type] = tmp;
-
-            auto tmp_event = current_buffer_events_.at(scalar_type);
-            current_buffer_events_[scalar_type] = shadow_buffer_events_.at(scalar_type);
-            shadow_buffer_events_[scalar_type] = tmp_event;
-        }
-    }
-
-    std::shared_ptr<ReduceBucket> getBuffer(at::ScalarType scalar_type)
-    {
-        if (!hasKey(current_buffer_, scalar_type)) {
-            current_buffer_[scalar_type] =
-                std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
-            current_buffer_events_[scalar_type] =
-                std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-
-            if (enable_double_buffer_) {
-                shadow_buffer_[scalar_type] =
-                    std::make_shared<ReduceBucket>(initial_bucket_size_, scalar_type);
-                shadow_buffer_events_[scalar_type] =
-                    std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
-            }
-        }
-
-        return current_buffer_.at(scalar_type);
-    }
-
-    std::shared_ptr<at::cuda::CUDAEvent> getEvent(at::ScalarType scalar_type)
-    {
-        assert(hasKey(current_buffer_events_, scalar_type));
-        return current_buffer_events_.at(scalar_type);
-    }
-
-    void clear()
-    {
-        current_buffer_.clear();
-        shadow_buffer_.clear();
-        current_buffer_events_.clear();
-        shadow_buffer_events_.clear();
-    }
-
-private:
-    int64_t initial_bucket_size_;
-    bool enable_double_buffer_;
-    std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> current_buffer_;
-    std::unordered_map<at::ScalarType, std::shared_ptr<ReduceBucket>> shadow_buffer_;
-    std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> current_buffer_events_;
-    std::unordered_map<at::ScalarType, std::shared_ptr<at::cuda::CUDAEvent>> shadow_buffer_events_;
-};
-
-ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type)
-{
-    switch (scalar_type) {
-        case at::kFloat: return ncclFloat;
-        case at::kHalf: return ncclHalf;
-        case at::kDouble: return ncclDouble;
-        case at::kBFloat16: return ncclBfloat16;
-        case at::kLong: return ncclInt64;
-        case at::kInt: return ncclInt;
-        case at::kChar: return ncclInt8;
-        default: throw std::runtime_error("Unsupported scalar type");
-    }
-}
 
 class CustomOpExecutor {
 public:
@@ -764,17 +558,12 @@ private:
 static std::shared_ptr<DSParamRegistry> param_registry;
 static std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
 std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets = nullptr;
-c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 
 static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream rs_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream copy_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream offload_stream = at::cuda::getStreamFromPool(true);
 static at::cuda::CUDAStream reload_stream = at::cuda::getStreamFromPool(true);
-static ncclComm_t nccl_comm;
-static bool use_symm_mem;
-static bool profile = false;
-static bool pre_div_reduce = true;
 
 std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 {

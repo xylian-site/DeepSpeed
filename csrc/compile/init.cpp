@@ -1,0 +1,89 @@
+// Copyright (c) Microsoft Corporation.
+// SPDX-License-Identifier: Apache-2.0
+
+// DeepSpeed Team
+
+#include "deepcompile.h"
+#include "z3.h"
+
+TORCH_LIBRARY(dc, m)
+{
+    m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
+    m.def("prefetch_params_fused(int graph_id, Tensor[] params, int[] ids) -> ()");
+    m.def(
+        "wait_allgather(Tensor a, int graph_id, int[] ids, str user, int n_args, bool bwd) -> "
+        "Tensor");
+    m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
+    m.def("free_tensors(Tensor[] a) -> ()");
+    m.def("offload_tensor(Tensor a, int id, int id) -> Tensor");
+    m.def("reload_tensor(Tensor a, int id, int id) -> Tensor");
+    m.def("wait_offload(Tensor a, int id, int id) -> Tensor");
+    m.def("wait_reload(Tensor a, int id, int id) -> Tensor");
+
+    m.def("test_call(Tensor a) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(dc, CPU, m)
+{
+    m.impl("allgather_param", &dc::allgather_param);
+    m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
+    m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("reduce_grad", &dc::reduce_grad);
+    m.impl("free_tensors", &dc::free_tensors);
+    m.impl("offload_tensor", &dc::offload_tensor);
+    m.impl("reload_tensor", &dc::reload_tensor);
+    m.impl("wait_offload", &dc::wait_offload);
+    m.impl("wait_reload", &dc::wait_reload);
+
+    m.impl("test_call", &dc::test_call);
+}
+
+TORCH_LIBRARY_IMPL(dc, CUDA, m)
+{
+    m.impl("allgather_param", &dc::allgather_param);
+    m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
+    m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("reduce_grad", &dc::reduce_grad);
+    m.impl("free_tensors", &dc::free_tensors);
+    m.impl("offload_tensor", &dc::offload_tensor);
+    m.impl("reload_tensor", &dc::reload_tensor);
+    m.impl("wait_offload", &dc::wait_offload);
+    m.impl("wait_reload", &dc::wait_reload);
+
+    m.impl("test_call", &dc::test_call);
+}
+
+TORCH_LIBRARY_IMPL(dc, Meta, m)
+{
+    m.impl("allgather_param", &dc::allgather_param_meta);
+    m.impl("wait_allgather", &dc::wait_allgather_meta);
+    m.impl("reduce_grad", &dc::reduce_grad_meta);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
+    m.def("register_z3_param", &dc::register_z3_param, "Register a parameter");
+    m.def("set_persistent", &dc::set_persistent, "Set persistent flag for a parameter");
+    m.def("enable_profiling", &dc::enable_profiling, "Enable profiling");
+    m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
+    m.def("init_z3", &dc::init_z3, "Set the process group");
+    m.def("cleanup", &dc::cleanup, "Cleanup the process group");
+    m.def("register_graph_z3",
+          &dc::register_graph_z3,
+          "Register graph with a list of ds parameter ids");
+    m.def("register_graph_ops_z3",
+          &dc::register_graph_ops_z3,
+          "Register the number of arguments for an op");
+    m.def("register_bwd_graph_ops_z3",
+          &dc::register_bwd_graph_ops_z3,
+          "Register the number of arguments for a backward op");
+    m.def("start_forward", &dc::start_forward, "Start forward pass");
+    m.def("end_forward", &dc::end_forward, "End forward pass");
+    m.def("start_backward", &dc::start_backward, "Start backward pass");
+    // m.def("end_backward", &dc::end_backward, "End backward pass");
+    m.def("release_param", &dc::release_param, "Release a parameter");
+    m.def("cleanup_z3", &dc::cleanup_z3, "Clean up Z3");
+    m.def("reset_z3", &dc::reset_z3, "Reset the state");
+    m.def("invalidate_gathered_param", &dc::invalidate_gathered_param, "Invalidate gathered param");
+    m.def("clear_all_gathered_params", &dc::clear_all_gathered_params, "Clear all gathered params");
+}

@@ -20,7 +20,9 @@ class DeepCompileBuilder(TorchCPUOpBuilder):
         return f'deepspeed.ops.{self.NAME}_op'
 
     def sources(self):
-        return ['csrc/compile/deepcompile.cpp', 'csrc/compile/z3.cpp', 'csrc/compile/util.cpp']
+        return [
+            'csrc/compile/deepcompile.cpp', 'csrc/compile/init.cpp', 'csrc/compile/z3.cpp', 'csrc/compile/util.cpp'
+        ]
 
     def libraries_args(self):
         args = super().libraries_args()

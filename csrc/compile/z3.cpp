@@ -389,13 +389,18 @@ void register_z3_param(long ds_id,
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
 }
 
-at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
+template <typename T>
+std::shared_ptr<T> getExecutor(long graph_id)
 {
     assert(hasKey(executors, graph_id));
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        return executor->allgatherParam(ds_id, symm_mem);
-    }
+    if (auto executor = std::dynamic_pointer_cast<T>(executors[graph_id])) { return executor; }
     throw std::runtime_error("Invalid executor type");
+}
+
+at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
+{
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    return executor->allgatherParam(ds_id, symm_mem);
 }
 
 void set_persistent(long ds_id)
@@ -406,11 +411,8 @@ void set_persistent(long ds_id)
     // Memory fragmentation will be more severe if we allocate in forward/backward
     for (auto& it : executors) {
         if (it.second->hasParam(ds_id)) {
-            if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
-                executor->allgatherParam(ds_id, symm_mem);
-            } else {
-                throw std::runtime_error("Invalid executor type");
-            }
+            auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
+            executor->allgatherParam(ds_id, symm_mem);
         }
     }
 }
@@ -419,11 +421,8 @@ void prefetch_params_fused(long graph_id,
                            const std::vector<at::Tensor> params,
                            const std::vector<long>& ds_ids)
 {
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        executor->prefetchParamsFused(ds_ids, symm_mem);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    executor->prefetchParamsFused(ds_ids, symm_mem);
 }
 
 // for profiling
@@ -458,11 +457,8 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
 
 void release_param(long graph_id, long ds_id)
 {
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        executor->releaseParam(ds_id);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    executor->releaseParam(ds_id);
 }
 
 at::Tensor wait_allgather(at::Tensor v,
@@ -472,11 +468,8 @@ at::Tensor wait_allgather(at::Tensor v,
                           long n_args,
                           bool is_backward)
 {
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
     return v;
 }
 
@@ -492,78 +485,51 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 
 at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id)
 {
-    // auto dims = tensor.sizes();
-    // std::cout << "offload_tensor graph_id=" << graph_id << " id=" << id
-    //     << " dim=" << join_as_str(dims, ",") << std::endl;
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        return executor->offloadTensor(tensor, id);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    return executor->offloadTensor(tensor, id);
 }
 
 at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id)
 {
-    // auto dims = tensor.sizes();
-    // std::cout << "reload_tensor graph_id=" << graph_id << " id=" << id
-    //     << " dim=" << join_as_str(dims, ",") << std::endl;
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        return executor->reloadTensor(tensor, id);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    return executor->reloadTensor(tensor, id);
 }
 
 at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id)
 {
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        return executor->waitOffload(tensor, id);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    return executor->waitOffload(tensor, id);
 }
 
 at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id)
 {
-    if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(executors[graph_id])) {
-        if (profile && !executor->hasReloadBuffer(id)) { return tensor; }
-        return executor->waitReload(tensor, id);
-    } else {
-        throw std::runtime_error("Invalid executor type");
-    }
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    if (profile && !executor->hasReloadBuffer(id)) { return tensor; }
+    return executor->waitReload(tensor, id);
 }
 
 void start_forward()
 {
     lazy_init_symm_memory();
     for (auto& it : executors) {
-        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
-            executor->startForward();
-        } else {
-            throw std::runtime_error("Invalid executor type");
-        }
+        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
+        executor->startForward();
     }
 }
 
 void end_forward()
 {
     for (auto& it : executors) {
-        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
-            executor->endForward();
-        } else {
-            throw std::runtime_error("Invalid executor type");
-        }
+        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
+        executor->endForward();
     }
 }
 
 void start_backward(bool update)
 {
     for (auto& it : executors) {
-        if (auto executor = std::dynamic_pointer_cast<Z3CustomOpExecutor>(it.second)) {
-            executor->startBackward(update);
-        } else {
-            throw std::runtime_error("Invalid executor type");
-        }
+        auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
+        executor->startBackward(update);
     }
 }
 

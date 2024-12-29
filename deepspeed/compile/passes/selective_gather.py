@@ -21,8 +21,6 @@ max_alloc_mem = 0
 last_optimize_step = 0
 
 
-# def selective_gather(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
-#                      mem_budget: float, param_manager, bwd: bool, z3_optimizer, nz3) -> Graph:
 def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
                      mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
 

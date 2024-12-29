@@ -107,7 +107,7 @@ from deepspeed.accelerator import get_accelerator
 
 from deepspeed.runtime.config import DtypeEnum
 
-from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle
+from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, post_forward
 from deepspeed.compile.backend import register_compile_pass, opt_passes
 from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
 from deepspeed.compile.init_z1 import init_z1
@@ -425,8 +425,8 @@ class DeepSpeedEngine(Module):
     def destroy(self):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):
             self.optimizer.destroy()
-        if hasattr(self, 'nz3'):
-            self.nz3.cleanup_z3()
+        if self.is_deepcompile_enabled():
+            get_deepcompile_handle().cleanup()
         debug_clear_module_and_param_names()
 
     def _get_model_parameters(self):
@@ -1929,29 +1929,8 @@ class DeepSpeedEngine(Module):
 
         loss = self.module(*inputs, **kwargs)
 
-        if hasattr(self, "nz3"):
-            self.nz3.end_forward()
-
-            # Simplified version of `_scale_loss_by_gas`
-            # Used only for a tensor
-            def _scale_loss(self, grad):
-                return grad.float() / self.gradient_accumulation_steps()
-
-            def bwd_hook(grad):
-                # Make sure that we run start_backward only once
-                if not self.nz3.backward_started:
-                    self.nz3.start_backward(self.is_gradient_accumulation_boundary())
-                    self.nz3.backward_started = True
-
-            def set_hook(v):
-                if torch.is_tensor(v) and v.grad_fn is not None:
-                    v.register_hook(bwd_hook)
-                return v
-
-            # `loss` can be any nested structure
-            from torch.utils._pytree import tree_map
-            self.nz3.backward_started = False
-            loss = tree_map(set_hook, loss)
+        if self.is_deepcompile_enabled():
+            loss = post_forward(loss, self.is_gradient_accumulation_boundary())
 
         if self.zero_optimization_partition_weights() and not self.is_compiled:
             # Disable automated discovery of external parameters
@@ -3754,10 +3733,9 @@ class DeepSpeedEngine(Module):
         if 'backend' in compile_kwargs:
             logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
 
-        compile_config = self._config.compile_config
-        print(f"Compiling deepcompile={compile_config.deepcompile}")
+        print(f"Compiling deepcompile={self.is_deepcompile_enabled()}")
 
-        if compile_config.deepcompile:
+        if self.is_deepcompile_enabled():
             assert self.zero_optimization_stage() == ZeroStageEnum.optimizer_states \
                 or self.zero_optimization_stage() == ZeroStageEnum.weights \
                 , "Currently DeepCompile supports stage 1 or 3 only."
@@ -3771,10 +3749,10 @@ class DeepSpeedEngine(Module):
 
                 schedule = [(step, passes_name_to_fn(passes)) for step, passes in schedule]
 
+            compile_config = self._config.compile_config
             if self.zero_optimization_stage() == ZeroStageEnum.optimizer_states:
                 backend = init_z1(self, compile_config, compile_kwargs, schedule)
             elif self.zero_optimization_stage() == ZeroStageEnum.weights:
-                self.nz3 = get_deepcompile_handle()
                 backend = init_z3(self, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict
@@ -3788,6 +3766,9 @@ class DeepSpeedEngine(Module):
 
     def register_compile_pass(self, pass_name: str, pass_fn: Callable) -> None:
         register_compile_pass(pass_name, pass_fn)
+
+    def is_deepcompile_enabled(self):
+        return self._config.compile_config.deepcompile
 
     @property
     def is_compiled(self) -> bool:

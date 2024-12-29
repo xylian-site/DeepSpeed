@@ -65,7 +65,7 @@ def launch_compile_passes(global_steps: int):
         )
 
         torch._dynamo.reset()
-        get_deepcompile_handle().reset_z3()
+        get_deepcompile_handle().reset()
         patch_compiled_func()
         graph_order.clear()
         profiling_results.clear()

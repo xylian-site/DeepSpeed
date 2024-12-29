@@ -32,8 +32,40 @@ def is_deepcompile_supported() -> bool:
     return torch.__version__.startswith("2.5.1") and get_accelerator().device_name() == "cuda"
 
 
+dc_handle = None
+
+
 def get_deepcompile_handle():
-    return DeepCompileBuilder().load()
+    global dc_handle
+    if dc_handle is None:
+        dc_handle = DeepCompileBuilder().load()
+    return dc_handle
+
+
+backward_started = False
+
+
+def post_forward(output, is_gradient_accumulation_boundary):
+    dc = get_deepcompile_handle()
+    dc.end_forward()
+
+    def bwd_hook(grad):
+        # Make sure that we run start_backward only once
+        global backward_started
+        if not backward_started:
+            dc.start_backward(is_gradient_accumulation_boundary)
+            backward_started = True
+
+    def set_hook(v):
+        if torch.is_tensor(v) and v.grad_fn is not None:
+            v.register_hook(bwd_hook)
+        return v
+
+    # `output` can be any nested structure
+    from torch.utils._pytree import tree_map
+    global backward_started
+    backward_started = False
+    return tree_map(set_hook, output)
 
 
 def log_rank0(msg: str, enable: bool = False):

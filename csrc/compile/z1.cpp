@@ -68,10 +68,10 @@ public:
             ncclResult_t result = ncclAllReduce(t.getSendBuf().data_ptr(),
                                                 t.getSendBuf().data_ptr(),
                                                 t.getSendBuf().numel(),
-                                                    get_nccl_data_type(scalar_type),
-                                                    op,
-                                                    nccl_comm_,
-                                                    rs_stream_);
+                                                get_nccl_data_type(scalar_type),
+                                                op,
+                                                nccl_comm_,
+                                                rs_stream_);
             if (result != ncclSuccess) { throw std::runtime_error("NCCL AllReduce failed"); }
         }
         ncclGroupEnd();
@@ -83,12 +83,11 @@ public:
                 auto param = param_registry_->getParam(t.getDSId());
                 auto grad_buf = param.getGradBuffer().flatten();
 
-                if (grad_buf.numel() == 0) {
-                    continue;
-                }
+                if (grad_buf.numel() == 0) { continue; }
 
                 int64_t offset = param.getOffset();
-                auto recv_buf = t.getSendBuf().flatten().index({torch::indexing::Slice(offset, offset + grad_buf.numel())});
+                auto recv_buf = t.getSendBuf().flatten().index(
+                    {torch::indexing::Slice(offset, offset + grad_buf.numel())});
                 if (acc_grad) {
                     grad_buf.add_(recv_buf);
                 } else {

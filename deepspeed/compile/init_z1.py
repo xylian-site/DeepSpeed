@@ -3,13 +3,14 @@
 
 # DeepSpeed Team
 
+import copy
+
 import torch
 
 from deepspeed.accelerator import get_accelerator
-
 from .passes import zero1_compile
 from .backend import make_backend, launch_compile_passes, init_schedule
-from .util import log_rank0, get_deepcompile_handle
+from .util import log_rank0, get_deepcompile_handle, add_pre_backward_hook
 
 WARMUP = 5
 
@@ -17,6 +18,7 @@ WARMUP = 5
 def init_z1(engine, compile_config, compile_kwargs, schedule=None):
 
     optimizer = engine.optimizer
+    optimizer.contiguous_gradients = False  # Avoid creating unnecessary buffer
     for hook in optimizer._grad_acc_hooks:
         hook.remove()
     optimizer._grad_acc_hooks.clear()
@@ -54,6 +56,11 @@ def init_z1(engine, compile_config, compile_kwargs, schedule=None):
             else:
                 # print(f"[r{dist.get_rank()}] Registering group {i} param {param_id} in_partition={in_partition} p={p.shape} buf=None")
                 dc.register_z1_param(p.param_id, p.shape, p, torch.empty([0], dtype=p.dtype, device=p.device), 0)
+
+    def set_grad_buffer():
+        optimizer.averaged_gradients = copy.copy(grad_buffer)
+
+    add_pre_backward_hook(set_grad_buffer)
 
     if schedule is None:
         schedule = []

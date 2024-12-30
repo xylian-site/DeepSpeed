@@ -107,7 +107,7 @@ from deepspeed.accelerator import get_accelerator
 
 from deepspeed.runtime.config import DtypeEnum
 
-from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, post_forward
+from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, pre_backward
 from deepspeed.compile.backend import register_compile_pass, opt_passes
 from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
 from deepspeed.compile.init_z1 import init_z1
@@ -1929,9 +1929,6 @@ class DeepSpeedEngine(Module):
 
         loss = self.module(*inputs, **kwargs)
 
-        if self.is_deepcompile_enabled():
-            loss = post_forward(loss, self.is_gradient_accumulation_boundary())
-
         if self.zero_optimization_partition_weights() and not self.is_compiled:
             # Disable automated discovery of external parameters
             for module in self.module.modules():
@@ -2041,7 +2038,8 @@ class DeepSpeedEngine(Module):
         if self.scale_wrt_gas is not None:
             scale_wrt_gas = self.scale_wrt_gas
 
-        do_gradient_reduction = self.enable_backward_allreduce and not self.inside_no_sync_ctxt
+        do_gradient_reduction = self.enable_backward_allreduce and not self.inside_no_sync_ctxt and not self.is_deepcompile_enabled(
+        )
 
         # scale loss w.r.t. gradient accumulation if reduction is not disabled
         if do_gradient_reduction and self.gradient_accumulation_steps() > 1 and scale_wrt_gas:
@@ -2066,6 +2064,9 @@ class DeepSpeedEngine(Module):
             "must provide optimizer during init in order to use backward"
 
         self._start_timers(self.engine_timers.backward_inner_timers)
+
+        if self.is_deepcompile_enabled():
+            pre_backward(self.is_gradient_accumulation_boundary())
 
         if self.zero_optimization():
             self.optimizer.is_gradient_accumulation_boundary = self.is_gradient_accumulation_boundary()

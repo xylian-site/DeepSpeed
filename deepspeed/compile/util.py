@@ -43,29 +43,20 @@ def get_deepcompile_handle():
 
 
 backward_started = False
+pre_backward_hooks = []
 
 
-def post_forward(output, is_gradient_accumulation_boundary):
+def add_pre_backward_hook(hook):
+    pre_backward_hooks.append(hook)
+
+
+def pre_backward(is_gradient_accumulation_boundary):
+
+    for hook in pre_backward_hooks:
+        hook()
+
     dc = get_deepcompile_handle()
-    dc.end_forward()
-
-    def bwd_hook(grad):
-        # Make sure that we run start_backward only once
-        global backward_started
-        if not backward_started:
-            dc.start_backward(is_gradient_accumulation_boundary)
-            backward_started = True
-
-    def set_hook(v):
-        if torch.is_tensor(v) and v.grad_fn is not None:
-            v.register_hook(bwd_hook)
-        return v
-
-    # `output` can be any nested structure
-    from torch.utils._pytree import tree_map
-    global backward_started
-    backward_started = False
-    return tree_map(set_hook, output)
+    dc.start_backward(is_gradient_accumulation_boundary)
 
 
 def log_rank0(msg: str, enable: bool = False):

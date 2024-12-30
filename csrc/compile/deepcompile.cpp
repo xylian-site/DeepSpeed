@@ -85,6 +85,7 @@ void cleanup()
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id)
 {
+    assert(hasKey(executors, graph_id));
     if (!profile) { executors[graph_id]->reduceGrad(grad_tensor, ds_id); }
     return at::Tensor();
 }

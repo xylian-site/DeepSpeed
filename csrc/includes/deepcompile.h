@@ -292,12 +292,15 @@ public:
             at::Tensor ds_tensor,
             at::Tensor grad_buffer,
             bool partitioned,
-            bool persistent)
+            int64_t offset,  // for Z1
+            bool persistent  // for Z3
+            )
         : id_(id),
           shape_(std::move(ds_shape)),
           ds_tensor_(ds_tensor),
           grad_buffer_(grad_buffer),
           partitioned_(partitioned),
+          offset_(offset),
           persistent_(persistent)
     {
     }
@@ -307,6 +310,7 @@ public:
     at::Tensor getDSTensor() const { return ds_tensor_; }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
     bool isPartitioned() const { return partitioned_; }
+    int64_t getOffset() const { return offset_; }
     void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
@@ -314,9 +318,10 @@ private:
     long id_;
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
-    bool partitioned_;
     at::Tensor grad_buffer_;
-    bool persistent_;
+    bool partitioned_;
+    int64_t offset_;   // for Z1
+    bool persistent_;  // for Z3
 };
 
 class DSParamRegistry {
@@ -329,11 +334,14 @@ public:
                        at::Tensor ds_tensor,
                        at::Tensor grad_buffer,
                        bool partitioned,
-                       bool persistent)
+                       int64_t offset,  // for Z1
+                       bool persistent  // for Z3
+    )
     {
         grad_buffer.zero_();
-        params_.emplace(ds_id,
-                        DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, partitioned, persistent));
+        params_.emplace(
+            ds_id,
+            DSParam(ds_id, ds_shape, ds_tensor, grad_buffer, partitioned, offset, persistent));
         valid_[ds_id] = false;
     }
 
@@ -497,92 +505,22 @@ protected:
     std::unordered_map<long, bool> has_acc_grad_;
     bool pre_div_reduce_;
 
-    void flushReduceBucket(at::ScalarType scalar_type)
-    {
-        if (!hasKey(reduce_tasks_, scalar_type)) { return; }
-
-        int64_t tmp_recv_numel = 0;
-        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
-            copy_done_event->block(rs_stream_);
-
-            if (has_acc_grad_.at(t.getDSId())) {
-                tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();
-            }
-        }
-
-        at::Tensor tmp_recv_buf = at::Tensor();
-        if (tmp_recv_numel > 0) {
-            at::cuda::CUDAStreamGuard guard(rs_stream_);
-            tmp_recv_buf = torch::empty({tmp_recv_numel},
-                                        at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
-        }
-
-        ncclGroupStart();
-        int64_t offset = 0;
-        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-            auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
-
-            bool acc_grad = has_acc_grad_.at(t.getDSId());
-
-            if (acc_grad) {
-                recv_buf =
-                    tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
-            }
-
-            ncclRedOp_t op = pre_div_reduce_ ? ncclSum : ncclAvg;
-            if (pre_div_reduce_) {
-                at::cuda::CUDAStreamGuard guard(rs_stream_);
-                t.getSendBuf().div_(process_group_->getSize());
-            }
-            ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
-                                                    recv_buf.data_ptr(),
-                                                    recv_buf.numel(),
-                                                    get_nccl_data_type(scalar_type),
-                                                    op,
-                                                    nccl_comm_,
-                                                    rs_stream_);
-            if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
-
-            if (acc_grad) { offset += recv_buf.numel(); }
-        }
-        ncclGroupEnd();
-
-        {
-            at::cuda::CUDAStreamGuard guard(rs_stream_);
-            int64_t offset = 0;
-            for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-                bool acc_grad = has_acc_grad_.at(t.getDSId());
-
-                if (acc_grad) {
-                    auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
-                    recv_buf.add_(tmp_recv_buf.index(
-                        {torch::indexing::Slice(offset, offset + recv_buf.numel())}));
-                    offset += recv_buf.numel();
-                }
-                has_acc_grad_[t.getDSId()] = true;
-            }
-        }
-
-        reduce_buckets_->swap(scalar_type, rs_stream_, copy_stream_);
-
-        // Not very sure if this is necessary
-        // Want to prevent grad tensor from being released before the copy is done
-        auto comp_stream = at::cuda::getCurrentCUDAStream();
-        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
-            copy_done_event->block(comp_stream);
-        }
-        reduce_tasks_[scalar_type].clear();
-
-        if (tmp_recv_numel > 0) { tmp_recv_buf.record_stream(rs_stream_); }
-    }
+    virtual void flushReduceBucket(at::ScalarType scalar_type) = 0;
 
     void flushAllReduceBuckets()
     {
         for (const auto& it : reduce_tasks_) { flushReduceBucket(it.first); }
     }
 };
+
+template <typename T, typename U>
+std::shared_ptr<T> getExecutor(long graph_id,
+                               const std::unordered_map<long, std::shared_ptr<U>>& executors)
+{
+    assert(hasKey(executors, graph_id));
+    if (auto executor = std::dynamic_pointer_cast<T>(executors.at(graph_id))) { return executor; }
+    throw std::runtime_error("Invalid executor type");
+}
 
 extern std::shared_ptr<DSParamRegistry> param_registry;
 extern std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;

@@ -4,6 +4,7 @@
 // DeepSpeed Team
 
 #include "deepcompile.h"
+#include "z1.h"
 #include "z3.h"
 
 TORCH_LIBRARY(dc, m)
@@ -62,12 +63,16 @@ TORCH_LIBRARY_IMPL(dc, Meta, m)
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("register_z3_param", &dc::register_z3_param, "Register a parameter");
     m.def("set_persistent", &dc::set_persistent, "Set persistent flag for a parameter");
     m.def("enable_profiling", &dc::enable_profiling, "Enable profiling");
     m.def("is_profiling", &dc::is_profiling, "Check if profiling is enabled");
     m.def("init", &dc::init, "Set the process group");
     m.def("cleanup", &dc::cleanup, "Cleanup the process group");
+    m.def("register_z1_param", &dc::register_z1_param, "Register a parameter");
+    m.def("register_graph_z1",
+          &dc::register_graph_z1,
+          "Register graph with a list of ds parameter ids");
+    m.def("register_z3_param", &dc::register_z3_param, "Register a parameter");
     m.def("register_graph_z3",
           &dc::register_graph_z3,
           "Register graph with a list of ds parameter ids");

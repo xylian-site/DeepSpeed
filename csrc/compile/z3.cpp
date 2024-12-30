@@ -50,7 +50,6 @@ public:
             ag_comp_done_events_[ds_id] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
         }
-        reduce_counter_ = ds_ids_.size();
     }
     ~Z3CustomOpExecutor() {}
 
@@ -201,6 +200,87 @@ public:
         return v;
     }
 
+    void flushReduceBucket(at::ScalarType scalar_type) override
+    {
+        if (!hasKey(reduce_tasks_, scalar_type)) { return; }
+
+        int64_t tmp_recv_numel = 0;
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
+            copy_done_event->block(rs_stream_);
+
+            if (has_acc_grad_.at(t.getDSId())) {
+                tmp_recv_numel += param_registry_->getParam(t.getDSId()).getGradBuffer().numel();
+            }
+        }
+
+        at::Tensor tmp_recv_buf = at::Tensor();
+        if (tmp_recv_numel > 0) {
+            at::cuda::CUDAStreamGuard guard(rs_stream_);
+            tmp_recv_buf = torch::empty({tmp_recv_numel},
+                                        at::TensorOptions().dtype(scalar_type).device(at::kCUDA));
+        }
+
+        ncclGroupStart();
+        int64_t offset = 0;
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
+
+            bool acc_grad = has_acc_grad_.at(t.getDSId());
+
+            if (acc_grad) {
+                recv_buf =
+                    tmp_recv_buf.index({torch::indexing::Slice(offset, offset + recv_buf.numel())});
+            }
+
+            ncclRedOp_t op = pre_div_reduce_ ? ncclSum : ncclAvg;
+            if (pre_div_reduce_) {
+                at::cuda::CUDAStreamGuard guard(rs_stream_);
+                t.getSendBuf().div_(process_group_->getSize());
+            }
+            ncclResult_t result = ncclReduceScatter(t.getSendBuf().data_ptr(),
+                                                    recv_buf.data_ptr(),
+                                                    recv_buf.numel(),
+                                                    get_nccl_data_type(scalar_type),
+                                                    op,
+                                                    nccl_comm_,
+                                                    rs_stream_);
+            if (result != ncclSuccess) { throw std::runtime_error("NCCL ReduceScatter failed"); }
+
+            if (acc_grad) { offset += recv_buf.numel(); }
+        }
+        ncclGroupEnd();
+
+        {
+            at::cuda::CUDAStreamGuard guard(rs_stream_);
+            int64_t offset = 0;
+            for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+                bool acc_grad = has_acc_grad_.at(t.getDSId());
+
+                if (acc_grad) {
+                    auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
+                    recv_buf.add_(tmp_recv_buf.index(
+                        {torch::indexing::Slice(offset, offset + recv_buf.numel())}));
+                    offset += recv_buf.numel();
+                }
+                has_acc_grad_[t.getDSId()] = true;
+            }
+        }
+
+        reduce_buckets_->swap(scalar_type, rs_stream_, copy_stream_);
+
+        // Not very sure if this is necessary
+        // Want to prevent grad tensor from being released before the copy is done
+        auto comp_stream = at::cuda::getCurrentCUDAStream();
+        for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
+            auto copy_done_event = rs_copy_done_events_.at(t.getDSId());
+            copy_done_event->block(comp_stream);
+        }
+        reduce_tasks_[scalar_type].clear();
+
+        if (tmp_recv_numel > 0) { tmp_recv_buf.record_stream(rs_stream_); }
+    }
+
     at::Tensor offloadTensor(at::Tensor tensor, long id)
     {
         if (!hasKey(offload_events_, id)) {
@@ -342,21 +422,13 @@ void register_z3_param(long ds_id,
                        at::Tensor grad_buffer,
                        bool persistent)
 {
-    param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, true, persistent);
+    param_registry->registerParam(ds_id, ds_shape, ds_tensor, grad_buffer, true, 0, persistent);
     if (persistent) { param_registry->registerGatheredParam(ds_id, ds_tensor); }
-}
-
-template <typename T>
-std::shared_ptr<T> getExecutor(long graph_id)
-{
-    assert(hasKey(executors, graph_id));
-    if (auto executor = std::dynamic_pointer_cast<T>(executors[graph_id])) { return executor; }
-    throw std::runtime_error("Invalid executor type");
 }
 
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     return executor->allgatherParam(ds_id, symm_mem);
 }
 
@@ -368,7 +440,7 @@ void set_persistent(long ds_id)
     // Memory fragmentation will be more severe if we allocate in forward/backward
     for (auto& it : executors) {
         if (it.second->hasParam(ds_id)) {
-            auto executor = getExecutor<Z3CustomOpExecutor>(it.first);
+            auto executor = getExecutor<Z3CustomOpExecutor>(it.first, executors);
             executor->allgatherParam(ds_id, symm_mem);
         }
     }
@@ -378,7 +450,7 @@ void prefetch_params_fused(long graph_id,
                            const std::vector<at::Tensor> params,
                            const std::vector<long>& ds_ids)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->prefetchParamsFused(ds_ids, symm_mem);
 }
 
@@ -414,7 +486,7 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
 
 void release_param(long graph_id, long ds_id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->releaseParam(ds_id);
 }
 
@@ -425,7 +497,7 @@ at::Tensor wait_allgather(at::Tensor v,
                           long n_args,
                           bool is_backward)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
     return v;
 }
@@ -442,25 +514,25 @@ at::Tensor wait_allgather_meta(at::Tensor v,
 
 at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     return executor->offloadTensor(tensor, id);
 }
 
 at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     return executor->reloadTensor(tensor, id);
 }
 
 at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     return executor->waitOffload(tensor, id);
 }
 
 at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id)
 {
-    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id);
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     if (profile && !executor->hasReloadBuffer(id)) { return tensor; }
     return executor->waitReload(tensor, id);
 }

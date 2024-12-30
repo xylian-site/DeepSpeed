@@ -12,16 +12,16 @@ from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToMo
 from .passes import zero3_compile, prefetch, selective_gather
 from .backend import make_backend, launch_compile_passes, init_schedule
 from .patch_fake_tensor import patch_fake_tensor
-from .util import log_rank0, get_deepcompile_handle
+from .util import log_rank0, get_deepcompile_handle, add_pre_backward_hook
 
 WARMUP = 5
 
 
 def init_z3(engine, compile_config, compile_kwargs, schedule=None):
 
-    if engine.optimizer is not None and hasattr(engine.optimizer,
-                                                '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
-        engine.optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
+    optimizer = engine.optimizer
+    if optimizer is not None and hasattr(optimizer, '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
+        optimizer._DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer = None
         get_accelerator().empty_cache()
 
     dc = get_deepcompile_handle()
@@ -31,11 +31,11 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
     # Unset hooks
     for m in engine.module.modules():
         m._parameters = m._original_parameters
-    engine.optimizer.parameter_offload._remove_module_hooks()
+    optimizer.parameter_offload._remove_module_hooks()
 
-    for hook in engine.optimizer._grad_acc_hooks:
+    for hook in optimizer._grad_acc_hooks:
         hook.remove()
-    engine.optimizer._grad_acc_hooks.clear()
+    optimizer._grad_acc_hooks.clear()
 
     # Unpatch linear
     if hasattr(InsertPostInitMethodToModuleSubClasses, "linear_bk"):
@@ -46,11 +46,20 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
         dist.enable_symm_mem_for_group(group_name)
 
     for p in engine.module.parameters():
-        grad_buffer = engine.optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
+        grad_buffer = optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[p.ds_id]
 
         # Disable persistent param
         p.ds_persist = False
         dc.register_z3_param(p.ds_id, p.ds_shape, p.ds_tensor, grad_buffer, p.ds_persist)
+
+    def set_grad_buffer():
+        for i, sub_group in enumerate(optimizer.fp16_groups):
+            optimizer.averaged_gradients[i] = [
+                optimizer._DeepSpeedZeroOptimizer_Stage3__param_id_to_grad_partition[param.ds_id]
+                if param.requires_grad else torch.zeros_like(param.ds_tensor) for param in sub_group
+            ]
+
+    add_pre_backward_hook(set_grad_buffer)
 
     if schedule is None:
         schedule = []

@@ -12,7 +12,7 @@ from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToMo
 from .passes import zero3_compile, prefetch, selective_gather
 from .backend import make_backend, launch_compile_passes, init_schedule
 from .patch_fake_tensor import patch_fake_tensor
-from .util import log_rank0, get_deepcompile_handle, add_pre_backward_hook
+from .util import get_deepcompile_handle, add_pre_backward_hook
 
 WARMUP = 5
 
@@ -70,7 +70,6 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
 
     init_schedule(schedule)
 
-    log_rank0(f"Opt passes: {schedule}")
     engine.launch_compile_passes = launch_compile_passes
 
     patch_fake_tensor()

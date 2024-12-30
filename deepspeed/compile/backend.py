@@ -59,10 +59,8 @@ def launch_compile_passes(global_steps: int):
     global next_pass_step, next_passes
 
     if len(remaining_schedule) > 0 and global_steps == remaining_schedule[0][0]:
-        next_pass_step = remaining_schedule[0][0]
-        print(
-            f"launch_compile_passes: global_steps={global_steps}, next_pass_step={next_pass_step} next_passes={next_passes}"
-        )
+        _, next_passes = remaining_schedule.pop(0)
+        log_rank0(f"Launching compile passes: global_steps={global_steps} passes={next_passes}", True)
 
         torch._dynamo.reset()
         get_deepcompile_handle().reset()
@@ -70,8 +68,6 @@ def launch_compile_passes(global_steps: int):
         graph_order.clear()
         profiling_results.clear()
         param_manager.clear()
-
-        _, next_passes = remaining_schedule.pop(0)
 
 
 def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results):

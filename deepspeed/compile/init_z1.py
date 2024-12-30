@@ -8,9 +8,9 @@ import copy
 import torch
 
 from deepspeed.accelerator import get_accelerator
-from .passes import zero1_compile
+from .passes import zero1_compile, zero3_compile
 from .backend import make_backend, launch_compile_passes, init_schedule
-from .util import log_rank0, get_deepcompile_handle, add_pre_backward_hook
+from .util import get_deepcompile_handle, add_pre_backward_hook
 
 WARMUP = 5
 
@@ -65,9 +65,13 @@ def init_z1(engine, compile_config, compile_kwargs, schedule=None):
     if schedule is None:
         schedule = []
         schedule.append((0, [zero1_compile.add_z1_reduce]))
+    else:
+        for opt in schedule:
+            # avoid typical misconfiguration
+            if zero3_compile.add_z3_gather_release in opt[1]:
+                raise ValueError("A pass for ZeRO3 is not specified though ZeRO1 is enabled")
 
     init_schedule(schedule)
 
-    log_rank0(f"Opt passes: {schedule}")
     engine.launch_compile_passes = launch_compile_passes
     return make_backend(compile_kwargs=compile_kwargs, free_activation=False)

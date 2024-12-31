@@ -289,14 +289,15 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
         required_nodes = get_node_requirements(last_use, scheduled)
         ag_nodes_in_path[ag_node] = set(n for n in required_nodes if n.target == torch.ops.dc.allgather_param)
 
-    reduce_nodes = [n for n in unscheduled if n.target == torch.ops.dc.reduce_grad]
+    reduce_nodes = [n for n in unscheduled if n.target == torch.ops.dc.reduce_grad.default]
     ag_nodes_in_path_to_reduce_nodes = {}
     for reduce_node in reduce_nodes:
         ag_nodes_in_path_to_reduce_nodes[reduce_node] = set(n for n in get_node_requirements(reduce_node, scheduled)
                                                             if n.target == torch.ops.dc.allgather_param)
 
     output_nodes = [
-        n for n in get_output_node(graph).args[0] if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad
+        n for n in get_output_node(graph).args[0]
+        if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad.default
     ]
     ag_nodes_in_path_to_output_nodes = {}
     for output_node in output_nodes:

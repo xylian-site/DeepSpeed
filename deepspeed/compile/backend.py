@@ -7,11 +7,12 @@ from typing import Dict, List, Callable
 import time
 
 import torch
+import torch._inductor.scheduler
 from torch.fx import Graph, GraphModule
 from functorch.compile import make_boxed_func
 import torch.utils._pytree as pytree
 import torch._dynamo
-from torch._functorch.aot_autograd import aot_module_simplified
+from torch._functorch.aot_autograd import aot_module_simplified, default_partition
 
 from deepspeed.accelerator import get_accelerator
 
@@ -118,6 +119,9 @@ def run_opt_passes(opt_passes: List[Callable],
 
 def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
 
+    from torch._dynamo.backends.common import AotAutograd
+    original_aotautograd_call = AotAutograd.__call__
+
     def backend(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
@@ -141,7 +145,7 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             profiling_results[graph_id].param_indices = param_indices
             profiling_results[graph_id].needs_backward = needs_backward
 
-        def fw(gm, sample_inputs):
+        def make_fw_graph(gm, sample_inputs):
             time_start = time.time()
             graph_index = len(graph_order) - 1
             log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
@@ -166,10 +170,9 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
                 remaining_bwd_compile_count += 1
 
             opt_pass_times.append(("fwd", graph_index, graph_id, time.time() - time_start))
+            return gm.graph
 
-            return make_boxed_func(gm.forward)
-
-        def bw(gm, sample_inputs):
+        def make_bw_graph(gm, sample_inputs):
             time_start = time.time()
 
             bwd_inputs_stack = get_backward_inputs()
@@ -218,16 +221,31 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             gm.recompile()
             opt_pass_times.append(("bwd", graph_index, graph_id, time.time() - time_start))
 
-            return make_boxed_func(gm.forward)
+            return gm.graph
 
-        # Call AOTAutograd
-        aot_mod = aot_module_simplified(gm,
-                                        real_inputs,
-                                        fw_compiler=fw,
-                                        bw_compiler=bw,
-                                        partition_fn=get_wrapped_partitioner(param_indices))
-        aot_mod = torch._dynamo.optimize(**compile_kwargs)(aot_mod)
+        def wrap_aotautograd_call(self, gm: torch.fx.GraphModule, example_inputs, **kwargs):
 
-        return aot_mod
+            def patch_compiler(name, kwargs, compiler):
+                if name in kwargs:
+                    original_compiler = kwargs[name]
+
+                    def wrap_compiler(gm, sample_inputs):
+                        compiler(gm, sample_inputs)
+                        return original_compiler(gm, sample_inputs)
+
+                    kwargs[name] = wrap_compiler
+
+            patch_compiler("fw_compiler", self.kwargs, make_fw_graph)
+            patch_compiler("bw_compiler", self.kwargs, make_bw_graph)
+            return original_aotautograd_call(self, gm, example_inputs, **kwargs)
+
+        AotAutograd.__call__ = wrap_aotautograd_call
+
+        from torch._inductor.scheduler import Scheduler
+        if not hasattr(Scheduler, "is_dc_patched") or not Scheduler.is_dc_patched:
+            Scheduler.is_dc_patched = True
+            Scheduler.dead_node_elimination = lambda _: None
+
+        return torch._inductor.compile(gm, real_inputs)
 
     return backend

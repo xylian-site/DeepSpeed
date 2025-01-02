@@ -64,7 +64,6 @@ def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int
                                  meta=_make_node_meta(node, ds_ids, False))
 
     for new_node, arg in zip(new_nodes, target_args):
-        print(f"add_wait_allgather {arg.name}")
         new_node.meta["val"] = arg.meta["val"]
 
 

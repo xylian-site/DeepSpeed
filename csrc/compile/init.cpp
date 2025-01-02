@@ -60,6 +60,7 @@ TORCH_LIBRARY_IMPL(dc, CUDA, m)
 TORCH_LIBRARY_IMPL(dc, Meta, m)
 {
     m.impl("allgather_param", &dc::allgather_param_meta);
+    m.impl("prefetch_params_fused", &dc::prefetch_params_fused_meta);
     m.impl("release_param", &dc::release_param_meta);
     m.impl("wait_allgather", &dc::wait_allgather_meta);
     m.impl("reduce_grad", &dc::reduce_grad_meta);

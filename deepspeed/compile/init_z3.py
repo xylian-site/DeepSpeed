@@ -17,7 +17,7 @@ from .util import get_deepcompile_handle, add_pre_backward_hook
 WARMUP = 5
 
 
-def init_z3(engine, compile_config, compile_kwargs, schedule=None):
+def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     optimizer = engine.optimizer
     if optimizer is not None and hasattr(optimizer, '_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer'):
@@ -73,4 +73,4 @@ def init_z3(engine, compile_config, compile_kwargs, schedule=None):
     engine.launch_compile_passes = launch_compile_passes
 
     patch_fake_tensor()
-    return make_backend(compile_kwargs=compile_kwargs, free_activation=compile_config.free_activation)
+    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=compile_config.free_activation)

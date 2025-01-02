@@ -26,6 +26,9 @@ void set_persistent(long ds_id);
 void prefetch_params_fused(long graph_id,
                            const std::vector<at::Tensor> params,
                            const std::vector<long>& ds_ids);
+void prefetch_params_fused_meta(long graph_id,
+                                const std::vector<at::Tensor> params,
+                                const std::vector<long>& ds_ids);
 // for profiling
 void invalidate_gathered_param(long ds_id);
 void clear_all_gathered_params();

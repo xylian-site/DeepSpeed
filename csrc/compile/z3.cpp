@@ -454,6 +454,12 @@ void prefetch_params_fused(long graph_id,
     executor->prefetchParamsFused(ds_ids, symm_mem);
 }
 
+void prefetch_params_fused_meta(long graph_id,
+                                const std::vector<at::Tensor> params,
+                                const std::vector<long>& ds_ids)
+{
+}
+
 // for profiling
 void invalidate_gathered_param(long ds_id)
 {

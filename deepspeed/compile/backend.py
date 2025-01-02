@@ -12,7 +12,7 @@ from torch.fx import Graph, GraphModule
 from functorch.compile import make_boxed_func
 import torch.utils._pytree as pytree
 import torch._dynamo
-from torch._functorch.aot_autograd import aot_module_simplified, default_partition
+from torch._functorch.aot_autograd import aot_module_simplified
 
 from deepspeed.accelerator import get_accelerator
 
@@ -23,6 +23,7 @@ from .profilers.graph_profile import MemoryProfilingInterpreter
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get_backward_inputs
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0
 from .partitioner import get_wrapped_partitioner
+from .inductor import register_custom_ops, patch_create_aot_dispatcher_function
 
 remaining_schedule = None
 next_pass_step = -1
@@ -117,12 +118,11 @@ def run_opt_passes(opt_passes: List[Callable],
         set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
 
 
-def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
+def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):
 
-    from torch._dynamo.backends.common import AotAutograd
-    original_aotautograd_call = AotAutograd.__call__
+    register_custom_ops()
 
-    def backend(gm: GraphModule, real_inputs):
+    def backend_fn(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
@@ -148,7 +148,7 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
         def make_fw_graph(gm, sample_inputs):
             time_start = time.time()
             graph_index = len(graph_order) - 1
-            log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+            log_rank0(f"Fwd start {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}",
                       enable=debug_log)
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
@@ -170,6 +170,11 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
                 remaining_bwd_compile_count += 1
 
             opt_pass_times.append(("fwd", graph_index, graph_id, time.time() - time_start))
+
+            log_rank0(
+                f"Fwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
+                enable=debug_log)
+
             return gm.graph
 
         def make_bw_graph(gm, sample_inputs):
@@ -215,7 +220,7 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
 
-            log_rank0(f"Bwd end {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+            log_rank0(f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}",
                       enable=debug_log)
 
             gm.recompile()
@@ -223,95 +228,26 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
 
             return gm.graph
 
-        def wrap_aotautograd_call(self, gm: torch.fx.GraphModule, example_inputs, **kwargs):
+        if backend == "eager":
 
-            def patch_compiler(name, kwargs, compiler, bwd):
-                if name in kwargs:
-                    original_compiler = kwargs[name]
+            def make_compiler_fn(make_graph_fn):
 
-                    def wrap_compiler(gm, fake_inputs):
-                        compiler(gm, fake_inputs)
+                def compiler_fn(gm, sample_inputs):
+                    make_graph_fn(gm, sample_inputs)
+                    return make_boxed_func(gm.forward)
 
-                        # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
-                        # We need to patch the input tensors to avoid the validation error.
-                        patched_inputs = []
-                        if bwd:
-                            param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
-                            param_names = [n.name for n in param_nodes_bw]
-                            input_nodes = get_input_nodes(gm.graph)
+                return compiler_fn
 
-                            for in_node, in_v in zip(input_nodes, fake_inputs):
-                                ds_param = in_node.name in param_names
-                                if ds_param:
-                                    from torch._subclasses.fake_tensor import is_fake
-                                    from torch._dynamo.utils import to_fake_tensor
-                                    assert is_fake(in_v), f"Input {in_v} should be fake tensor"
-                                    patched_inputs.append(
-                                        to_fake_tensor(torch.empty([0], dtype=in_v.dtype, device=in_v.device),
-                                                       in_v.fake_mode))
-                                else:
-                                    patched_inputs.append(in_v)
-                        else:
-                            for in_v, in_v2 in zip(example_inputs, fake_inputs):
-                                if hasattr(in_v, "ds_id"):
-                                    patched_inputs.append(torch.empty([0], dtype=in_v.dtype, device=in_v.device))
-                                else:
-                                    patched_inputs.append(in_v2)
+            aot_mod = aot_module_simplified(gm,
+                                            real_inputs,
+                                            fw_compiler=make_compiler_fn(make_fw_graph),
+                                            bw_compiler=make_compiler_fn(make_bw_graph),
+                                            partition_fn=get_wrapped_partitioner(param_indices))
+            return torch._dynamo.optimize(**compile_kwargs)(aot_mod)
+        elif backend == "inductor":
+            patch_create_aot_dispatcher_function(graph_id, make_fw_graph, make_bw_graph, param_manager)
+            return torch._inductor.compile(gm, real_inputs)
 
-                        patched_inputs = tuple(patched_inputs)
-                        return original_compiler(gm, patched_inputs)
+        raise ValueError(f"Unsupported backend {backend}")
 
-                    kwargs[name] = wrap_compiler
-
-            patch_compiler("fw_compiler", self.kwargs, make_fw_graph, False)
-            patch_compiler("bw_compiler", self.kwargs, make_bw_graph, True)
-            return original_aotautograd_call(self, gm, example_inputs, **kwargs)
-
-        AotAutograd.__call__ = wrap_aotautograd_call
-
-        # Inductor tries to reuse output buffer when possible. We need to disable this behavior for some custom ops.
-        from torch._inductor.lowering import register_lowering, fallbacks, add_needs_realized_inputs
-        from torch._inductor.ir import TensorBox
-        from torch._inductor.virtualized import V
-
-        def fallback_handler_no_reuse(kernel, src, add_to_fallback_set=True):
-            if add_to_fallback_set:
-                fallbacks.add(kernel)
-
-            def handler(*args, **kwargs):
-
-                def wrap_tensors(x):
-                    out = TensorBox.create(x) if isinstance(x, torch._inductor.ir.IRNode) else x
-                    if out is not None:
-                        V.graph.never_reuse_buffers.add(out.get_name())
-                    return out
-
-                def add_to_never_reuse(x):
-                    if isinstance(x, TensorBox) and hasattr(x.data, "get_name"):
-                        V.graph.never_reuse_buffers.add(x.data.get_name())
-
-                if src:
-                    pytree.tree_map(add_to_never_reuse, args)
-
-                return pytree.tree_map(wrap_tensors, torch._inductor.ir.FallbackKernel.create(kernel, *args, **kwargs))
-
-            return handler
-
-        def register_fallback_no_reuse(op_overload, src=False):
-            add_needs_realized_inputs(op_overload)
-            return register_lowering(op_overload, type_promotion_kind=None)(fallback_handler_no_reuse(op_overload,
-                                                                                                      src=src))
-
-        register_fallback_no_reuse(torch.ops.dc.allgather_param.default, src=False)
-        register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, src=True)
-        register_fallback_no_reuse(torch.ops.dc.reduce_grad.default, src=True)
-        register_fallback_no_reuse(torch.ops.dc.free_tensors.default, src=True)
-
-        from torch._inductor.scheduler import Scheduler
-        if not hasattr(Scheduler, "is_dc_patched") or not Scheduler.is_dc_patched:
-            Scheduler.is_dc_patched = True
-            Scheduler.dead_node_elimination = lambda _: None
-
-        return torch._inductor.compile(gm, real_inputs)
-
-    return backend
+    return backend_fn

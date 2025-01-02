@@ -229,9 +229,19 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
                 if name in kwargs:
                     original_compiler = kwargs[name]
 
-                    def wrap_compiler(gm, sample_inputs):
-                        compiler(gm, sample_inputs)
-                        return original_compiler(gm, sample_inputs)
+                    def wrap_compiler(gm, fake_inputs):
+                        compiler(gm, fake_inputs)
+
+                        # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
+                        # We need to patch the input tensors to avoid the validation error.
+                        patched_inputs = []
+                        for in_v, in_v2 in zip(example_inputs, fake_inputs):
+                            if hasattr(in_v, "ds_id"):
+                                patched_inputs.append(torch.empty([0], dtype=in_v.dtype, device=in_v.device))
+                            else:
+                                patched_inputs.append(in_v2)
+                        patched_inputs = tuple(patched_inputs)
+                        return original_compiler(gm, patched_inputs)
 
                     kwargs[name] = wrap_compiler
 

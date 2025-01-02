@@ -14,6 +14,7 @@ TORCH_LIBRARY(dc, m)
     m.def(
         "wait_allgather(Tensor a, int graph_id, int[] ids, str user, int n_args, bool bwd) -> "
         "Tensor");
+    m.def("release_param(Tensor a, int graph_id, int id) -> ()");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
     m.def("free_tensors(Tensor[] a) -> ()");
     m.def("offload_tensor(Tensor a, int id, int id) -> Tensor");
@@ -29,6 +30,7 @@ TORCH_LIBRARY_IMPL(dc, CPU, m)
     m.impl("allgather_param", &dc::allgather_param);
     m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
     m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("release_param", &dc::release_param);
     m.impl("reduce_grad", &dc::reduce_grad);
     m.impl("free_tensors", &dc::free_tensors);
     m.impl("offload_tensor", &dc::offload_tensor);
@@ -44,6 +46,7 @@ TORCH_LIBRARY_IMPL(dc, CUDA, m)
     m.impl("allgather_param", &dc::allgather_param);
     m.impl("prefetch_params_fused", &dc::prefetch_params_fused);
     m.impl("wait_allgather", &dc::wait_allgather);
+    m.impl("release_param", &dc::release_param);
     m.impl("reduce_grad", &dc::reduce_grad);
     m.impl("free_tensors", &dc::free_tensors);
     m.impl("offload_tensor", &dc::offload_tensor);
@@ -57,6 +60,7 @@ TORCH_LIBRARY_IMPL(dc, CUDA, m)
 TORCH_LIBRARY_IMPL(dc, Meta, m)
 {
     m.impl("allgather_param", &dc::allgather_param_meta);
+    m.impl("release_param", &dc::release_param_meta);
     m.impl("wait_allgather", &dc::wait_allgather_meta);
     m.impl("reduce_grad", &dc::reduce_grad_meta);
 }
@@ -86,7 +90,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("end_forward", &dc::end_forward, "End forward pass");
     m.def("start_backward", &dc::start_backward, "Start backward pass");
     // m.def("end_backward", &dc::end_backward, "End backward pass");
-    m.def("release_param", &dc::release_param, "Release a parameter");
+    // m.def("release_param", &dc::release_param, "Release a parameter");
     m.def("cleanup", &dc::cleanup, "Clean up DeepCompile");
     m.def("reset", &dc::reset, "Reset the state");
     m.def("invalidate_gathered_param", &dc::invalidate_gathered_param, "Invalidate gathered param");

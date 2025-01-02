@@ -197,7 +197,7 @@ class ProfilingInterpreter(Interpreter):
                     f"{n.target} {n.meta['device_time']:.2f}ms {n.meta['wall_time']:.2f}ms alloc_mem={n.meta['alloc_mem'] / 1024 / 1024:.2f}MB max_mem={n.meta['max_mem'] / 1024 / 1024:.2f}MB tensor_size={n.meta['tensor_size']}"
                 )
 
-        if n.target == torch.ops.dc.allgather_param:
+        if n.target == torch.ops.dc.allgather_param.default:
             out = args[0]
             assert hasattr(out, "ds_id")
             if not out.ds_persist:

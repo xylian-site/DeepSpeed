@@ -4,7 +4,7 @@
 # DeepSpeed Team
 
 import gc
-from typing import List, Dict, Any
+from typing import List, Dict
 
 import torch
 from torch.fx import Graph, Node, GraphModule
@@ -23,10 +23,11 @@ NAME = "zero3_compile"
 def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     new_node = add_postprocess(graph,
                                node,
-                               torch.ops.dc.allgather_param,
+                               torch.ops.dc.allgather_param.default,
                                extra_args=[graph_id, ds_id],
                                name=f"allgather_ds_param_{node.target}_{ds_id}",
                                meta=_make_node_meta(node, ds_id, True))
+    new_node.meta["val"] = node.meta["val"]
 
     # Set the previous node back to output
     # We don't want to change the output node to allgather
@@ -35,38 +36,46 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     return new_node
 
 
+# def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int) -> Any:
+#     print(f"wrap_release_ds_param {x.__class__} {graph_id} {ds_id}")
+#     get_deepcompile_handle().release_param(graph_id, ds_id)
+#     return x
+
+
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
-
-    nz3 = get_deepcompile_handle()
-
-    def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int):
-        nz3.release_param(graph_id, ds_id)
-        return x
-
-    add_postprocess(graph,
-                    node,
-                    wrap_release_ds_param,
-                    extra_args=[graph_id, ds_id],
-                    name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
-                    meta=_make_node_meta(node, ds_id, False))
+    new_node = add_postprocess(graph,
+                               node,
+                               torch.ops.dc.release_param.default,
+                               extra_args=[graph_id, ds_id],
+                               name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
+                               meta=_make_node_meta(node, ds_id, False))
+    new_node.meta["val"] = None
 
 
 def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int], user: str, n_args: int, bwd: bool):
-    add_args_process(graph,
-                     node,
-                     torch.ops.dc.wait_allgather,
-                     extra_args=[graph_id, ds_ids, user, n_args, bwd],
-                     name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
-                     meta=_make_node_meta(node, ds_ids, False))
+
+    target_args = [arg for arg in node.args if isinstance(arg, Node)]
+
+    new_nodes = add_args_process(graph,
+                                 node,
+                                 torch.ops.dc.wait_allgather.default,
+                                 extra_args=[graph_id, ds_ids, user, n_args, bwd],
+                                 name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
+                                 meta=_make_node_meta(node, ds_ids, False))
+
+    for new_node, arg in zip(new_nodes, target_args):
+        print(f"add_wait_allgather {arg.name}")
+        new_node.meta["val"] = arg.meta["val"]
 
 
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
-    add_postprocess(graph,
-                    grad_node,
-                    torch.ops.dc.reduce_grad,
-                    extra_args=[graph_id, ds_id],
-                    name=f"reduce_ds_param_{param_name}",
-                    meta=_make_node_meta(grad_node, ds_id, True))
+    new_node = add_postprocess(graph,
+                               grad_node,
+                               torch.ops.dc.reduce_grad.default,
+                               extra_args=[graph_id, ds_id],
+                               name=f"reduce_ds_param_{param_name}",
+                               meta=_make_node_meta(grad_node, ds_id, True))
+    new_node.meta["val"] = None
 
 
 def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
@@ -75,7 +84,9 @@ def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
     ag_user_nodes = []
 
     for node in graph.nodes:
-        ag_args = [arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param]
+        ag_args = [
+            arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param.default
+        ]
         if len(ag_args) > 0:
             if node.target in ops_no_wait:
                 continue
@@ -154,6 +165,12 @@ def add_z3_gather_release_fw(gm: GraphModule,
     _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
     nz3.register_graph_ops_z3(graph_id, [n.name for n in ag_wait_nodes],
                               [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
+
+    for n in gm.graph.nodes:
+        is_ds_param = n.name in param_manager[graph_id].ds_ids
+        if "val" in n.meta and is_ds_param:
+            # Used for Inductor's validation
+            n.meta["val"] = torch.empty([0], dtype=n.meta['val'].dtype, device=n.meta['val'].device)
 
     return gm
 

@@ -30,7 +30,8 @@ void prefetch_params_fused(long graph_id,
 void invalidate_gathered_param(long ds_id);
 void clear_all_gathered_params();
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id);
-void release_param(long graph_id, long ds_id);
+void release_param(at::Tensor dummy, long graph_id, long ds_id);
+void release_param_meta(at::Tensor dummy, long graph_id, long ds_id);
 at::Tensor wait_allgather(at::Tensor v,
                           long graph_id,
                           const std::vector<long>& ds_ids,

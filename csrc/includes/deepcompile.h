@@ -527,8 +527,9 @@ extern std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
 extern std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id);
-void free_tensors(std::vector<at::Tensor> tensors);
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id);
+void free_tensors(std::vector<at::Tensor> tensors);
+void free_tensors_meta(std::vector<at::Tensor> tensors);
 
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,

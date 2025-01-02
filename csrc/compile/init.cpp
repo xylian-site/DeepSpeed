@@ -14,7 +14,7 @@ TORCH_LIBRARY(dc, m)
     m.def(
         "wait_allgather(Tensor a, int graph_id, int[] ids, str user, int n_args, bool bwd) -> "
         "Tensor");
-    m.def("release_param(Tensor a, int graph_id, int id) -> ()");
+    m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
     m.def("free_tensors(Tensor[] a) -> ()");
     m.def("offload_tensor(Tensor a, int id, int id) -> Tensor");
@@ -63,6 +63,7 @@ TORCH_LIBRARY_IMPL(dc, Meta, m)
     m.impl("release_param", &dc::release_param_meta);
     m.impl("wait_allgather", &dc::wait_allgather_meta);
     m.impl("reduce_grad", &dc::reduce_grad_meta);
+    m.impl("free_tensors", &dc::free_tensors_meta);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)

@@ -136,7 +136,7 @@ def add_free_activations(graph_id: int, graph: Graph, activation_node_names: Lis
         node_name = f"free_activations_{[n.name for n in used_nodes]}"
         with graph.inserting_after(last_user):
             args = (activation_args, )
-            # graph.create_node('call_function', torch.ops.dc.free_tensors, args, {}, name=node_name)
+            graph.create_node('call_function', torch.ops.dc.free_tensors.default, args, {}, name=node_name)
 
             # Python version for debugging
-            graph.create_node('call_function', free_tensors, args, {}, name=node_name)
+            # graph.create_node('call_function', free_tensors, args, {}, name=node_name)

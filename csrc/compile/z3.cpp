@@ -484,15 +484,14 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-void release_param(at::Tensor dummy, long graph_id, long ds_id)
+at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->releaseParam(ds_id);
+    return dummy;
 }
 
-void release_param_meta(at::Tensor dummy, long graph_id, long ds_id)
-{
-}
+at::Tensor release_param_meta(at::Tensor dummy, long graph_id, long ds_id) { return dummy; }
 
 at::Tensor wait_allgather(at::Tensor v,
                           long graph_id,

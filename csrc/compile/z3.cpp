@@ -494,6 +494,8 @@ at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->releaseParam(ds_id);
+
+    if (clone_custom_op_output) { return dummy.clone(); }
     return dummy;
 }
 
@@ -508,6 +510,8 @@ at::Tensor wait_allgather(at::Tensor v,
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
+
+    if (clone_custom_op_output) { return v.clone(); }
     return v;
 }
 

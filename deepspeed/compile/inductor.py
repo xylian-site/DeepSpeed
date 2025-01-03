@@ -74,7 +74,7 @@ def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make
 
 
 def register_custom_ops():
-    # Inductor tries to reuse output buffer when possible. We need to disable this behavior for some custom ops.
+
     def fallback_handler_no_reuse(kernel, src, add_to_fallback_set=True):
         if add_to_fallback_set:
             fallbacks.add(kernel)
@@ -103,8 +103,11 @@ def register_custom_ops():
         return register_lowering(op_overload, type_promotion_kind=None)(fallback_handler_no_reuse(op_overload,
                                                                                                   src=src))
 
+    # Inductor tries to reuse output buffer when possible. We need to disable this behavior for some custom ops.
+    # -> It seems that memory region is still reused in some cases. So we clone the inputs for some ops.
     register_fallback_no_reuse(torch.ops.dc.allgather_param.default, src=False)
     register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, src=True)
+    register_fallback_no_reuse(torch.ops.dc.release_param.default, src=True)
     register_fallback_no_reuse(torch.ops.dc.reduce_grad.default, src=True)
     register_fallback_no_reuse(torch.ops.dc.free_tensors.default, src=True)
 

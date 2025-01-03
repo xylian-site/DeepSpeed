@@ -12,7 +12,7 @@ from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToMo
 from .passes import zero3_compile, prefetch, selective_gather
 from .backend import make_backend, launch_compile_passes, init_schedule
 from .patch_fake_tensor import patch_fake_tensor
-from .util import get_deepcompile_handle, add_pre_backward_hook
+from .util import get_deepcompile_handle, add_pre_backward_hook, is_backend_inductor
 
 WARMUP = 5
 
@@ -26,7 +26,7 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     dc = get_deepcompile_handle()
     dc.init(engine.data_parallel_group, engine.zero_reduce_bucket_size(), compile_config.double_buffer,
-            compile_config.symmetric_memory)
+            compile_config.symmetric_memory, is_backend_inductor(backend))
 
     # Unset hooks
     for m in engine.module.modules():
@@ -73,4 +73,5 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     engine.launch_compile_passes = launch_compile_passes
 
     patch_fake_tensor()
-    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=compile_config.free_activation)
+    free_activation = compile_config.free_activation and not is_backend_inductor(backend)
+    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=free_activation)

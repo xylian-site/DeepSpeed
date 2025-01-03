@@ -42,6 +42,10 @@ def get_deepcompile_handle():
     return dc_handle
 
 
+def is_backend_inductor(backend):
+    return backend == "inductor"
+
+
 backward_started = False
 pre_backward_hooks = []
 

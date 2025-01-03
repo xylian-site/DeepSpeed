@@ -17,6 +17,7 @@ c10::intrusive_ptr<c10d::ProcessGroup> process_group = nullptr;
 c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem = nullptr;
 ncclComm_t nccl_comm;
 bool use_symm_mem;
+bool clone_custom_op_output;
 bool profile = false;
 bool pre_div_reduce = true;
 
@@ -114,7 +115,8 @@ void free_tensors_meta(std::vector<at::Tensor> tensors) {}
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,
           bool enable_double_buffer,
-          bool _use_symm_mem)
+          bool _use_symm_mem,
+          bool _clone_custom_op_output)
 {
     process_group = pg;
 
@@ -140,6 +142,7 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
     reduce_buckets = std::make_shared<DoubleBufferedReduceBucket>(initial_reduce_bucket_size,
                                                                   enable_double_buffer);
     use_symm_mem = _use_symm_mem;
+    clone_custom_op_output = _clone_custom_op_output;
 }
 
 void start_forward()

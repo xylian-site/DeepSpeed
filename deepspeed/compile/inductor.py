@@ -1,3 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 import torch
 import torch.utils._pytree as pytree
 
@@ -9,11 +14,11 @@ from torch._inductor.scheduler import Scheduler
 
 from .util import get_input_nodes
 
-
 original_create_aot_dispatcher_function = create_aot_dispatcher_function
 
 
-def patch_create_aot_dispatcher_function(graph_id: int, make_fw_graph, make_bw_graph, param_manager):
+def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make_fw_graph, make_bw_graph,
+                                         param_manager):
 
     def wrapper_create_aot_dispatcher_function(
         flat_fn,
@@ -29,28 +34,32 @@ def patch_create_aot_dispatcher_function(graph_id: int, make_fw_graph, make_bw_g
                 dc_compiler = make_bw_graph if bwd else make_fw_graph
                 dc_compiler(gm, fake_inputs)
 
-                # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
-                # We need to patch the input tensors to avoid the validation error.
-                patched_inputs = []
-                if bwd:
-                    param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
-                    param_names = [n.name for n in param_nodes_bw]
-                else:
-                    param_names = param_manager[graph_id].param_names
-                input_nodes = get_input_nodes(gm.graph)
-
-                for in_node, in_v in zip(input_nodes, fake_inputs):
-                    ds_param = in_node.name in param_names
-                    if ds_param:
-                        from torch._subclasses.fake_tensor import is_fake
-                        from torch._dynamo.utils import to_fake_tensor
-                        assert is_fake(in_v), f"Input {in_v} should be fake tensor"
-                        patched_inputs.append(
-                            to_fake_tensor(torch.empty([0], dtype=in_v.dtype, device=in_v.device), in_v.fake_mode))
+                if z3_partition:
+                    # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
+                    # We need to patch the input tensors to avoid the validation error.
+                    patched_inputs = []
+                    if bwd:
+                        param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
+                        param_names = [n.name for n in param_nodes_bw]
                     else:
-                        patched_inputs.append(in_v)
+                        param_names = param_manager[graph_id].param_names
+                    input_nodes = get_input_nodes(gm.graph)
 
-                patched_inputs = tuple(patched_inputs)
+                    for in_node, in_v in zip(input_nodes, fake_inputs):
+                        ds_param = in_node.name in param_names
+                        if ds_param:
+                            from torch._subclasses.fake_tensor import is_fake
+                            from torch._dynamo.utils import to_fake_tensor
+                            assert is_fake(in_v), f"Input {in_v} should be fake tensor"
+                            patched_inputs.append(
+                                to_fake_tensor(torch.empty([0], dtype=in_v.dtype, device=in_v.device), in_v.fake_mode))
+                        else:
+                            patched_inputs.append(in_v)
+
+                    patched_inputs = tuple(patched_inputs)
+                else:
+                    patched_inputs = fake_inputs
+
                 return original_compiler(gm, patched_inputs)
 
             return wrapped_compiler
@@ -92,7 +101,7 @@ def register_custom_ops():
     def register_fallback_no_reuse(op_overload, src=False):
         add_needs_realized_inputs(op_overload)
         return register_lowering(op_overload, type_promotion_kind=None)(fallback_handler_no_reuse(op_overload,
-                                                                                                    src=src))
+                                                                                                  src=src))
 
     register_fallback_no_reuse(torch.ops.dc.allgather_param.default, src=False)
     register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, src=True)

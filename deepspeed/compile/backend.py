@@ -245,7 +245,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
                                             partition_fn=get_wrapped_partitioner(param_indices))
             return torch._dynamo.optimize(**compile_kwargs)(aot_mod)
         elif backend == "inductor":
-            patch_create_aot_dispatcher_function(graph_id, make_fw_graph, make_bw_graph, param_manager)
+            patch_create_aot_dispatcher_function(graph_id, z3_partition, make_fw_graph, make_bw_graph, param_manager)
             return torch._inductor.compile(gm, real_inputs)
 
         raise ValueError(f"Unsupported backend {backend}")

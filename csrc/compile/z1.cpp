@@ -41,6 +41,13 @@ public:
     }
     ~Z1CustomOpExecutor() {}
 
+    void endBackward() override
+    {
+        if (param_updated_) {
+            for (auto& it : has_acc_grad_) { it.second = false; }
+        }
+    }
+
     void flushReduceBucket(at::ScalarType scalar_type) override
     {
         int rank = process_group_->getRank();
@@ -55,9 +62,6 @@ public:
 
         ncclGroupStart();
         for (const ReduceTask& t : reduce_tasks_.at(scalar_type)) {
-            auto recv_buf = param_registry_->getParam(t.getDSId()).getGradBuffer();
-            bool acc_grad = has_acc_grad_.at(t.getDSId());
-
             ncclRedOp_t op = pre_div_reduce_ ? ncclSum : ncclAvg;
             if (pre_div_reduce_) {
                 at::cuda::CUDAStreamGuard guard(rs_stream_);

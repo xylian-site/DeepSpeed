@@ -35,18 +35,8 @@ void clear_all_gathered_params();
 at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_id);
 at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id);
 at::Tensor release_param_meta(at::Tensor dummy, long graph_id, long ds_id);
-at::Tensor wait_allgather(at::Tensor v,
-                          long graph_id,
-                          const std::vector<long>& ds_ids,
-                          const std::string& user,
-                          long n_args,
-                          bool is_backward);
-at::Tensor wait_allgather_meta(at::Tensor v,
-                               long graph_id,
-                               const std::vector<long>& ds_ids,
-                               const std::string& user,
-                               long n_args,
-                               bool is_backward);
+at::Tensor wait_allgather(at::Tensor v, long graph_id, const long ds_id);
+at::Tensor wait_allgather_meta(at::Tensor v, long graph_id, long ds_id);
 at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id);
 at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id);
 at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id);

@@ -106,53 +106,6 @@ void lazy_init_symm_memory();
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type);
 void cleanup();
 
-class GraphOpStates {
-public:
-    GraphOpStates() {}
-    ~GraphOpStates() {}
-
-    void registerOpNArgs(const std::string& op_name, long n_args)
-    {
-        op_n_args_[op_name] = n_args;
-        args_counter_[op_name] = n_args;
-    }
-
-    void resetArgCounter()
-    {
-        // std::cout << "resetArgCounter size op_n_args_ " << op_n_args_.size() << std::endl;
-
-        for (const auto& it : op_n_args_) {
-            assert(hasKey(op_n_args_, it.first));
-            args_counter_[it.first] = op_n_args_.at(it.first);
-        }
-    }
-
-    void decrementArgCounter(const std::string& op_name)
-    {
-        // std::cout << "decrementArgCounter " << op_name << std::endl;
-
-        assert(hasKey(args_counter_, op_name));
-        if (args_counter_.at(op_name) == 0) return;
-        args_counter_[op_name]--;
-    }
-
-    long getArgCounter(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name);
-    }
-
-    bool isArgCounterZero(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name) == 0;
-    }
-
-private:
-    std::unordered_map<std::string, size_t> op_n_args_;
-    std::unordered_map<std::string, size_t> args_counter_;
-};
-
 class ReduceTask {
 public:
     ReduceTask(long ds_id, at::Tensor grad, at::Tensor send_buf)
@@ -414,12 +367,6 @@ public:
     }
     ~CustomOpExecutor() {}
 
-    void registerOpNArgs(const std::string& op_name, long n_args, bool is_backward)
-    {
-        GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
-        op_states.registerOpNArgs(op_name, n_args);
-    }
-
     virtual void startForward() {}
 
     virtual void endForward() {}
@@ -494,8 +441,6 @@ protected:
     ncclComm_t nccl_comm_;
     at::cuda::CUDAStream rs_stream_;
     at::cuda::CUDAStream copy_stream_;
-    GraphOpStates op_states_fwd_ = GraphOpStates();
-    GraphOpStates op_states_bwd_ = GraphOpStates();
 
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events_;
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_copy_done_events_;

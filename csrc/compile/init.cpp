@@ -11,9 +11,7 @@ TORCH_LIBRARY(dc, m)
 {
     m.def("allgather_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def("prefetch_params_fused(int graph_id, Tensor[] params, int[] ids) -> ()");
-    m.def(
-        "wait_allgather(Tensor a, int graph_id, int[] ids, str user, int n_args, bool bwd) -> "
-        "Tensor");
+    m.def("wait_allgather(Tensor a, int graph_id, int id) -> Tensor");
     m.def("release_param(Tensor a, int graph_id, int id) -> Tensor");
     m.def("reduce_grad(Tensor a, int graph_id, int id) -> Tensor");
     m.def("free_tensors(Tensor[] a) -> ()");
@@ -82,12 +80,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("register_graph_z3",
           &dc::register_graph_z3,
           "Register graph with a list of ds parameter ids");
-    m.def("register_graph_ops_z3",
-          &dc::register_graph_ops_z3,
-          "Register the number of arguments for an op");
-    m.def("register_bwd_graph_ops_z3",
-          &dc::register_bwd_graph_ops_z3,
-          "Register the number of arguments for a backward op");
     m.def("start_forward", &dc::start_forward, "Start forward pass");
     m.def("end_forward", &dc::end_forward, "End forward pass");
     m.def("start_backward", &dc::start_backward, "Start backward pass");

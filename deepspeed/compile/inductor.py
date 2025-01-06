@@ -13,12 +13,13 @@ from torch._inductor.virtualized import V
 from torch._inductor.scheduler import Scheduler
 
 from .util import get_input_nodes
+from .graph_param import DSGraphParamManager
 
 original_create_aot_dispatcher_function = create_aot_dispatcher_function
 
 
-def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make_fw_graph, make_bw_graph,
-                                         param_manager):
+def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make_fw_graph, make_bw_graph, real_inputs,
+                                         param_indices, param_manager):
 
     def wrapper_create_aot_dispatcher_function(
         flat_fn,
@@ -63,6 +64,29 @@ def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make
                 return original_compiler(gm, patched_inputs)
 
             return wrapped_compiler
+
+        def wrap_partition_fn(partition_fn):
+
+            def wrapped_partition_fn(*args, **kwargs):
+                fw_module, bw_module = partition_fn(*args, **kwargs)
+
+                # get parameter names
+                pm = DSGraphParamManager(fw_module.graph, real_inputs, param_indices)
+
+                def fix_placeholder_meta(graph):
+                    for n in graph.nodes:
+                        if n.op == "placeholder" and n.name in pm.param_names:
+                            n.meta["val"] = torch.empty([0], dtype=n.meta["val"].dtype, device=n.meta["val"].device)
+
+                fix_placeholder_meta(fw_module.graph)
+                fix_placeholder_meta(bw_module.graph)
+
+                return fw_module, bw_module
+
+            return wrapped_partition_fn
+
+        if z3_partition:
+            aot_config.partition_fn = wrap_partition_fn(aot_config.partition_fn)
 
         aot_config.fw_compiler = patch_compiler(aot_config.fw_compiler, False)
         aot_config.bw_compiler = patch_compiler(aot_config.bw_compiler, True)

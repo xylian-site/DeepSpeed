@@ -127,17 +127,20 @@ def add_z3_gather_release_fw(gm: GraphModule,
     if rank == 0 and debug_log:
         print(f"Fwd before scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
+    for n in gm.graph.nodes:
+        is_ds_param = n.name in param_manager[graph_id].ds_ids
+        if "val" in n.meta and is_ds_param:
+            # Used for Inductor's validation
+            n.meta["val"] = torch.empty([0], dtype=n.meta['val'].dtype, device=n.meta['val'].device)
+
     gm.graph = fast_free_schedule(
         gm.graph,
         get_accelerator().available_memory(),
         0,  # unused
         debug_log=debug_log)
 
-    for n in gm.graph.nodes:
-        is_ds_param = n.name in param_manager[graph_id].ds_ids
-        if "val" in n.meta and is_ds_param:
-            # Used for Inductor's validation
-            n.meta["val"] = torch.empty([0], dtype=n.meta['val'].dtype, device=n.meta['val'].device)
+    if rank == 0 and debug_log:
+        print(f"Fwd after scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
     return gm
 

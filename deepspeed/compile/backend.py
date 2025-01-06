@@ -111,7 +111,7 @@ def run_opt_passes(opt_passes: List[Callable],
         gm.graph.lint()
         gm.recompile()
 
-        mem_prof = MemoryProfilingInterpreter(gm)
+        mem_prof = MemoryProfilingInterpreter(gm, debug_log=debug_log)
         mem_prof.run(*create_inputs_fn())
         mem = [(name, current_alloc, delta, peak) for name, current_alloc, delta, peak in mem_prof.mem_record]
 

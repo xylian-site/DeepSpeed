@@ -116,7 +116,7 @@ def add_z3_gather_release_fw(gm: GraphModule,
 
     nz3.register_graph_z3(graph_id, [v[1] for v in param_indices])  # Need this before profiling
 
-    profiler = ProfilingInterpreter(gm, debug_log=False)
+    profiler = ProfilingInterpreter(gm, debug_log=debug_log)
     profiler.run(*real_inputs)
     del profiler
     gc.collect()
@@ -157,7 +157,7 @@ def add_z3_gather_release_bw(gm: GraphModule,
     real_inputs = create_inputs_fn()
     assert len(input_nodes) == len(real_inputs), f"Expected {len(real_inputs)} inputs, got {len(input_nodes)}"
 
-    real_outputs = ProfilingInterpreter(gm, debug_log=False).run(*real_inputs)
+    real_outputs = ProfilingInterpreter(gm, debug_log=debug_log).run(*real_inputs)
 
     del real_outputs
     gc.collect()
@@ -175,5 +175,17 @@ def add_z3_gather_release_bw(gm: GraphModule,
 def add_z3_gather_release(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
                           mem_budget: float, param_manager, bwd: bool) -> GraphModule:
     if bwd:
-        return add_z3_gather_release_bw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
-    return add_z3_gather_release_fw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
+        return add_z3_gather_release_bw(gm,
+                                        graph_id,
+                                        graph_order,
+                                        profiling_results,
+                                        create_inputs_fn,
+                                        param_manager,
+                                        debug_log=True)
+    return add_z3_gather_release_fw(gm,
+                                    graph_id,
+                                    graph_order,
+                                    profiling_results,
+                                    create_inputs_fn,
+                                    param_manager,
+                                    debug_log=True)

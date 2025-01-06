@@ -73,7 +73,7 @@ def get_no_copy_ops():
     get_deepcompile_handle()
     return {
         torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
-        torch.ops.dc.wait_allgather.default
+        torch.ops.aten.permute.default, torch.ops.dc.wait_allgather.default
     }
 
 

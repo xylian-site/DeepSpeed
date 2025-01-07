@@ -402,7 +402,7 @@ public:
         // This ensures the order of reduce_scatter -> copy
         // Without this block, copy may start while reduce_scatter is still running
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        auto copy_src = grad_tensor.contiguous().view({-1});
+        auto copy_src = grad_tensor.contiguous().view({-1}).detach();
         // keep references to copy src
         reduce_tasks_[scalar_type].emplace_back(ds_id, copy_src, reduce_in_buffer);
 
@@ -427,6 +427,11 @@ public:
 
             endBackward();
         }
+
+        // Inductor allocates memory for grad_tensor.
+        // If we disable reusing for this op, the memory is not freed by inductor and we need to
+        // free it here.
+        grad_tensor.set_data(torch::empty({0}, grad_tensor.options()));
 
         return at::Tensor();
     }

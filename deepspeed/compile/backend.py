@@ -247,6 +247,9 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
         elif backend == "inductor":
             patch_create_aot_dispatcher_function(graph_id, z3_partition, make_fw_graph, make_bw_graph, real_inputs,
                                                  param_indices, param_manager)
+            from .partitioner import get_wrapped_choose_saved_values_set
+            torch._functorch.partitioners.choose_saved_values_set = get_wrapped_choose_saved_values_set(param_indices)
+
             return torch._inductor.compile(gm, real_inputs)
 
         raise ValueError(f"Unsupported backend {backend}")

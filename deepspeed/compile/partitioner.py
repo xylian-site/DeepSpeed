@@ -10,7 +10,9 @@ import operator
 
 import torch
 from torch.fx import GraphModule, Graph, Node
-from torch._functorch.partitioners import is_sym_node, _is_primal, _is_fwd_seed_offset, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules, has_recomputable_ops, min_cut_rematerialization_partition
+from torch._functorch.partitioners import is_sym_node, _is_primal, _is_fwd_seed_offset, _extract_fwd_bwd_outputs, _extract_graph_with_inputs_outputs, _extract_fwd_bwd_modules, has_recomputable_ops, min_cut_rematerialization_partition, choose_saved_values_set
+
+from .util import get_no_copy_ops
 
 _recompute_ops = {torch.ops.aten.t.default}
 
@@ -20,15 +22,56 @@ def _find_recompute_nodes(graph: Graph, ds_param_node: Node) -> List[Node]:
     Given a graph and a node that represents a parameter that was allgathered,
     find all nodes that use the parameter and require recomputation.
     """
+    no_copy_ops = get_no_copy_ops()
     recompute_nodes = set()
     for node in graph.nodes:
-        if node.target in _recompute_ops:
+        if node.target in no_copy_ops:
             if ds_param_node in node.args:
                 recompute_nodes.add(node)
             if any(a in recompute_nodes for a in node.args):
                 recompute_nodes.add(node)
 
     return recompute_nodes
+
+
+def _get_values_from_ds_params(joint_graph, param_indices):
+    primal_inputs = list(filter(_is_primal, joint_graph.nodes))
+    ds_param_inputs = [primal_inputs[arg_idx] for arg_idx, _, _ in param_indices]
+
+    no_copy_ops = get_no_copy_ops()
+
+    ds_param_inputs = set(ds_param_inputs)
+    ds_param_users = {}
+
+    for node in joint_graph.nodes:
+        if node.target in no_copy_ops and any((a in ds_param_inputs or a in ds_param_users) for a in node.args):
+            for a in node.args:
+                if a in ds_param_inputs:
+                    ds_param_users[node] = a
+                elif a in ds_param_users:
+                    ds_param_users[node] = ds_param_users[a]
+
+    return ds_param_users
+
+
+def get_wrapped_choose_saved_values_set(param_indices: List[Tuple[int, int, torch.Size]]):
+
+    def ds_choose_saved_values_set(joint_graph: torch.fx.Graph, node_info, memory_budget=1) -> List[Node]:
+        saved_values = choose_saved_values_set(joint_graph, node_info, memory_budget)
+        ds_param_users = _get_values_from_ds_params(joint_graph, param_indices)
+
+        new_saved_values = []
+        for v in saved_values:
+            if v in ds_param_users:
+                ds_val = ds_param_users[v]
+                if ds_val not in new_saved_values:
+                    new_saved_values.append(ds_val)
+            else:
+                new_saved_values.append(v)
+
+        return new_saved_values
+
+    return ds_choose_saved_values_set
 
 
 def get_wrapped_partitioner(param_indices: List[Tuple[int, int, torch.Size]]):

@@ -203,7 +203,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
 
             graph_index = get_index_by_graph_id(graph_order, graph_id)
 
-            log_rank0(f"Bwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+            log_rank0(f"Bwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
                       enable=debug_log)
 
             # assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
@@ -220,7 +220,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
 
-            log_rank0(f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}",
+            log_rank0(f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
                       enable=debug_log)
 
             gm.recompile()

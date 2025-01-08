@@ -128,7 +128,10 @@ class CustomDCKernel(FallbackKernel):
         var_name = self.get_var_name_for_arg(args[0])
         if var_name:
             wrapper.writeline(f"{var_name} = None")
-            wrapper.writeline(f"print('DEBUG after reduce_grad mem_allocs: ' + str(torch.cuda.memory_allocated()))")
+
+            import deepspeed.comm as dist
+            if dist.get_rank() == 0:
+                wrapper.writeline(f"print('DEBUG after reduce_grad mem_allocs: ' + str(torch.cuda.memory_allocated()))")
 
         self.codegen_unbacked_symbol_defs(wrapper)
 

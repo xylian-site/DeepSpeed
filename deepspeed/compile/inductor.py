@@ -12,7 +12,7 @@ from torch._inductor.ir import TensorBox, FallbackKernel, Layout, IRNode
 from torch._inductor.virtualized import V
 from torch._inductor.scheduler import Scheduler
 
-from .util import get_input_nodes, log_rank0
+from .util import get_input_nodes
 from .graph_param import DSGraphParamManager
 
 original_create_aot_dispatcher_function = create_aot_dispatcher_function
@@ -119,7 +119,6 @@ def register_custom_ops():
                     def add_to_never_reuse(x):
                         if isinstance(x, IRNode):
                             assert hasattr(x, "get_name"), f"x doesn't have get_name {x.__class__}"
-                            log_rank0(f"CustomDCKernel {kernel} add_to_never_reuse: {x.get_name()} {args[2]}")
                             V.graph.never_reuse_buffers.add(x.get_name())
 
                     if never_reuse_input:
@@ -143,22 +142,13 @@ def register_custom_ops():
                     self.codegen_comment(wrapper)
                     args = [*self.codegen_args(), *self.codegen_kwargs()]
 
-                    log_rank0(f"CustomDCKernel calling wrapper_code.generate_fallback_kernel: {kernel} args: {args}",
-                              enable=True)
-
                     V.graph.wrapper_code.generate_fallback_kernel(self, args)
                     if isinstance(self.layout, Layout):
                         self.codegen_size_asserts(wrapper)
 
-                    log_rank0(f" adding del for args[0] {args[0]} {args[0].__class__}", enable=True)
                     var_name = self.get_var_name_for_arg(args[0])
                     if var_name:
                         wrapper.writeline(f"{var_name} = None")
-
-                        import deepspeed.comm as dist
-                        if dist.get_rank() == 0:
-                            wrapper.writeline(
-                                f"print('DEBUG after reduce_grad mem_allocs: ' + str(torch.cuda.memory_allocated()))")
 
                     self.codegen_unbacked_symbol_defs(wrapper)
 

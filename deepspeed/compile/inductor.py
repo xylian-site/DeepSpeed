@@ -8,7 +8,7 @@ import torch.utils._pytree as pytree
 
 from torch._functorch.aot_autograd import create_aot_dispatcher_function
 from torch._inductor.lowering import register_lowering, fallbacks, add_needs_realized_inputs
-from torch._inductor.ir import TensorBox, FallbackKernel, Layout
+from torch._inductor.ir import TensorBox, FallbackKernel, Layout, IRNode
 from torch._inductor.virtualized import V
 from torch._inductor.scheduler import Scheduler
 
@@ -97,48 +97,9 @@ def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make
     torch._functorch.aot_autograd.create_aot_dispatcher_function = wrapper_create_aot_dispatcher_function
 
 
-class CustomDCKernel(FallbackKernel):
-
-    def __init__(self, kernel, *args, **kwargs):
-        super().__init__(kernel, *args, **kwargs)
-
-    def get_var_name_for_arg(self, arg: str):
-        if arg.isidentifier():
-            return arg
-
-        import re
-        match = re.match(r"reinterpret_tensor\((\w+),", arg)
-        if match:
-            return match.group(1)
-        return None
-
-    def codegen(self, wrapper):
-        kernel = self.op_overload
-
-        self.codegen_comment(wrapper)
-        args = [*self.codegen_args(), *self.codegen_kwargs()]
-
-        log_rank0(f"CustomDCKernel calling wrapper_code.generate_fallback_kernel: {kernel} args: {args}", enable=True)
-
-        V.graph.wrapper_code.generate_fallback_kernel(self, args)
-        if isinstance(self.layout, Layout):
-            self.codegen_size_asserts(wrapper)
-
-        log_rank0(f" adding del for args[0] {args[0]} {args[0].__class__}", enable=True)
-        var_name = self.get_var_name_for_arg(args[0])
-        if var_name:
-            wrapper.writeline(f"{var_name} = None")
-
-            import deepspeed.comm as dist
-            if dist.get_rank() == 0:
-                wrapper.writeline(f"print('DEBUG after reduce_grad mem_allocs: ' + str(torch.cuda.memory_allocated()))")
-
-        self.codegen_unbacked_symbol_defs(wrapper)
-
-
 def register_custom_ops():
 
-    def fallback_handler_no_reuse(kernel, src, force_free_input, add_to_fallback_set=True):
+    def fallback_handler_no_reuse(kernel, never_reuse_input, force_free_input, add_to_fallback_set=True):
         if add_to_fallback_set:
             fallbacks.add(kernel)
 
@@ -150,30 +111,74 @@ def register_custom_ops():
                     V.graph.never_reuse_buffers.add(out.get_name())
                 return out
 
-            def add_to_never_reuse(x):
-                if isinstance(x, TensorBox) and hasattr(x.data, "get_name"):
-                    V.graph.never_reuse_buffers.add(x.data.get_name())
+            class CustomDCKernel(FallbackKernel):
 
-            if src:
-                pytree.tree_map(add_to_never_reuse, args)
+                def __init__(self, op, *args, **kwargs):
+                    super().__init__(op, *args, **kwargs)
+
+                    def add_to_never_reuse(x):
+                        if isinstance(x, IRNode):
+                            assert hasattr(x, "get_name"), f"x doesn't have get_name {x.__class__}"
+                            log_rank0(f"CustomDCKernel {kernel} add_to_never_reuse: {x.get_name()} {args[2]}")
+                            V.graph.never_reuse_buffers.add(x.get_name())
+
+                    if never_reuse_input:
+                        pytree.tree_map(add_to_never_reuse, args)
+
+                def get_var_name_for_arg(self, arg: str):
+                    if arg.isidentifier():
+                        return arg
+
+                    import re
+                    match = re.match(r"reinterpret_tensor\((\w+),", arg)
+                    if match:
+                        return match.group(1)
+                    return None
+
+                def codegen(self, wrapper):
+                    if not force_free_input:
+                        return super().codegen(wrapper)
+
+                    kernel = self.op_overload
+                    self.codegen_comment(wrapper)
+                    args = [*self.codegen_args(), *self.codegen_kwargs()]
+
+                    log_rank0(f"CustomDCKernel calling wrapper_code.generate_fallback_kernel: {kernel} args: {args}",
+                              enable=True)
+
+                    V.graph.wrapper_code.generate_fallback_kernel(self, args)
+                    if isinstance(self.layout, Layout):
+                        self.codegen_size_asserts(wrapper)
+
+                    log_rank0(f" adding del for args[0] {args[0]} {args[0].__class__}", enable=True)
+                    var_name = self.get_var_name_for_arg(args[0])
+                    if var_name:
+                        wrapper.writeline(f"{var_name} = None")
+
+                        import deepspeed.comm as dist
+                        if dist.get_rank() == 0:
+                            wrapper.writeline(
+                                f"print('DEBUG after reduce_grad mem_allocs: ' + str(torch.cuda.memory_allocated()))")
+
+                    self.codegen_unbacked_symbol_defs(wrapper)
 
             kernel_cls = CustomDCKernel if force_free_input else FallbackKernel
             return pytree.tree_map(wrap_tensors, kernel_cls.create(kernel, *args, **kwargs))
 
         return handler
 
-    def register_fallback_no_reuse(op_overload, src=False, force_free_input=False):
+    def register_fallback_no_reuse(op_overload, never_reuse_input=False, force_free_input=False):
         add_needs_realized_inputs(op_overload)
         return register_lowering(op_overload, type_promotion_kind=None)(fallback_handler_no_reuse(
-            op_overload, src=src, force_free_input=force_free_input))
+            op_overload, never_reuse_input=never_reuse_input, force_free_input=force_free_input))
 
     # Inductor tries to reuse output buffer when possible. We need to disable this behavior for some custom ops.
     # -> It seems that memory region is still reused in some cases. So we clone the inputs for some ops.
-    register_fallback_no_reuse(torch.ops.dc.allgather_param.default, src=False)
-    register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, src=True)
-    register_fallback_no_reuse(torch.ops.dc.release_param.default, src=True)
-    register_fallback_no_reuse(torch.ops.dc.reduce_grad.default, src=True, force_free_input=True)
-    register_fallback_no_reuse(torch.ops.dc.free_tensors.default, src=True)
+    register_fallback_no_reuse(torch.ops.dc.allgather_param.default, never_reuse_input=False)
+    register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, never_reuse_input=True)
+    register_fallback_no_reuse(torch.ops.dc.release_param.default, never_reuse_input=True)
+    register_fallback_no_reuse(torch.ops.dc.reduce_grad.default, never_reuse_input=True, force_free_input=True)
+    register_fallback_no_reuse(torch.ops.dc.free_tensors.default, never_reuse_input=True)
 
     if not hasattr(Scheduler, "is_dc_patched") or not Scheduler.is_dc_patched:
         Scheduler.is_dc_patched = True

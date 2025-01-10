@@ -385,7 +385,14 @@ public:
         auto comp_stream = at::cuda::getCurrentCUDAStream();
 
         if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
+            int rank = process_group_->getRank();
+
             flushReduceBucket(scalar_type);
+
+            if (rank == 0) {
+                std::cout << "Flushed reduce bucket and synchronized" << std::endl;
+            }
+            c10::cuda::device_synchronize();
 
             // reduce_bucket is swapped in flushReduceBucket if double buffering is enabled
             reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
@@ -427,11 +434,6 @@ public:
 
             endBackward();
         }
-
-        // Inductor allocates memory for grad_tensor.
-        // If we disable reusing for this op, the memory is not freed by inductor and we need to
-        // free it here.
-        grad_tensor.set_data(torch::empty({0}, grad_tensor.options()));
 
         return at::Tensor();
     }

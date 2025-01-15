@@ -46,12 +46,6 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     return new_ag_node
 
 
-# def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int) -> Any:
-#     print(f"wrap_release_ds_param {x.__class__} {graph_id} {ds_id}")
-#     get_deepcompile_handle().release_param(graph_id, ds_id)
-#     return x
-
-
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
     new_node = add_postprocess(graph,
                                node,

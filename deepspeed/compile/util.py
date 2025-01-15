@@ -391,8 +391,6 @@ def add_mem_profile_nodes(graph: Graph, prefix: str):
 
 def is_release_node(n: Node) -> bool:
     return n.target == torch.ops.dc.release_param.default
-    # print(f"n.target: {n.target}")
-    # return hasattr(n.target, "__name__") and n.target.__name__ == "wrap_release_ds_param"
 
 
 def get_index_by_graph_id(graph_order, target_graph_id):

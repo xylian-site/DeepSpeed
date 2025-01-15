@@ -389,11 +389,6 @@ public:
 
             flushReduceBucket(scalar_type);
 
-            if (rank == 0) {
-                std::cout << "Flushed reduce bucket and synchronized" << std::endl;
-            }
-            c10::cuda::device_synchronize();
-
             // reduce_bucket is swapped in flushReduceBucket if double buffering is enabled
             reduce_bucket = reduce_buckets_->getBuffer(scalar_type);
         }

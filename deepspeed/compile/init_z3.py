@@ -74,4 +74,4 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     patch_fake_tensor()
     free_activation = compile_config.free_activation and not is_backend_inductor(backend)
-    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=free_activation, debug_log=True)
+    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=free_activation, debug_log=False)

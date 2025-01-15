@@ -178,11 +178,11 @@ def add_z3_gather_release(gm: GraphModule, graph_id: int, graph_order: List[int]
                                         profiling_results,
                                         create_inputs_fn,
                                         param_manager,
-                                        debug_log=True)
+                                        debug_log=False)
     return add_z3_gather_release_fw(gm,
                                     graph_id,
                                     graph_order,
                                     profiling_results,
                                     create_inputs_fn,
                                     param_manager,
-                                    debug_log=True)
+                                    debug_log=False)

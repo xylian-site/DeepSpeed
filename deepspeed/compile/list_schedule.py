@@ -280,28 +280,29 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
     scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer = init_schedule_with_placeholders(
         graph)
 
-    unscheduled_ags = [n for n in unscheduled if n.target == torch.ops.dc.allgather_param]
+    unscheduled_ags = [n for n in unscheduled if n.target == torch.ops.dc.allgather_param.default]
     release_nodes = {n.args[2]: n for n in unscheduled if is_release_node(n)}
 
     ag_nodes_in_path = {}
     for ag_node in unscheduled_ags:
         last_use = node_to_last_use[ag_node]
         required_nodes = get_node_requirements(last_use, scheduled)
-        ag_nodes_in_path[ag_node] = set(n for n in required_nodes if n.target == torch.ops.dc.allgather_param)
+        ag_nodes_in_path[ag_node] = set(n for n in required_nodes if n.target == torch.ops.dc.allgather_param.default)
 
-    reduce_nodes = [n for n in unscheduled if n.target == torch.ops.dc.reduce_grad]
+    reduce_nodes = [n for n in unscheduled if n.target == torch.ops.dc.reduce_grad.default]
     ag_nodes_in_path_to_reduce_nodes = {}
     for reduce_node in reduce_nodes:
         ag_nodes_in_path_to_reduce_nodes[reduce_node] = set(n for n in get_node_requirements(reduce_node, scheduled)
-                                                            if n.target == torch.ops.dc.allgather_param)
+                                                            if n.target == torch.ops.dc.allgather_param.default)
 
     output_nodes = [
-        n for n in get_output_node(graph).args[0] if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad
+        n for n in get_output_node(graph).args[0]
+        if isinstance(n, Node) and n.target != torch.ops.dc.reduce_grad.default
     ]
     ag_nodes_in_path_to_output_nodes = {}
     for output_node in output_nodes:
         ag_nodes_in_path_to_output_nodes[output_node] = set(n for n in get_node_requirements(output_node, scheduled)
-                                                            if n.target == torch.ops.dc.allgather_param)
+                                                            if n.target == torch.ops.dc.allgather_param.default)
 
     while len(unscheduled_ags) > 0:
 
@@ -328,12 +329,13 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
                 free_cost = sum(n.meta["device_time"] for n in diff_required_nodes)
                 allgathered_mem = node.meta["tensor_size"]
                 allgather_acc_mem = sum(n.meta["tensor_size"] for n in schedule_until_ag
-                                        if n.target == torch.ops.dc.allgather_param)
+                                        if n.target == torch.ops.dc.allgather_param.default)
                 free_acc_mem = sum(n.meta["tensor_size"] for n in diff_required_nodes
-                                   if n.target == torch.ops.dc.allgather_param)
+                                   if n.target == torch.ops.dc.allgather_param.default)
                 schedule_until_free = schedule_until_ag + diff_required_nodes + [release_nodes[ds_id]]
 
-                n_scheduled_ags = len([n for n in schedule_until_free if n.target == torch.ops.dc.allgather_param])
+                n_scheduled_ags = len(
+                    [n for n in schedule_until_free if n.target == torch.ops.dc.allgather_param.default])
 
                 task = AllgatherTask(node, allgather_cost, free_cost, allgathered_mem, allgather_acc_mem, free_acc_mem,
                                      last_use, n_scheduled_ags, schedule_until_ag, schedule_until_free)

@@ -179,24 +179,10 @@ public:
         }
     }
 
-    at::Tensor waitAllgather(at::Tensor v,
-                             const std::vector<long>& ds_ids,
-                             const std::string& user,
-                             long n_args,
-                             bool is_backward)
+    at::Tensor waitAllgather(at::Tensor v, long ds_id)
     {
-        GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
-
-        op_states.decrementArgCounter(user);
-
-        if (op_states.isArgCounterZero(user)) {
-            for (long ds_id : ds_ids) {
-                assert(hasKey(ag_comm_done_events_, ds_id));
-                ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
-            }
-            op_states_fwd_.resetArgCounter();
-        }
-
+        assert(hasKey(ag_comm_done_events_, ds_id));
+        ag_comm_done_events_[ds_id]->block(at::cuda::getCurrentCUDAStream());
         return v;
     }
 
@@ -396,26 +382,6 @@ void register_graph_z3(long graph_id, const std::vector<long>& ds_ids)
                                                                pre_div_reduce);
 }
 
-void register_graph_ops_z3(long graph_id,
-                           const std::vector<std::string>& op_names,
-                           const std::vector<long>& n_args)
-{
-    assert(op_names.size() == n_args.size());
-    for (int i = 0; i < op_names.size(); i++) {
-        executors[graph_id]->registerOpNArgs(op_names[i], n_args[i], false);
-    }
-}
-
-void register_bwd_graph_ops_z3(long graph_id,
-                               const std::vector<std::string>& op_names,
-                               const std::vector<long>& n_args)
-{
-    assert(hasKey(executors, graph_id));
-    for (int i = 0; i < op_names.size(); i++) {
-        executors[graph_id]->registerOpNArgs(op_names[i], n_args[i], true);
-    }
-}
-
 void register_z3_param(long ds_id,
                        const std::vector<int64_t>& ds_shape,
                        at::Tensor ds_tensor,
@@ -454,6 +420,12 @@ void prefetch_params_fused(long graph_id,
     executor->prefetchParamsFused(ds_ids, symm_mem);
 }
 
+void prefetch_params_fused_meta(long graph_id,
+                                const std::vector<at::Tensor> params,
+                                const std::vector<long>& ds_ids)
+{
+}
+
 // for profiling
 void invalidate_gathered_param(long ds_id)
 {
@@ -484,33 +456,25 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-void release_param(long graph_id, long ds_id)
+at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->releaseParam(ds_id);
+
+    if (clone_custom_op_output) { return dummy.clone(); }
+    return dummy;
 }
 
-at::Tensor wait_allgather(at::Tensor v,
-                          long graph_id,
-                          const std::vector<long>& ds_ids,
-                          const std::string& user,
-                          long n_args,
-                          bool is_backward)
+at::Tensor release_param_meta(at::Tensor dummy, long graph_id, long ds_id) { return dummy; }
+
+at::Tensor wait_allgather(at::Tensor v, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
-    executor->waitAllgather(v, ds_ids, user, n_args, is_backward);
+    executor->waitAllgather(v, ds_id);
     return v;
 }
 
-at::Tensor wait_allgather_meta(at::Tensor v,
-                               long graph_id,
-                               const std::vector<long>& ds_ids,
-                               const std::string& user,
-                               long n_args,
-                               bool is_backward)
-{
-    return v;
-}
+at::Tensor wait_allgather_meta(at::Tensor v, long graph_id, long ds_id) { return v; }
 
 at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id)
 {

@@ -12,7 +12,7 @@ class CompileConfig(DeepSpeedConfigModel):
     deepcompile: bool = False
     """ Turn on/off the DeepCompile mode """
 
-    free_activation: bool = True
+    free_activation: bool = False
     """ Turn on/off the free activation mode """
 
     offload_activation: bool = False

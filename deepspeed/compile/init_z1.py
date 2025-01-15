@@ -10,12 +10,12 @@ import torch
 from deepspeed.accelerator import get_accelerator
 from .passes import zero1_compile, zero3_compile
 from .backend import make_backend, launch_compile_passes, init_schedule
-from .util import get_deepcompile_handle, add_pre_backward_hook
+from .util import get_deepcompile_handle, add_pre_backward_hook, is_backend_inductor
 
 WARMUP = 5
 
 
-def init_z1(engine, compile_config, compile_kwargs, schedule=None):
+def init_z1(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     optimizer = engine.optimizer
     optimizer.contiguous_gradients = False  # Avoid creating unnecessary buffer
@@ -25,7 +25,7 @@ def init_z1(engine, compile_config, compile_kwargs, schedule=None):
 
     dc = get_deepcompile_handle()
     dc.init(engine.data_parallel_group, engine.zero_reduce_bucket_size(), compile_config.double_buffer,
-            compile_config.symmetric_memory)
+            compile_config.symmetric_memory, is_backend_inductor(backend))
 
     grad_buffer = {}
 
@@ -74,4 +74,4 @@ def init_z1(engine, compile_config, compile_kwargs, schedule=None):
     init_schedule(schedule)
 
     engine.launch_compile_passes = launch_compile_passes
-    return make_backend(compile_kwargs=compile_kwargs, free_activation=False)
+    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=False)

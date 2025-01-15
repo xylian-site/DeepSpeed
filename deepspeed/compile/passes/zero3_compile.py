@@ -4,13 +4,13 @@
 # DeepSpeed Team
 
 import gc
-from typing import List, Dict, Any
+from typing import List, Dict
 
 import torch
 from torch.fx import Graph, Node, GraphModule
 
 from ..util import get_input_nodes, get_param_nodes, get_index_by_graph_id, get_deepcompile_handle, get_last_uses
-from ..fx import add_postprocess, add_args_process, _make_node_meta, get_output_node, ops_no_wait, move_primals_to_head
+from ..fx import add_postprocess, _make_node_meta, get_output_node, move_primals_to_head
 from ..profilers.graph_profile import ProfilingInterpreter
 from ..list_schedule import fast_free_schedule
 
@@ -21,73 +21,49 @@ NAME = "zero3_compile"
 
 
 def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
-    new_node = add_postprocess(graph,
-                               node,
-                               torch.ops.dc.allgather_param,
-                               extra_args=[graph_id, ds_id],
-                               name=f"allgather_ds_param_{node.target}_{ds_id}",
-                               meta=_make_node_meta(node, ds_id, True))
+    new_ag_node = add_postprocess(graph,
+                                  node,
+                                  torch.ops.dc.allgather_param.default,
+                                  extra_args=[graph_id, ds_id],
+                                  name=f"allgather_ds_param_{node.target}_{ds_id}",
+                                  meta=_make_node_meta(node, ds_id, True))
+    new_ag_node.meta["val"] = node.meta["val"]
 
     # Set the previous node back to output
     # We don't want to change the output node to allgather
     output_node = get_output_node(graph)
-    output_node.replace_input_with(new_node, node)
-    return new_node
+    output_node.replace_input_with(new_ag_node, node)
+
+    # Add wait as well
+    new_wait_node = add_postprocess(graph,
+                                    new_ag_node,
+                                    torch.ops.dc.wait_allgather.default,
+                                    extra_args=[graph_id, ds_id],
+                                    name=f"wait_allgather_ds_param__{node.target}_{ds_id}",
+                                    meta=_make_node_meta(node, ds_id, False))
+    new_wait_node.meta["val"] = node.meta["val"]
+
+    return new_ag_node
 
 
 def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
-
-    nz3 = get_deepcompile_handle()
-
-    def wrap_release_ds_param(x: Any, graph_id: int, ds_id: int):
-        nz3.release_param(graph_id, ds_id)
-        return x
-
-    add_postprocess(graph,
-                    node,
-                    wrap_release_ds_param,
-                    extra_args=[graph_id, ds_id],
-                    name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
-                    meta=_make_node_meta(node, ds_id, False))
-
-
-def add_wait_allgather(graph_id: int, graph: Graph, node: Node, ds_ids: List[int], user: str, n_args: int, bwd: bool):
-    add_args_process(graph,
-                     node,
-                     torch.ops.dc.wait_allgather,
-                     extra_args=[graph_id, ds_ids, user, n_args, bwd],
-                     name=f"wait_allgather_ds_param_{'_'.join([str(ds_id) for ds_id in ds_ids])}",
-                     meta=_make_node_meta(node, ds_ids, False))
+    new_node = add_postprocess(graph,
+                               node,
+                               torch.ops.dc.release_param.default,
+                               extra_args=[graph_id, ds_id],
+                               name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
+                               meta=_make_node_meta(node, ds_id, False))
+    new_node.meta["val"] = None
 
 
 def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds_id: int):
-    add_postprocess(graph,
-                    grad_node,
-                    torch.ops.dc.reduce_grad,
-                    extra_args=[graph_id, ds_id],
-                    name=f"reduce_ds_param_{param_name}",
-                    meta=_make_node_meta(grad_node, ds_id, True))
-
-
-def register_and_add_wait_allgather(graph_id: int, graph: Graph, bwd: bool):
-
-    ds_ids = []
-    ag_user_nodes = []
-
-    for node in graph.nodes:
-        ag_args = [arg for arg in node.args if isinstance(arg, Node) and arg.target == torch.ops.dc.allgather_param]
-        if len(ag_args) > 0:
-            if node.target in ops_no_wait:
-                continue
-
-            ag_user_nodes.append(node)
-
-            ds_ids = [a.meta["ds_id"] for a in ag_args]
-            target_args = [arg for arg in node.args if isinstance(arg, Node)]
-            add_wait_allgather(graph_id, graph, node, ds_ids, node.name, len(target_args), bwd)
-            ds_ids.extend(ds_ids)
-
-    return ds_ids, ag_user_nodes
+    new_node = add_postprocess(graph,
+                               grad_node,
+                               torch.ops.dc.reduce_grad.default,
+                               extra_args=[graph_id, ds_id],
+                               name=f"reduce_ds_param_{param_name}",
+                               meta=_make_node_meta(grad_node, ds_id, True))
+    new_node.meta["val"] = None
 
 
 def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]) -> Graph:
@@ -134,7 +110,7 @@ def add_z3_gather_release_fw(gm: GraphModule,
 
     nz3.register_graph_z3(graph_id, [v[1] for v in param_indices])  # Need this before profiling
 
-    profiler = ProfilingInterpreter(gm, debug_log=False)
+    profiler = ProfilingInterpreter(gm, debug_log=debug_log)
     profiler.run(*real_inputs)
     del profiler
     gc.collect()
@@ -145,15 +121,20 @@ def add_z3_gather_release_fw(gm: GraphModule,
     if rank == 0 and debug_log:
         print(f"Fwd before scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
+    for n in gm.graph.nodes:
+        is_ds_param = n.name in param_manager[graph_id].ds_ids
+        if "val" in n.meta and is_ds_param:
+            # Used for Inductor's validation
+            n.meta["val"] = torch.empty([0], dtype=n.meta['val'].dtype, device=n.meta['val'].device)
+
     gm.graph = fast_free_schedule(
         gm.graph,
         get_accelerator().available_memory(),
         0,  # unused
         debug_log=debug_log)
 
-    _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, False)
-    nz3.register_graph_ops_z3(graph_id, [n.name for n in ag_wait_nodes],
-                              [len([arg for arg in n.args if isinstance(arg, Node)]) for n in ag_wait_nodes])
+    if rank == 0 and debug_log:
+        print(f"Fwd after scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
     return gm
 
@@ -173,8 +154,7 @@ def add_z3_gather_release_bw(gm: GraphModule,
     real_inputs = create_inputs_fn()
     assert len(input_nodes) == len(real_inputs), f"Expected {len(real_inputs)} inputs, got {len(input_nodes)}"
 
-    nz3 = get_deepcompile_handle()
-    real_outputs = ProfilingInterpreter(gm, debug_log=False).run(*real_inputs)
+    real_outputs = ProfilingInterpreter(gm, debug_log=debug_log).run(*real_inputs)
 
     del real_outputs
     gc.collect()
@@ -186,15 +166,23 @@ def add_z3_gather_release_bw(gm: GraphModule,
         print(f"Bwd before scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
     gm.graph = fast_free_schedule(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
-
-    _, ag_wait_nodes = register_and_add_wait_allgather(graph_id, gm.graph, True)
-    nz3.register_bwd_graph_ops_z3(graph_id, [n.name for n in ag_wait_nodes], [len(n.args) for n in ag_wait_nodes])
-
     return gm
 
 
 def add_z3_gather_release(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
                           mem_budget: float, param_manager, bwd: bool) -> GraphModule:
     if bwd:
-        return add_z3_gather_release_bw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
-    return add_z3_gather_release_fw(gm, graph_id, graph_order, profiling_results, create_inputs_fn, param_manager)
+        return add_z3_gather_release_bw(gm,
+                                        graph_id,
+                                        graph_order,
+                                        profiling_results,
+                                        create_inputs_fn,
+                                        param_manager,
+                                        debug_log=False)
+    return add_z3_gather_release_fw(gm,
+                                    graph_id,
+                                    graph_order,
+                                    profiling_results,
+                                    create_inputs_fn,
+                                    param_manager,
+                                    debug_log=False)

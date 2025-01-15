@@ -59,11 +59,11 @@ def offload_activation_fwd(graph: Graph, graph_id: int, nodes_to_offload_with_na
         val_id = get_random_id()
         with graph.inserting_after(node):
             offload_node = graph.create_node('call_function',
-                                             torch.ops.dc.offload_tensor, (node, graph_id, val_id), {},
+                                             torch.ops.dc.offload_tensor.default, (node, graph_id, val_id), {},
                                              name=f"offload_{node.name}_{val_id}")
         with graph.inserting_after(offload_node):
             wait_node = graph.create_node('call_function',
-                                          torch.ops.dc.wait_offload, (offload_node, graph_id, val_id), {},
+                                          torch.ops.dc.wait_offload.default, (offload_node, graph_id, val_id), {},
                                           name=f"wait_copy_{node.name}_{val_id}")
 
         output_node = get_output_node(graph)
@@ -96,11 +96,11 @@ def reload_activation_bwd(graph: Graph, graph_id: int, graph_order: List[int], m
 
         with graph.inserting_before(node_to_first_user[node]):
             reload_node = graph.create_node('call_function',
-                                            torch.ops.dc.reload_tensor, (node, graph_id, val_id), {},
+                                            torch.ops.dc.reload_tensor.default, (node, graph_id, val_id), {},
                                             name=f"reload_{node.name}_{val_id}")
         with graph.inserting_after(reload_node):
             wait_node = graph.create_node('call_function',
-                                          torch.ops.dc.wait_reload, (reload_node, graph_id, val_id), {},
+                                          torch.ops.dc.wait_reload.default, (reload_node, graph_id, val_id), {},
                                           name=f"wait_copy_{node.name}_{val_id}")
 
         # replace all uses of node with wait_node

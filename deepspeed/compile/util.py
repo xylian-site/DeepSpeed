@@ -42,6 +42,10 @@ def get_deepcompile_handle():
     return dc_handle
 
 
+def is_backend_inductor(backend):
+    return backend == "inductor"
+
+
 backward_started = False
 pre_backward_hooks = []
 
@@ -69,7 +73,7 @@ def get_no_copy_ops():
     get_deepcompile_handle()
     return {
         torch.ops.aten.t.default, torch.ops.aten.view.default, torch.ops.aten.detach.default,
-        torch.ops.dc.wait_allgather
+        torch.ops.aten.permute.default, torch.ops.dc.wait_allgather.default
     }
 
 
@@ -386,7 +390,7 @@ def add_mem_profile_nodes(graph: Graph, prefix: str):
 
 
 def is_release_node(n: Node) -> bool:
-    return hasattr(n.target, "__name__") and n.target.__name__ == "wrap_release_ds_param"
+    return n.target == torch.ops.dc.release_param.default
 
 
 def get_index_by_graph_id(graph_order, target_graph_id):

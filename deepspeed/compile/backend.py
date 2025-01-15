@@ -7,6 +7,7 @@ from typing import Dict, List, Callable
 import time
 
 import torch
+import torch._inductor.scheduler
 from torch.fx import Graph, GraphModule
 from functorch.compile import make_boxed_func
 import torch.utils._pytree as pytree
@@ -22,6 +23,7 @@ from .profilers.graph_profile import MemoryProfilingInterpreter
 from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get_backward_inputs
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0
 from .partitioner import get_wrapped_partitioner
+from .inductor import register_custom_ops, patch_create_aot_dispatcher_function
 
 remaining_schedule = None
 next_pass_step = -1
@@ -109,16 +111,18 @@ def run_opt_passes(opt_passes: List[Callable],
         gm.graph.lint()
         gm.recompile()
 
-        mem_prof = MemoryProfilingInterpreter(gm)
+        mem_prof = MemoryProfilingInterpreter(gm, debug_log=debug_log)
         mem_prof.run(*create_inputs_fn())
         mem = [(name, current_alloc, delta, peak) for name, current_alloc, delta, peak in mem_prof.mem_record]
 
         set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
 
 
-def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
+def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):
 
-    def backend(gm: GraphModule, real_inputs):
+    register_custom_ops()
+
+    def backend_fn(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
@@ -141,10 +145,10 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             profiling_results[graph_id].param_indices = param_indices
             profiling_results[graph_id].needs_backward = needs_backward
 
-        def fw(gm, sample_inputs):
+        def make_fw_graph(gm, sample_inputs):
             time_start = time.time()
             graph_index = len(graph_order) - 1
-            log_rank0(f"Fwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
+            log_rank0(f"Fwd start {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}",
                       enable=debug_log)
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
@@ -167,10 +171,19 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
 
             opt_pass_times.append(("fwd", graph_index, graph_id, time.time() - time_start))
 
-            return make_boxed_func(gm.forward)
+            log_rank0(
+                f"Fwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
+                enable=debug_log)
 
-        def bw(gm, sample_inputs):
+            return gm.graph
+
+        def make_bw_graph(gm, sample_inputs):
             time_start = time.time()
+
+            graph_index = get_index_by_graph_id(graph_order, graph_id)
+            log_rank0(
+                f"Bwd start {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
+                enable=debug_log)
 
             bwd_inputs_stack = get_backward_inputs()
 
@@ -193,11 +206,6 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
                 bwd=True,
                 debug_log=debug_log)
 
-            graph_index = get_index_by_graph_id(graph_order, graph_id)
-
-            log_rank0(f"Bwd start {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
-                      enable=debug_log)
-
             # assert graph_id in param_manager, f"Graph {graph_id} not found in param_manager"
 
             if free_activation:
@@ -212,22 +220,39 @@ def make_backend(compile_kwargs={}, free_activation=True, debug_log=False):
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
 
-            log_rank0(f"Bwd end {graph_index} graph_id={graph_id}  alloc_mem={get_accelerator().memory_allocated()}",
-                      enable=debug_log)
+            log_rank0(
+                f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",
+                enable=debug_log)
 
             gm.recompile()
             opt_pass_times.append(("bwd", graph_index, graph_id, time.time() - time_start))
 
-            return make_boxed_func(gm.forward)
+            return gm.graph
 
-        # Call AOTAutograd
-        aot_mod = aot_module_simplified(gm,
-                                        real_inputs,
-                                        fw_compiler=fw,
-                                        bw_compiler=bw,
-                                        partition_fn=get_wrapped_partitioner(param_indices))
-        aot_mod = torch._dynamo.optimize(**compile_kwargs)(aot_mod)
+        if backend == "eager":
 
-        return aot_mod
+            def make_compiler_fn(make_graph_fn):
 
-    return backend
+                def compiler_fn(gm, sample_inputs):
+                    make_graph_fn(gm, sample_inputs)
+                    return make_boxed_func(gm.forward)
+
+                return compiler_fn
+
+            aot_mod = aot_module_simplified(gm,
+                                            real_inputs,
+                                            fw_compiler=make_compiler_fn(make_fw_graph),
+                                            bw_compiler=make_compiler_fn(make_bw_graph),
+                                            partition_fn=get_wrapped_partitioner(param_indices))
+            return torch._dynamo.optimize(**compile_kwargs)(aot_mod)
+        elif backend == "inductor":
+            patch_create_aot_dispatcher_function(graph_id, z3_partition, make_fw_graph, make_bw_graph, real_inputs,
+                                                 param_indices, param_manager)
+            from .partitioner import get_wrapped_choose_saved_values_set
+            torch._functorch.partitioners.choose_saved_values_set = get_wrapped_choose_saved_values_set(param_indices)
+
+            return torch._inductor.compile(gm, real_inputs)
+
+        raise ValueError(f"Unsupported backend {backend}")
+
+    return backend_fn

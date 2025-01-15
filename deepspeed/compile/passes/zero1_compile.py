@@ -36,12 +36,13 @@ def add_z1_reduce_bw(gm: GraphModule, graph_id: int, param_manager) -> GraphModu
         assert param_name in pm.ds_ids, f"param_name={param_name} not in ds_ids"
         ds_id = pm.ds_ids[param_name]
 
-        add_postprocess(graph,
-                        grad_node,
-                        torch.ops.dc.reduce_grad,
-                        extra_args=[graph_id, ds_id],
-                        name=f"reduce_param_{param_name}",
-                        meta=_make_node_meta(grad_node, param_name, True))
+        new_node = add_postprocess(graph,
+                                   grad_node,
+                                   torch.ops.dc.reduce_grad.default,
+                                   extra_args=[graph_id, ds_id],
+                                   name=f"reduce_param_{param_name}",
+                                   meta=_make_node_meta(grad_node, param_name, True))
+        new_node.meta["val"] = None
 
     gm.graph = move_primals_to_head(graph)
     return gm

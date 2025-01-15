@@ -93,6 +93,7 @@ extern c10::intrusive_ptr<c10d::ProcessGroup> process_group;
 extern c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> symm_mem;
 extern ncclComm_t nccl_comm;
 extern bool use_symm_mem;
+extern bool clone_custom_op_output;
 extern bool profile;
 extern bool pre_div_reduce;
 
@@ -104,53 +105,6 @@ c10::intrusive_ptr<c10d::symmetric_memory::SymmetricMemory> getSymmMemWorkspace(
 void lazy_init_symm_memory();
 ncclDataType_t get_nccl_data_type(at::ScalarType scalar_type);
 void cleanup();
-
-class GraphOpStates {
-public:
-    GraphOpStates() {}
-    ~GraphOpStates() {}
-
-    void registerOpNArgs(const std::string& op_name, long n_args)
-    {
-        op_n_args_[op_name] = n_args;
-        args_counter_[op_name] = n_args;
-    }
-
-    void resetArgCounter()
-    {
-        // std::cout << "resetArgCounter size op_n_args_ " << op_n_args_.size() << std::endl;
-
-        for (const auto& it : op_n_args_) {
-            assert(hasKey(op_n_args_, it.first));
-            args_counter_[it.first] = op_n_args_.at(it.first);
-        }
-    }
-
-    void decrementArgCounter(const std::string& op_name)
-    {
-        // std::cout << "decrementArgCounter " << op_name << std::endl;
-
-        assert(hasKey(args_counter_, op_name));
-        if (args_counter_.at(op_name) == 0) return;
-        args_counter_[op_name]--;
-    }
-
-    long getArgCounter(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name);
-    }
-
-    bool isArgCounterZero(const std::string& op_name) const
-    {
-        assert(hasKey(args_counter_, op_name));
-        return args_counter_.at(op_name) == 0;
-    }
-
-private:
-    std::unordered_map<std::string, size_t> op_n_args_;
-    std::unordered_map<std::string, size_t> args_counter_;
-};
 
 class ReduceTask {
 public:
@@ -413,12 +367,6 @@ public:
     }
     ~CustomOpExecutor() {}
 
-    void registerOpNArgs(const std::string& op_name, long n_args, bool is_backward)
-    {
-        GraphOpStates& op_states = is_backward ? op_states_bwd_ : op_states_fwd_;
-        op_states.registerOpNArgs(op_name, n_args);
-    }
-
     virtual void startForward() {}
 
     virtual void endForward() {}
@@ -437,6 +385,8 @@ public:
         auto comp_stream = at::cuda::getCurrentCUDAStream();
 
         if (reduce_bucket->shouldFlush(grad_tensor.numel())) {
+            int rank = process_group_->getRank();
+
             flushReduceBucket(scalar_type);
 
             // reduce_bucket is swapped in flushReduceBucket if double buffering is enabled
@@ -454,7 +404,7 @@ public:
         // This ensures the order of reduce_scatter -> copy
         // Without this block, copy may start while reduce_scatter is still running
         reduce_buckets_->getEvent(scalar_type)->block(comp_stream);
-        auto copy_src = grad_tensor.contiguous().view({-1});
+        auto copy_src = grad_tensor.contiguous().view({-1}).detach();
         // keep references to copy src
         reduce_tasks_[scalar_type].emplace_back(ds_id, copy_src, reduce_in_buffer);
 
@@ -493,8 +443,6 @@ protected:
     ncclComm_t nccl_comm_;
     at::cuda::CUDAStream rs_stream_;
     at::cuda::CUDAStream copy_stream_;
-    GraphOpStates op_states_fwd_ = GraphOpStates();
-    GraphOpStates op_states_bwd_ = GraphOpStates();
 
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_comp_done_events_;
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> rs_copy_done_events_;
@@ -527,13 +475,15 @@ extern std::unordered_map<long, std::shared_ptr<CustomOpExecutor>> executors;
 extern std::shared_ptr<DoubleBufferedReduceBucket> reduce_buckets;
 
 at::Tensor reduce_grad(at::Tensor grad_tensor, long graph_id, long ds_id);
-void free_tensors(std::vector<at::Tensor> tensors);
 at::Tensor reduce_grad_meta(at::Tensor grad_tensor, long graph_id, long ds_id);
+void free_tensors(std::vector<at::Tensor> tensors);
+void free_tensors_meta(std::vector<at::Tensor> tensors);
 
 void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           int64_t initial_reduce_bucket_size,
           bool enable_double_buffer,
-          bool _use_symm_mem);
+          bool _use_symm_mem,
+          bool _clone_custom_op_output);
 void reset();
 void cleanup();
 

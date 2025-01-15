@@ -3734,7 +3734,7 @@ class DeepSpeedEngine(Module):
         if 'backend' in compile_kwargs:
             logger.warning("The `backend` in `compile_kwargs` will be overridden. Use the `backend` argument instead.")
 
-        print(f"Compiling deepcompile={self.is_deepcompile_enabled()}")
+        print(f"Compiling deepcompile={self.is_deepcompile_enabled()} backend={backend}")
 
         if self.is_deepcompile_enabled():
             assert self.zero_optimization_stage() == ZeroStageEnum.optimizer_states \
@@ -3750,11 +3750,13 @@ class DeepSpeedEngine(Module):
 
                 schedule = [(step, passes_name_to_fn(passes)) for step, passes in schedule]
 
+            assert backend in ['inductor', 'eager'], f"Backend {backend} is not supported for DeepCompile."
+
             compile_config = self._config.compile_config
             if self.zero_optimization_stage() == ZeroStageEnum.optimizer_states:
-                backend = init_z1(self, compile_config, compile_kwargs, schedule)
+                backend = init_z1(self, backend, compile_config, compile_kwargs, schedule)
             elif self.zero_optimization_stage() == ZeroStageEnum.weights:
-                backend = init_z3(self, compile_config, compile_kwargs, schedule)
+                backend = init_z3(self, backend, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict
         self.module.compile(**{**compile_kwargs, 'backend': backend})

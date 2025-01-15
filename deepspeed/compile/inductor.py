@@ -99,7 +99,11 @@ def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make
 
 def register_custom_ops():
 
-    def fallback_handler_no_reuse(kernel, never_reuse_input, force_free_input, add_to_fallback_set=True):
+    def fallback_handler_no_reuse(kernel,
+                                  never_reuse_input,
+                                  never_reuse_output,
+                                  force_free_input,
+                                  add_to_fallback_set=True):
         if add_to_fallback_set:
             fallbacks.add(kernel)
 
@@ -107,7 +111,7 @@ def register_custom_ops():
 
             def wrap_tensors(x):
                 out = TensorBox.create(x) if isinstance(x, torch._inductor.ir.IRNode) else x
-                if out is not None:
+                if out is not None and never_reuse_output:
                     V.graph.never_reuse_buffers.add(out.get_name())
                 return out
 
@@ -157,18 +161,27 @@ def register_custom_ops():
 
         return handler
 
-    def register_fallback_no_reuse(op_overload, never_reuse_input=False, force_free_input=False):
+    def register_fallback_no_reuse(op_overload,
+                                   never_reuse_input=False,
+                                   never_reuse_output=False,
+                                   force_free_input=False):
         add_needs_realized_inputs(op_overload)
         return register_lowering(op_overload, type_promotion_kind=None)(fallback_handler_no_reuse(
-            op_overload, never_reuse_input=never_reuse_input, force_free_input=force_free_input))
+            op_overload,
+            never_reuse_input=never_reuse_input,
+            never_reuse_output=never_reuse_output,
+            force_free_input=force_free_input))
 
     # Inductor tries to reuse output buffer when possible. We need to disable this behavior for some custom ops.
     # -> It seems that memory region is still reused in some cases. So we clone the inputs for some ops.
-    register_fallback_no_reuse(torch.ops.dc.allgather_param.default, never_reuse_input=False)
-    register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, never_reuse_input=True)
-    register_fallback_no_reuse(torch.ops.dc.release_param.default, never_reuse_input=True)
-    register_fallback_no_reuse(torch.ops.dc.reduce_grad.default, never_reuse_input=True, force_free_input=True)
-    register_fallback_no_reuse(torch.ops.dc.free_tensors.default, never_reuse_input=True)
+    register_fallback_no_reuse(torch.ops.dc.allgather_param.default, never_reuse_input=False, never_reuse_output=True)
+    register_fallback_no_reuse(torch.ops.dc.wait_allgather.default, never_reuse_input=True, never_reuse_output=True)
+    register_fallback_no_reuse(torch.ops.dc.release_param.default, never_reuse_input=True, never_reuse_output=False)
+    register_fallback_no_reuse(torch.ops.dc.reduce_grad.default,
+                               never_reuse_input=True,
+                               never_reuse_output=True,
+                               force_free_input=True)
+    register_fallback_no_reuse(torch.ops.dc.free_tensors.default, never_reuse_input=True, never_reuse_output=True)
 
     if not hasattr(Scheduler, "is_dc_patched") or not Scheduler.is_dc_patched:
         Scheduler.is_dc_patched = True

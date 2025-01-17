@@ -77,6 +77,5 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     patch_fake_tensor()
     free_activation = compile_config.free_activation and not is_backend_inductor(backend)
 
-    # Read env var "DC_DEBUG" and set debug_log=True if it is "1"
     debug_log = os.environ.get("DC_DEBUG", "0") == "1"
     return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=free_activation, debug_log=debug_log)

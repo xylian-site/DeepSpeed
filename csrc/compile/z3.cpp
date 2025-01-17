@@ -471,6 +471,7 @@ at::Tensor wait_allgather(at::Tensor v, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->waitAllgather(v, ds_id);
+    if (clone_custom_op_output) { return v.clone(); }
     return v;
 }
 

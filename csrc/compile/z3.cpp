@@ -49,6 +49,8 @@ public:
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
             ag_comp_done_events_[ds_id] =
                 std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+
+            param_use_count_[ds_id] = 0;
         }
     }
     ~Z3CustomOpExecutor() {}
@@ -162,11 +164,15 @@ public:
         for (long ds_id : invalid_ds_ids) { ag_comm_done_events_[ds_id]->record(ag_stream_); }
     }
 
-    void releaseParam(long ds_id)
+    void releaseParam(long ds_id, long n_users)
     {
         const DSParam& param = param_registry_->getParam(ds_id);
 
-        if (!param.isPersistent()) {
+        assert(hasKey(param_use_count_, ds_id));
+        if (param_use_count_[ds_id] == 0) { param_use_count_[ds_id] = n_users; }
+        param_use_count_[ds_id]--;
+
+        if (param_use_count_[ds_id] == 0 && !param.isPersistent()) {
             at::Tensor gathered_param = param_registry_->getGatheredParam(ds_id);
 
             if (gathered_param.defined()) {  // gathered param is undefined while profiling
@@ -359,6 +365,8 @@ private:
     std::unordered_map<long, std::shared_ptr<at::cuda::CUDAEvent>> reload_events_;
     std::unordered_map<long, at::Tensor> offload_buffers_;
     std::unordered_map<long, at::Tensor> reload_buffers_;
+
+    std::unordered_map<long, long> param_use_count_;
 };
 
 static at::cuda::CUDAStream ag_stream = at::cuda::getStreamFromPool(true);
@@ -456,22 +464,24 @@ at::Tensor allgather_param_meta(at::Tensor param_tensor, long graph_id, long ds_
     return output_buf;
 }
 
-at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id)
+at::Tensor release_param(at::Tensor dummy, long graph_id, long ds_id, long n_users)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
-    executor->releaseParam(ds_id);
+    executor->releaseParam(ds_id, n_users);
 
     if (clone_custom_op_output) { return dummy.clone(); }
     return dummy;
 }
 
-at::Tensor release_param_meta(at::Tensor dummy, long graph_id, long ds_id) { return dummy; }
+at::Tensor release_param_meta(at::Tensor dummy, long graph_id, long ds_id, long n_users)
+{
+    return dummy;
+}
 
 at::Tensor wait_allgather(at::Tensor v, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
     executor->waitAllgather(v, ds_id);
-    if (clone_custom_op_output) { return v.clone(); }
     return v;
 }
 

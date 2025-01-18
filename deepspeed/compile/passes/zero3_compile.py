@@ -9,7 +9,7 @@ from typing import List, Dict
 import torch
 from torch.fx import Graph, Node, GraphModule
 
-from ..util import get_input_nodes, get_param_nodes, get_index_by_graph_id, get_deepcompile_handle, get_last_uses
+from ..util import get_input_nodes, get_param_nodes, get_index_by_graph_id, get_deepcompile_handle, get_real_uses
 from ..fx import add_postprocess, _make_node_meta, get_output_node, move_primals_to_head
 from ..profilers.graph_profile import ProfilingInterpreter
 from ..list_schedule import fast_free_schedule
@@ -46,11 +46,11 @@ def add_allgather(graph_id: int, graph: Graph, node: Node, ds_id: int):
     return new_ag_node
 
 
-def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int):
+def add_release(graph_id: int, graph: Graph, node: Node, release_node: Node, ds_id: int, n_users: int):
     new_node = add_postprocess(graph,
                                node,
                                torch.ops.dc.release_param.default,
-                               extra_args=[graph_id, ds_id],
+                               extra_args=[graph_id, ds_id, n_users],
                                name=f"release_ds_param_{release_node.target}_{node.name}_{ds_id}",
                                meta=_make_node_meta(node, ds_id, False))
     new_node.meta["val"] = None
@@ -67,16 +67,14 @@ def add_reduce(graph_id: int, graph: Graph, grad_node: Node, param_name: str, ds
 
 
 def add_gather_and_release(graph_id: int, graph: Graph, param_manager, param_nodes: List[Node]) -> Graph:
-    ag_nodes = []
-    for pn in param_nodes:
-        ag_node = add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
-        ag_nodes.append((pn, ag_node))
 
-    node_to_last_use, _ = get_last_uses(graph)
-    for pn, ag in ag_nodes:
-        last_use = node_to_last_use[ag]
+    node_to_uses = get_real_uses(graph)
+    for pn in param_nodes:
+        add_allgather(graph_id, graph, pn, param_manager.ds_ids[pn.name])
         ds_id = param_manager.ds_ids[pn.name]
-        add_release(graph_id, graph, last_use, pn, ds_id)
+        users = node_to_uses[pn]
+        for user in users:
+            add_release(graph_id, graph, user, pn, ds_id, len(users))
 
     return move_primals_to_head(graph)
 

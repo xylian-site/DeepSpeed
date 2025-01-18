@@ -6,6 +6,7 @@
 import functools
 import operator
 from typing import List, Tuple, Dict
+from collections import defaultdict
 
 import torch
 from torch.fx import Node, Graph
@@ -220,6 +221,27 @@ def get_last_uses(graph: Graph):
         map_arg(node.kwargs, lambda n: register_last_uses(n, node))
 
     return node_to_last_use, user_to_last_uses
+
+
+def get_real_uses(graph: Graph):
+    node_to_uses: Dict[Node, List[Node]] = defaultdict(list)
+    no_copy_ops = get_no_copy_ops()
+
+    def register_last_uses(n: Node, user: Node):
+        if user.target == "output":
+            return
+
+        if user.target in no_copy_ops:
+            users = node_to_uses[user]
+            node_to_uses[n].extend(users)
+        else:
+            node_to_uses[n].append(user)
+
+    for node in reversed(graph.nodes):
+        map_arg(node.args, lambda n: register_last_uses(n, node))
+        map_arg(node.kwargs, lambda n: register_last_uses(n, node))
+
+    return node_to_uses
 
 
 def count_inflight_values(graph: Graph, file_path: str):

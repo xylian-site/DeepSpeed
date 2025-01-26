@@ -3,8 +3,6 @@
 
 # DeepSpeed Team
 
-import os
-
 import torch
 
 from deepspeed import comm as dist
@@ -27,8 +25,9 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
         get_accelerator().empty_cache()
 
     dc = get_deepcompile_handle()
-    dc.init(engine.data_parallel_group, engine.zero_reduce_bucket_size(), compile_config.double_buffer,
-            compile_config.symmetric_memory, is_backend_inductor(backend))
+    dc.init(engine.data_parallel_group,
+            engine.zero_reduce_bucket_size(), compile_config.double_buffer, compile_config.symmetric_memory,
+            is_backend_inductor(backend), compile_config.sync_before_reduce, compile_config.sync_after_reduce)
 
     # Unset hooks
     for m in engine.module.modules():
@@ -74,8 +73,14 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     engine.launch_compile_passes = launch_compile_passes
 
+    # print(f"allgathering params")
+    # params = list(engine.module.parameters())
+    # params[0].all_gather(param_list=params)
+
     patch_fake_tensor()
     free_activation = compile_config.free_activation and not is_backend_inductor(backend)
 
-    debug_log = os.environ.get("DC_DEBUG", "0") == "1"
-    return make_backend(backend, compile_kwargs=compile_kwargs, free_activation=free_activation, debug_log=debug_log)
+    return make_backend(backend,
+                        compile_kwargs=compile_kwargs,
+                        free_activation=free_activation,
+                        debug_log=compile_config.debug_log)

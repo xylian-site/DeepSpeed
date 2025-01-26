@@ -27,5 +27,11 @@ class CompileConfig(DeepSpeedConfigModel):
     symmetric_memory: bool = False
     """ Turn on/off the symmetric memory """
 
-    dump_graphs: bool = False
+    debug_log: bool = False
     """ Turn on/off the graph dumping """
+
+    sync_before_reduce: bool = False
+    """ Turn on/off the sync before reduce """
+
+    sync_after_reduce: bool = False
+    """ Turn on/off the sync after reduce """

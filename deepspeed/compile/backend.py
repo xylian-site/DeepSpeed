@@ -234,8 +234,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
             def make_compiler_fn(make_graph_fn):
 
                 def compiler_fn(gm, sample_inputs):
-                    make_graph_fn(gm, sample_inputs)
-                    return make_boxed_func(gm.forward)
+                    return None if make_graph_fn(gm, sample_inputs) is None else make_boxed_func(gm.forward)
 
                 return compiler_fn
 

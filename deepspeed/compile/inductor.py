@@ -33,7 +33,11 @@ def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make
 
             def wrapped_compiler(gm, fake_inputs):
                 dc_compiler = make_bw_graph if bwd else make_fw_graph
-                dc_compiler(gm, fake_inputs)
+                mod_graph = dc_compiler(gm, fake_inputs)
+
+                # For symint case
+                if mod_graph is None:
+                    return None
 
                 if z3_partition:
                     # Inductor validates input size estimated by the first trace, where ds tensor is materialized.

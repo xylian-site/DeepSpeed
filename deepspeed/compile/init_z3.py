@@ -27,7 +27,8 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     dc = get_deepcompile_handle()
     dc.init(engine.data_parallel_group,
             engine.zero_reduce_bucket_size(), compile_config.double_buffer, compile_config.symmetric_memory,
-            is_backend_inductor(backend), compile_config.sync_before_reduce, compile_config.sync_after_reduce)
+            is_backend_inductor(backend), compile_config.sync_before_reduce, compile_config.sync_after_reduce,
+            compile_config.sync_before_allgather, compile_config.sync_after_allgather)
 
     # Unset hooks
     for m in engine.module.modules():
@@ -65,9 +66,9 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     if schedule is None:
         schedule = []
         schedule.append((0, [zero3_compile.add_z3_gather_release]))
-        schedule.append(
-            (WARMUP,
-             [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
+        # schedule.append(
+        #     (WARMUP,
+        #      [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
 
     init_schedule(schedule)
 

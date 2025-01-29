@@ -35,3 +35,9 @@ class CompileConfig(DeepSpeedConfigModel):
 
     sync_after_reduce: bool = False
     """ Turn on/off the sync after reduce """
+
+    sync_before_allgather: bool = False
+    """ Turn on/off the sync before allgather """
+
+    sync_after_allgather: bool = False
+    """ Turn on/off the sync after allgather """

@@ -97,8 +97,10 @@ extern bool clone_custom_op_output;
 extern bool profile;
 extern bool pre_div_reduce;
 
-extern bool sync_before_reduce;  // for debugging
-extern bool sync_after_reduce;   // for debugging
+extern bool sync_before_reduce;     // for debugging
+extern bool sync_after_reduce;      // for debugging
+extern bool sync_before_allgather;  // for debugging
+extern bool sync_after_allgather;   // for debugging
 
 std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes);
 void enable_profiling(bool enable);
@@ -488,7 +490,9 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           bool _use_symm_mem,
           bool _clone_custom_op_output,
           bool _sync_before_reduce,
-          bool _sync_after_reduce);
+          bool _sync_after_reduce,
+          bool _sync_before_allgather,
+          bool _sync_after_allgather);
 void reset();
 void cleanup();
 

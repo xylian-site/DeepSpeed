@@ -21,8 +21,10 @@ bool clone_custom_op_output;
 bool profile = false;
 bool pre_div_reduce = true;
 
-bool sync_before_reduce;  // for debugging
-bool sync_after_reduce;   // for debugging
+bool sync_before_reduce;     // for debugging
+bool sync_after_reduce;      // for debugging
+bool sync_before_allgather;  // for debugging
+bool sync_after_allgather;   // for debugging
 
 std::vector<int64_t> sizes_to_int_vector(at::IntArrayRef sizes)
 {
@@ -126,7 +128,9 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
           bool _use_symm_mem,
           bool _clone_custom_op_output,
           bool _sync_before_reduce,
-          bool _sync_after_reduce)
+          bool _sync_after_reduce,
+          bool _sync_before_allgather,
+          bool _sync_after_allgather)
 {
     process_group = pg;
 
@@ -156,6 +160,8 @@ void init(c10::intrusive_ptr<c10d::ProcessGroup> pg,
 
     sync_before_reduce = _sync_before_reduce;
     sync_after_reduce = _sync_after_reduce;
+    sync_before_allgather = _sync_before_allgather;
+    sync_after_allgather = _sync_after_allgather;
 }
 
 void start_forward()

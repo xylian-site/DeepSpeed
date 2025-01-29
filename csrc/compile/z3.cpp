@@ -403,7 +403,11 @@ void register_z3_param(long ds_id,
 at::Tensor allgather_param(at::Tensor param_tensor, long graph_id, long ds_id)
 {
     auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
-    return executor->allgatherParam(ds_id, symm_mem);
+
+    if (sync_before_allgather) { c10::cuda::device_synchronize(); }
+    auto ret = executor->allgatherParam(ds_id, symm_mem);
+    if (sync_after_allgather) { c10::cuda::device_synchronize(); }
+    return ret;
 }
 
 void set_persistent(long ds_id)

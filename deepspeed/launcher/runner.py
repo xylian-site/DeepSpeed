@@ -207,6 +207,11 @@ def parse_args(args=None):
 
     parser.add_argument("--ssh_port", type=int, default=None, help="SSH port to use for remote connections")
 
+    parser.add_argument("--venv_script",
+                        type=str,
+                        default=None,
+                        help="Python virtual environment activation script for job.")
+
     return parser.parse_args(args=args)
 
 
@@ -491,7 +496,7 @@ def main(args=None):
         args.master_addr = result.decode('utf-8').split()[0]
         if not args.master_addr:
             raise RuntimeError(
-                f"Unable to detect suitable master address via `hostname -I`, please manually specify one via --master_addr"
+                "Unable to detect suitable master address via `hostname -I`, please manually specify one via --master_addr"
             )
         logger.info(f"Using IP address of {args.master_addr} for node {first_host}")
 

@@ -188,7 +188,6 @@ class PipelinedOptimizerSwapper(OptimizerSwapper):
                 dst.data.copy_(unpinned_src.data)
 
         swap_paths = param_info.get_swap_paths()
-        # swap_paths = param_info.swap_paths.copy()
         assert len(swap_paths) == len(swap_buffers)
 
         swap_out_tensors(aio_handle, swap_buffers, swap_paths)
@@ -221,7 +220,6 @@ class PipelinedOptimizerSwapper(OptimizerSwapper):
 
         swap_buffers = state_buffers.copy()
         swap_paths = param_info.get_swap_paths()
-        # swap_paths = param_info.swap_paths.copy()
 
         if param_info.has_gradients():
             parameter.grad = allocated_buffers[-1].narrow(0, 0, param_info.numel())

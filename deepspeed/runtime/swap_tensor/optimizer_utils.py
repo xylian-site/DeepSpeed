@@ -48,7 +48,6 @@ class OptimizerStateSwapInfo(object):
         self.tensors = []
         self.param_id = OptimizerSwapper.parameter_id(parameter)
         self.swap_folder = base_folder
-        # self.swap_paths = []
         self.swapped_gradients = {}
         self.unswapped_gradients = {}
         self.tensor_numel = numel
@@ -67,8 +66,6 @@ class OptimizerStateSwapInfo(object):
     def _add_tensors(self, tensor_list):
         for t in tensor_list:
             self.tensors.append(SwapTensorContext(t, self.swap_folder))
-            # self.tensors.append(t)
-            # self.swap_paths.append(os.path.join(self.swap_folder, f'{OptimizerSwapper.parameter_id(t)}.tensor.swp'))
 
     def add_state_tensors(self, tensor_list):
         self.has_state_tensors = True
@@ -86,7 +83,6 @@ class OptimizerStateSwapInfo(object):
     def release_memory(self):
         for t in self.tensors:
             t.release_memory()
-            # tensor.data = torch.Tensor()
 
     def get_compute_tensors(self):
         return [t.compute_tensor for t in self.tensors]
@@ -123,8 +119,6 @@ class OptimizerStateSwapInfo(object):
 
         for i, t in enumerate(self.tensors):
             t.set_buffers(compute_buffer=compute_buffers[i], swap_buffer=swap_buffers[i])
-        # for t, buffer in zip(self.tensors, compute_buffers):
-        #     t.data = buffer.data
 
     def get_swap_gradient_buffers(self, swap_buffer):
         assert self.numel() <= swap_buffer.numel()
@@ -135,7 +129,6 @@ class OptimizerStateSwapInfo(object):
 
     def get_unpinned_state_tensors(self):
         return [t.compute_tensor for t in self.tensors if not get_accelerator().is_pinned(t.compute_tensor)]
-        # return [t for t in self.tensors if not get_accelerator().is_pinned(t)]
 
     def read_unswapped_gradients(self, dest_buffer):
         num_elem_count = 0
@@ -409,7 +402,6 @@ class OptimizerSwapper(object):
         assert len(swap_info_list) == len(num_elems)
 
         swap_paths = [info.tensors[0].swap_path for info in swap_info_list]
-        # swap_paths = [info.swap_paths[0] for info in swap_info_list]
         return swap_paths
 
     def _swap_out_unpinned_tensors(self, aio_handle, unpinned_tensors, dest_paths, pinned_buffers):

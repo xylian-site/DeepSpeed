@@ -528,7 +528,8 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
         # 3. overlapping backward and reduction
         self._grad_acc_hooks = []
 
-        if self.partition_gradients or self.overlap_comm or self.use_grad_accum_attribute:
+        if (self.partition_gradients or self.overlap_comm or self.use_grad_accum_attribute
+                or self.contiguous_gradients):
             self.create_gradient_handling_hooks()
 
         self.ready_for_gradients = False

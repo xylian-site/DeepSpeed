@@ -7,7 +7,7 @@ import pytest
 import deepspeed
 import deepspeed.comm as dist
 import torch
-from unit.common import DistributedTest, preferred_dtype
+from unit.common import DistributedTest
 from unit.simple_model import SimpleModel, random_dataloader
 
 

@@ -2351,7 +2351,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         if not param.requires_grad:
             return None
 
-        fp32_grad, _ = self._get_fp32_grad_state_partition(param, True)
+        fp32_grad, _ = self._get_fp32_grad_state_partition(param=param, release_swap_buffers=True)
         fp32_grad = fp32_grad.to(get_accelerator().current_device_name()).float()
         return self._fp32_state_allgather(param, fp32_grad)
 
@@ -2368,7 +2368,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         # else:
         #     fp32_grad = self.__param_id_to_grad_partition[param.ds_id]
 
-        fp32_grad, group_idx = self._get_fp32_grad_state_partition(param, False)
+        fp32_grad, group_idx = self._get_fp32_grad_state_partition(param=param, release_swap_buffers=False)
         # import pdb; pdb.set_trace()
         my_rank = dist.get_rank(group=self.dp_process_group)
         value_partition = value.flatten().narrow(0, fp32_grad.numel() * my_rank, fp32_grad.numel())
@@ -2436,7 +2436,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         if not param.requires_grad:
             return None
 
-        fp32_grad, _ = self._get_fp32_grad_state_partition(param, True)
+        fp32_grad, _ = self._get_fp32_grad_state_partition(param=param, release_swap_buffers=True)
         fp32_grad = fp32_grad.to(get_accelerator().current_device_name()).float()
         return fp32_grad
 
@@ -2455,7 +2455,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         #     fp32_grad = self.fp32_partitioned_groups_flat[group_idx].grad.narrow(0, dest_offset, num_elements)
         # else:
         #     fp32_grad = self.__param_id_to_grad_partition[param.ds_id]
-        fp32_grad, group_idx = self._get_fp32_grad_state_partition(param, False)
+        fp32_grad, group_idx = self._get_fp32_grad_state_partition(param=param, release_swap_buffers=False)
         fp32_grad.data.copy_(value.flatten().data)
 
         if self._swappable_optimizer_subgroup(group_idx):

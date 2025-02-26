@@ -1926,10 +1926,10 @@ class DeepSpeedEngine(Module):
 
     def _create_module_forward_pre_hook(self):
 
-        def _module_forward_pre_hook(module, inputs):
-            self._forward_prologue(inputs)
+        def _module_forward_pre_hook(module, inputs, kwargs):
+            return self._forward_prologue(inputs, kwargs)
 
-        return self.module.register_forward_pre_hook(_module_forward_pre_hook)
+        return self.module.register_forward_pre_hook(_module_forward_pre_hook, prepend=False, with_kwargs=True)
 
     def _create_module_forward_post_hook(self):
 
@@ -1938,7 +1938,9 @@ class DeepSpeedEngine(Module):
 
         return self.module.register_forward_hook(_module_forward_post_hook)
 
-    def _forward_prologue(self, inputs, kwargs=None):
+    def _forward_prologue(self, inputs, kwargs):
+        return_modified = False
+
         if not self.autotuning_profile_model_info():
             see_memory_usage("Engine before forward", force=self.memory_breakdown())
 
@@ -1958,6 +1960,7 @@ class DeepSpeedEngine(Module):
                         self.eigenvalue_enabled(),
                         None,
                     )
+                    return_modified = True
 
         if flops_profiler_active:
             self.flops_profiler.start_profile(ignore_list=None)
@@ -1974,6 +1977,7 @@ class DeepSpeedEngine(Module):
                     self.curriculum_scheduler_legacy.update_difficulty(self.global_steps + 1)
                     if self.curriculum_params_legacy()["curriculum_type"] == "seqlen":
                         kwargs.update({"curriculum_seqlen": self.curriculum_scheduler_legacy.get_current_difficulty()})
+                        return_modified = True
 
         if self.module.training and self.random_ltd_enabled():
             self.random_ltd_scheduler.update_seq(self.global_steps)
@@ -1991,6 +1995,10 @@ class DeepSpeedEngine(Module):
 
         if self.fp16_auto_cast():
             inputs = self._cast_inputs_half(inputs)
+            return_modified = True
+
+        if return_modified:
+            return inputs, kwargs
 
     def _forward_epilogue(self):
         if self.zero_optimization_partition_weights():

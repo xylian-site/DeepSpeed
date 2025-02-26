@@ -342,6 +342,15 @@ public:
         return ten;
     }
 
+    void offloadParameter(at::Tensor tensor, long ds_id)
+    {
+        param_registry_->getParam(ds_id).offload_DSTensor_to_CPU();
+    }
+    void reloadParameter(at::Tensor tensor, long ds_id)
+    {
+        param_registry_->getParam(ds_id).reload_DSTensor_to_GPU();
+    }
+
     bool hasReloadBuffer(long id) { return hasKey(reload_buffers_, id); }
 
     bool hasParam(long ds_id) const { return hasKey(has_acc_grad_, ds_id); }
@@ -506,5 +515,19 @@ at::Tensor test_call(at::Tensor a)
     std::cout << "test_call" << std::endl;
     return a;
 }
+
+void reload_parameter(at::Tensor tensor, long graph_id, long ds_id)
+    {
+        auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
+        executor->reloadParameter(tensor,ds_id);
+    }
+
+void offload_parameter(at::Tensor tensor, long graph_id, long ds_id)
+    {
+        auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
+        executor->offloadParameter(tensor,ds_id);
+    }
+void reload_parameter_meta(at::Tensor param_tensor, long graph_id, long ds_id){}
+void offload_parameter_meta(at::Tensor tensor, long graph_id, long ds_id){}
 
 }  // namespace dc

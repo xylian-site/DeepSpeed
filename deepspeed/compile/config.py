@@ -9,7 +9,7 @@ from deepspeed.runtime.config_utils import DeepSpeedConfigModel
 class CompileConfig(DeepSpeedConfigModel):
     """ Configure compile settings """
 
-    deepcompile: bool = False
+    deepcompile: bool = True
     """ Turn on/off the DeepCompile mode """
 
     free_activation: bool = False
@@ -29,3 +29,6 @@ class CompileConfig(DeepSpeedConfigModel):
 
     dump_graphs: bool = False
     """ Turn on/off the graph dumping """
+
+    offload_parameters: bool = False
+    """ Turn on/off the activation offloading """

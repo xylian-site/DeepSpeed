@@ -3753,6 +3753,8 @@ class DeepSpeedEngine(Module):
             assert backend in ['inductor', 'eager'], f"Backend {backend} is not supported for DeepCompile."
 
             compile_config = self._config.compile_config
+            if(self._config.zero_config.offload_param.device=="cpu" and self._config.zero_config.offload_optimizer.device=="cpu"):
+                compile_config.offload_parameters=True
             if self.zero_optimization_stage() == ZeroStageEnum.optimizer_states:
                 backend = init_z1(self, backend, compile_config, compile_kwargs, schedule)
             elif self.zero_optimization_stage() == ZeroStageEnum.weights:

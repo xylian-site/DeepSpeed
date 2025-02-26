@@ -9,7 +9,7 @@ from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.partition_parameters import InsertPostInitMethodToModuleSubClasses
 
-from .passes import zero3_compile, prefetch, selective_gather
+from .passes import zero3_compile, prefetch, selective_gather,offload_parameters
 from .backend import make_backend, launch_compile_passes, init_schedule
 from .patch_fake_tensor import patch_fake_tensor
 from .util import get_deepcompile_handle, add_pre_backward_hook, is_backend_inductor
@@ -63,10 +63,13 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
 
     if schedule is None:
         schedule = []
-        schedule.append((0, [zero3_compile.add_z3_gather_release]))
-        schedule.append(
-            (WARMUP,
-             [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
+        if (compile_config.offload_parameters):
+            schedule.append((0, [zero3_compile.add_z3_gather_release,offload_parameters.offload_parameter_fwd]))
+        else:
+            schedule.append((0, [zero3_compile.add_z3_gather_release]))
+            schedule.append(
+                (WARMUP,
+                 [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
 
     init_schedule(schedule)
 

@@ -3,7 +3,7 @@ from typing import List
 
 import torch
 from torch.fx import Graph, Node,GraphModule
-from ..util import get_last_uses
+from deepspeed.compile.util import get_last_uses
 from ..graph_param import DSGraphParamManager
 
 

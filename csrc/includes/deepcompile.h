@@ -20,7 +20,6 @@
 #include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/SymmetricMemory.hpp>
-#include <future>
 
 namespace dc {
 
@@ -262,36 +261,47 @@ public:
 
     long getId() const { return id_; }
     std::vector<int64_t> getShape() const { return shape_; }
-    at::Tensor getDSTensor() const { if(is_reloaded){return ds_reload_tensor_;}return ds_tensor_;}
+    at::Tensor getDSTensor() const
+    {
+        if (is_reloaded) { return ds_reload_tensor_; }
+        return ds_tensor_;
+    }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
     bool isPartitioned() const { return partitioned_; }
     int64_t getOffset() const { return offset_; }
     void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
-    void offload_DSTensor_to_CPU() const {
-         if (is_reloaded) {
-            is_reloaded=false;
+    void offload_DSTensor_to_CPU() const
+    {
+        if (is_reloaded) {
+            is_reloaded = false;
             torch::cuda::synchronize();  // Wait for all pending CUDA operations to complete
             ds_tensor_.copy_(ds_reload_tensor_);
             ds_reload_tensor_.reset();
         }
     }
 
-    void reload_DSTensor_to_GPU() const {
-     if (!ds_tensor_.device().is_cuda()) { is_reloaded=true;ds_reload_tensor_ = at::empty_like(ds_tensor_, ds_tensor_.options().device(torch::kCUDA)); ds_reload_tensor_.copy_(ds_tensor_);}
+    void reload_DSTensor_to_GPU() const
+    {
+        if (!ds_tensor_.device().is_cuda()) {
+            is_reloaded = true;
+            ds_reload_tensor_ =
+                at::empty_like(ds_tensor_, ds_tensor_.options().device(torch::kCUDA));
+            ds_reload_tensor_.copy_(ds_tensor_);
+        }
     }
 
 private:
     long id_;
     std::vector<int64_t> shape_;
-    mutable at::Tensor ds_tensor_;
+    at::Tensor ds_tensor_;
     mutable at::Tensor ds_reload_tensor_;
     at::Tensor grad_buffer_;
     bool partitioned_;
     int64_t offset_;   // for Z1
     bool persistent_;  // for Z3
-    mutable bool is_reloaded=false;
+    mutable bool is_reloaded = false;
 };
 
 class DSParamRegistry {

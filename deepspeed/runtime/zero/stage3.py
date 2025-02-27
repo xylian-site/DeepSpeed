@@ -1936,37 +1936,32 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     param.grad = None
                     continue
 
-                grad_buffer = self.__param_id_to_grad_partition[param.ds_id].narrow(0, 0,
-                                                                                    self.__param_id_to_grad_partition[
-                                                                                        param.ds_id].numel())
+                grad_buffer = self.__param_id_to_grad_partition[param.ds_id].narrow(
+                    0, 0, self.__param_id_to_grad_partition[param.ds_id].numel())
                 if self.micro_step_id == 0:  # don't accumulate
                     grad_buffer.copy_(self.__param_id_to_grad_partition[param.ds_id], non_blocking=True)
                     grad_buffer = grad_buffer.to(self.__param_id_to_grad_partition[param.ds_id].device,
                                                  non_blocking=True)
                 elif get_accelerator().on_accelerator(grad_buffer):
-                    grad_buffer.add_(
-                        self.__param_id_to_grad_partition[param.ds_id].to(self.gradient_accumulation_dtype).view(
-                            grad_buffer.shape))
+                    grad_buffer.add_(self.__param_id_to_grad_partition[param.ds_id].to(
+                        self.gradient_accumulation_dtype).view(grad_buffer.shape))
                 else:
                     cuda_grad_buffer = grad_buffer.to(self.__param_id_to_grad_partition[param.ds_id].device,
                                                       non_blocking=True)
-                    cuda_grad_buffer.add_(
-                        self.__param_id_to_grad_partition[param.ds_id].to(self.gradient_accumulation_dtype).view(
-                            cuda_grad_buffer.shape))
+                    cuda_grad_buffer.add_(self.__param_id_to_grad_partition[param.ds_id].to(
+                        self.gradient_accumulation_dtype).view(cuda_grad_buffer.shape))
                     grad_buffer.copy_(cuda_grad_buffer, non_blocking=True)
                     grad_buffer = cuda_grad_buffer
                 i, dest_offset, _ = self.grad_position[self.get_param_id(param)]
-                grad_buffer = self.__param_id_to_grad_partition[param.ds_id].narrow(0, 0,
-                                                                                    self.__param_id_to_grad_partition[
-                                                                                        param.ds_id].numel())
+                grad_buffer = self.__param_id_to_grad_partition[param.ds_id].narrow(
+                    0, 0, self.__param_id_to_grad_partition[param.ds_id].numel())
                 buffer_numel = grad_buffer.numel()
-                fp32_grad_tensor = self.fp32_partitioned_groups_flat[i].grad.narrow(
-                    0, dest_offset, buffer_numel)
-                self.pinned_grad_buffer[:buffer_numel].copy_(
-                    grad_buffer.to(dtype=torch.float32, non_blocking=True))
+                fp32_grad_tensor = self.fp32_partitioned_groups_flat[i].grad.narrow(0, dest_offset, buffer_numel)
+                self.pinned_grad_buffer[:buffer_numel].copy_(grad_buffer.to(dtype=torch.float32, non_blocking=True))
                 get_accelerator().synchronize()
                 fp32_grad_tensor.copy_(self.pinned_grad_buffer[:buffer_numel], non_blocking=True)
             param.grad = None
+
     def _optimizer_states_and_gradient_swap_in(self, sub_group_id, timer_names):
         param_length = self.fp16_partitioned_groups_flat_numel[sub_group_id]
         fp32_param_id = self.get_param_id(self.fp32_partitioned_groups_flat[sub_group_id])

@@ -517,17 +517,17 @@ at::Tensor test_call(at::Tensor a)
 }
 
 void reload_parameter(at::Tensor tensor, long graph_id, long ds_id)
-    {
-        auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
-        executor->reloadParameter(tensor,ds_id);
-    }
+{
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
+    executor->reloadParameter(tensor, ds_id);
+}
 
 void offload_parameter(at::Tensor tensor, long graph_id, long ds_id)
-    {
-        auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
-        executor->offloadParameter(tensor,ds_id);
-    }
-void reload_parameter_meta(at::Tensor param_tensor, long graph_id, long ds_id){}
-void offload_parameter_meta(at::Tensor tensor, long graph_id, long ds_id){}
+{
+    auto executor = getExecutor<Z3CustomOpExecutor>(graph_id, executors);
+    executor->offloadParameter(tensor, ds_id);
+}
+void reload_parameter_meta(at::Tensor param_tensor, long graph_id, long ds_id) {}
+void offload_parameter_meta(at::Tensor tensor, long graph_id, long ds_id) {}
 
 }  // namespace dc

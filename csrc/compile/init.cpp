@@ -58,7 +58,6 @@ TORCH_LIBRARY_IMPL(dc, CUDA, m)
     m.impl("offload_parameter", &dc::offload_parameter);
     m.impl("reload_parameter", &dc::reload_parameter);
 
-
     m.impl("test_call", &dc::test_call);
 }
 

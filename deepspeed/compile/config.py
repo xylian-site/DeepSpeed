@@ -31,4 +31,4 @@ class CompileConfig(DeepSpeedConfigModel):
     """ Turn on/off the graph dumping """
 
     offload_parameters: bool = False
-    """ Turn on/off the activation offloading """
+    """ Turn on/off the parameter offloading """

@@ -2509,7 +2509,6 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                 subgroups[group_idx] = [param_entry]
 
         for group_idx, group_params in subgroups.items():
-            # import pdb; pdb.set_trace()
             if self._swappable_optimizer_subgroup(group_idx):
                 self._optimizer_states_and_gradient_swap_in(group_idx)
 
@@ -2532,6 +2531,18 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                 self._writeback_swap_state(sub_group_id=group_idx, write_opt_state=False, write_gradients=True)
 
     ### Vectorized API END ###
+
+    ### Device API BEGIN ###
+    def get_hp_param_device(self, param, optim_state_key=None) -> torch.device:
+        if not param.requires_grad:
+            return None
+
+        fp32_opt_state, _ = self._get_fp32_opt_state_partition(param,
+                                                               release_swap_buffers=True,
+                                                               optim_state_key=optim_state_key)
+        return fp32_opt_state.device
+
+    ### Device API END ###
 
     @instrument_w_nvtx
     def _partition_all_parameters(self):

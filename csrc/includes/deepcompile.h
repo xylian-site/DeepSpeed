@@ -272,7 +272,7 @@ public:
     void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
-    void offload_DSTensor_to_CPU() const
+    void offload()
     {
         if (is_reloaded) {
             is_reloaded = false;
@@ -282,7 +282,7 @@ public:
         }
     }
 
-    void reload_DSTensor_to_GPU() const
+    void reload()
     {
         if (!ds_tensor_.device().is_cuda()) {
             is_reloaded = true;
@@ -296,7 +296,7 @@ private:
     long id_;
     std::vector<int64_t> shape_;
     at::Tensor ds_tensor_;
-    mutable at::Tensor ds_reload_tensor_;
+    at::Tensor ds_reload_tensor_;
     at::Tensor grad_buffer_;
     bool partitioned_;
     int64_t offset_;   // for Z1
@@ -348,6 +348,8 @@ public:
     }
     bool hasGatheredParam(long ds_id) const { return hasKey(gathered_params_, ds_id); }
     void setPersistent(long ds_id, bool persistent) { params_.at(ds_id).setPersistent(persistent); }
+    void offload(long ds_id) { params_.at(ds_id).offload(); }
+    void reload(long ds_id) { params_.at(ds_id).reload(); }
 
     void setValid(long ds_id, bool valid) { valid_[ds_id] = valid; }
     bool isValid(long ds_id) const

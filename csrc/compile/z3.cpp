@@ -344,11 +344,11 @@ public:
 
     void offloadParameter(at::Tensor tensor, long ds_id)
     {
-        param_registry_->getParam(ds_id).offload_DSTensor_to_CPU();
+        param_registry_->offload(ds_id);
     }
     void reloadParameter(at::Tensor tensor, long ds_id)
     {
-        param_registry_->getParam(ds_id).reload_DSTensor_to_GPU();
+        param_registry_->reload(ds_id);
     }
 
     bool hasReloadBuffer(long id) { return hasKey(reload_buffers_, id); }

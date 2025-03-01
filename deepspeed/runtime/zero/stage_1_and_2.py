@@ -2117,6 +2117,8 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
 
         if self.contiguous_gradients:
             for _, bucket in self.ipg_buckets.items():
+                bucket.buffer.clear()
+
                 # Buffer's dtype is the same as the dtype of optimizer, not dtype for autocast
                 buf_0 = torch.empty(int(self.reduce_bucket_size),
                                     dtype=self.dtype,

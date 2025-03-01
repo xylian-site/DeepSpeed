@@ -3,7 +3,8 @@
 
 # DeepSpeed Team
 
-from typing import Iterable, Set
+from typing import Iterable, Set, List, Union
+import importlib
 
 import torch
 
@@ -28,13 +29,27 @@ def _validate_auto_cast_settings(engine):
     assert engine.communication_data_type == torch.float32, "Communication data type must be float32 for torch autocast"
 
 
-def init_autocast_params(engine, dtype: torch.dtype) -> None:
+def init_autocast_params(engine, dtype: torch.dtype,
+                         torch_autocast_lower_precision_safe_modules: Union[None, List[str]]) -> None:
 
     _validate_auto_cast_settings(engine)
     model = engine.module
 
+    if torch_autocast_lower_precision_safe_modules is None:
+        lower_precision_safe_module_classes = LOWER_PRECISION_SAFE_MODULES
+    else:
+        lower_precision_safe_module_classes = []
+        for module_name in torch_autocast_lower_precision_safe_modules:
+            try:
+                package_name, class_name = module_name.rsplit('.', 1)
+                module = importlib.import_module(package_name)
+                class_ = getattr(module, class_name)
+                lower_precision_safe_module_classes.append(class_)
+            except Exception as e:
+                raise ValueError(f"Failed to import lower precision safe module {module_name}: {e}")
+
     for module in model.modules():
-        if module.__class__ in LOWER_PRECISION_SAFE_MODULES:
+        if module.__class__ in torch_autocast_lower_precision_safe_modules:
             for p in module.parameters(recurse=False):
                 p.autocast_dtype = dtype
 
@@ -44,6 +59,10 @@ def init_autocast_params(engine, dtype: torch.dtype) -> None:
 
 def is_autocast_initialized() -> bool:
     return TORCH_AUTOCAST_INITIALIZED
+
+
+def get_default_autocast_lower_precision_modules() -> List[str]:
+    return [f"{cls.__module__}.{cls.__name__}" for cls in LOWER_PRECISION_SAFE_MODULES]
 
 
 def get_autocast_dtype(param: torch.nn.Parameter) -> torch.dtype:

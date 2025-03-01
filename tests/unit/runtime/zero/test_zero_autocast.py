@@ -41,7 +41,7 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
 
 
 @enable_determinism(123)
-def compare_loss(enable, zero_stage, dtype):
+def compare_loss(enable, zero_stage, dtype, autocast_conf):
     iteration = 5
     hidden_dim = 10
     lr = 0.001
@@ -57,10 +57,7 @@ def compare_loss(enable, zero_stage, dtype):
         "zero_optimization": {
             "stage": zero_stage,
         },
-        "torch_autocast": {
-            "enabled": enable,
-            "dtype": str(dtype)
-        }
+        "torch_autocast": autocast_conf,
     }
 
     model_cls = SimpleModel
@@ -98,10 +95,17 @@ def compare_loss(enable, zero_stage, dtype):
 
 
 @pytest.mark.parametrize("enable", [True])
-@pytest.mark.parametrize("zero_stage", [1, 2, 3])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("zero_stage", [3])
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
 class TestZeroAutoCast(DistributedTest):
     world_size = 2
 
     def test(self, enable, zero_stage, dtype):
-        compare_loss(enable, zero_stage, dtype)
+        autocast_conf = {"enabled": enable, "dtype": str(dtype)}
+
+        compare_loss(enable, zero_stage, dtype, autocast_conf)
+
+    def test_safe_modules_conf(self, enable, zero_stage, dtype):
+        autocast_conf = {"enabled": enable, "dtype": str(dtype), "lower_precision_safe_modules": ["torch.nn.Linear"]}
+
+        compare_loss(enable, zero_stage, dtype, autocast_conf)

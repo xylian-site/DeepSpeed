@@ -175,6 +175,17 @@ def get_torch_autocast_dtype(param_dict):
     return None
 
 
+def get_lower_precision_safe_modules(param_dict):
+    if TORCH_AUTOCAST in param_dict:
+        if TORCH_AUTOCAST_LOWER_PRECISION_SAFE_MODULES in param_dict[TORCH_AUTOCAST]:
+            module_names_with_package = param_dict[TORCH_AUTOCAST][TORCH_AUTOCAST_LOWER_PRECISION_SAFE_MODULES]
+            if not all(isinstance(module_name, str) for module_name in module_names_with_package):
+                raise ValueError(
+                    f"Invalid module names for torch autocast: {module_names_with_package}. Expected list of strings.")
+            return module_names_with_package
+    return None
+
+
 def get_fp16_enabled(param_dict):
     if FP16 in param_dict.keys():
         return get_scalar_param(param_dict[FP16], FP16_ENABLED, FP16_ENABLED_DEFAULT)
@@ -856,6 +867,7 @@ class DeepSpeedConfig(object):
         self.amp_params = get_amp_params(param_dict)
         self.torch_autocast_enabled = get_torch_autocast_enabled(param_dict)
         self.torch_autocast_dtype = get_torch_autocast_dtype(param_dict)
+        self.torch_autocast_lower_precision_safe_modules = get_lower_precision_safe_modules(param_dict)
         self.loss_scale = get_loss_scale(param_dict)
         self.initial_dynamic_scale = get_initial_dynamic_scale(param_dict)
         self.dynamic_loss_scale_args = get_dynamic_loss_scale_args(param_dict)

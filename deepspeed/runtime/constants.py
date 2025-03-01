@@ -217,7 +217,7 @@ TORCH_AUTOCAST = "torch_autocast"
 TORCH_AUTOCAST_ENABLED = "enabled"
 TORCH_AUTOCAST_ENABLED_DEFAULT = False
 TORCH_AUTOCAST_DTYPE = "dtype"
-TORCH_AUTOCAST_DTYPE_DEFAULT = None
+TORCH_AUTOCAST_LOWER_PRECISION_SAFE_MODULES = "lower_precision_safe_modules"
 
 #########################################
 # Gradient clipping

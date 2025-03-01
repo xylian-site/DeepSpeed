@@ -255,15 +255,30 @@ public:
           grad_buffer_(grad_buffer),
           partitioned_(partitioned),
           offset_(offset),
-          persistent_(persistent)
+          persistent_(persistent),
+          offload_stream_(at::cuda::getStreamFromPool()),
+          reload_stream_(at::cuda::getStreamFromPool())
     {
     }
 
     long getId() const { return id_; }
     std::vector<int64_t> getShape() const { return shape_; }
-    at::Tensor getDSTensor() const
-    {
-        if (is_reloaded) { return ds_reload_tensor_; }
+    at::Tensor getDSTensor() const {
+        // If the reload event exists and is complete, return the reloaded tensor (if defined)
+        if (reload_done_event_) {
+            if (!reload_done_event_->query()) {
+                reload_done_event_->block(at::cuda::getCurrentCUDAStream());
+            }
+            if (ds_reload_tensor_.defined()) {
+                return ds_reload_tensor_;
+            }
+        }
+        // Otherwise, if an offload event exists, wait for it to complete
+        if (offload_done_event_) {
+            if (!offload_done_event_->query()) {
+                offload_done_event_->block(at::cuda::getCurrentCUDAStream());
+            }
+        }
         return ds_tensor_;
     }
     at::Tensor getGradBuffer() const { return grad_buffer_; }
@@ -272,25 +287,53 @@ public:
     void setPersistent(bool persistent) { persistent_ = persistent; }
     bool isPersistent() const { return persistent_; }
 
-    void offload()
-    {
-        if (is_reloaded) {
-            is_reloaded = false;
-            torch::cuda::synchronize();  // Wait for all pending CUDA operations to complete
-            ds_tensor_.copy_(ds_reload_tensor_);
-            ds_reload_tensor_.reset();
+     void offload() {
+        // If a reloaded tensor exists, offload its data back to ds_tensor_
+        if (ds_reload_tensor_.defined()) {
+            auto comp_stream = at::cuda::getCurrentCUDAStream();
+            comp_done_event_=std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            // Record completion and wait on the offload stream
+            comp_done_event_->record(comp_stream);
+            comp_done_event_->block(offload_stream_);
+            offload_done_event_=std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+
+            {
+                at::cuda::CUDAStreamGuard guard(offload_stream_);
+                ds_tensor_.copy_(ds_reload_tensor_, /*non_blocking=*/true);
+                ds_reload_tensor_.reset();  // Clear the reloaded tensor
+                offload_done_event_->record(offload_stream_);
+            }
+            // Reset the reload event to indicate that no valid reload is present.
+             if (reload_done_event_) {
+                reload_done_event_.reset();
+            }
         }
     }
 
-    void reload()
-    {
-        if (!ds_tensor_.device().is_cuda()) {
-            is_reloaded = true;
-            ds_reload_tensor_ =
-                at::empty_like(ds_tensor_, ds_tensor_.options().device(torch::kCUDA));
-            ds_reload_tensor_.copy_(ds_tensor_);
+    void reload() {
+        // Reload only if the current ds_tensor_ is on CPU
+        if (ds_tensor_.device().is_cpu()) {
+            auto comp_stream = at::cuda::getCurrentCUDAStream();
+            comp_done_event_=std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+            // Record and wait on the reload stream
+            comp_done_event_->record(comp_stream);
+            comp_done_event_->block(reload_stream_);
+            reload_done_event_=std::make_shared<at::cuda::CUDAEvent>(cudaEventDisableTiming);
+
+
+            {
+                at::cuda::CUDAStreamGuard guard(reload_stream_);
+                ds_reload_tensor_ = at::empty_like(ds_tensor_, ds_tensor_.options().device(torch::kCUDA));
+                ds_reload_tensor_.copy_(ds_tensor_, /*non_blocking=*/true);
+                reload_done_event_->record(reload_stream_);
+            }
+            // Reset offload_done_event if it exists to clear any stale offload state.
+            if (offload_done_event_) {
+                offload_done_event_.reset();
+            }
         }
     }
+
 
 private:
     long id_;
@@ -302,6 +345,12 @@ private:
     int64_t offset_;   // for Z1
     bool persistent_;  // for Z3
     mutable bool is_reloaded = false;
+
+    at::cuda::CUDAStream offload_stream_;
+    at::cuda::CUDAStream reload_stream_;
+    std::shared_ptr<at::cuda::CUDAEvent> comp_done_event_;
+    std::shared_ptr<at::cuda::CUDAEvent> offload_done_event_;
+    std::shared_ptr<at::cuda::CUDAEvent> reload_done_event_;
 };
 
 class DSParamRegistry {

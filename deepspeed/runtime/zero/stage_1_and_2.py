@@ -14,7 +14,7 @@ from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from deepspeed.runtime.base_optimizer import ZeROOptimizer
 from deepspeed.runtime.fp16.loss_scaler import CreateLossScaler
-from deepspeed.runtime.torch_autocast import get_autocast_dtype, get_all_autocast_dtypes, is_autocast_initialized
+from deepspeed.runtime.torch_autocast import get_all_autocast_dtypes, is_autocast_initialized
 from deepspeed.runtime.utils import (empty_cache, see_memory_usage, inf, is_model_parallel_parameter,
                                      align_dense_tensors, all_gather_dp_groups)
 from deepspeed.runtime.zero.config import ZeroStageEnum
@@ -961,7 +961,7 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
     def reduce_independent_p_g_buckets_and_remove_grads(self, param, i):
 
         grad_reduc = self.get_gradient_for_reduction(param)
-        bucket = self.ipg_buckets[get_autocast_dtype(param)]
+        bucket = self.ipg_buckets[self.get_param_comm_dtype(param)]
         if bucket.elements + param.numel() > self.reduce_bucket_size:
             self.report_ipg_memory_usage("In ipg_remove_grads before reduce_ipg_grads", param.numel(), param.dtype)
             self.reduce_ipg_grads()

@@ -19,7 +19,7 @@ from deepspeed.runtime.base_optimizer import ZeROOptimizer
 from deepspeed.utils import logger
 from deepspeed.utils.torch import register_grad_hook
 from deepspeed.runtime.fp16.loss_scaler import CreateLossScaler
-from deepspeed.runtime.torch_autocast import get_autocast_dtype, get_all_autocast_dtypes, is_autocast_initialized
+from deepspeed.runtime.torch_autocast import get_all_autocast_dtypes, is_autocast_initialized
 from deepspeed.runtime.comm.coalesced_collectives import reduce_scatter_coalesced, all_to_all_quant_reduce, all_to_all_loco_quant_reduce
 from deepspeed.runtime.utils import inf, is_model_parallel_parameter, get_only_unique_item
 from deepspeed.runtime.zero.partition_parameters import *
@@ -1276,7 +1276,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         # 0). Otherwise if the incoming param.ds_numel is large, this branch may get triggered on a
         # garbage data and `self.average_tensor()` will crash because its params_to_reduce will be
         # empty, while reduction_list will have that garbage data.
-        comm_dtype = get_autocast_dtype(param)
+        comm_dtype = self.get_param_comm_dtype(param)
         bucket = self.ipg_buckets[comm_dtype]
         if bucket.elements + param.ds_numel > self.reduce_bucket_size and bucket.elements > 0:
             self.report_ipg_memory_usage("In ipg_remove_grads before reduce_ipg_grads", param.ds_numel)
@@ -1290,7 +1290,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         if not get_accelerator().resolves_data_dependency():
             self.reduce_and_partition_stream.wait_stream(get_accelerator().default_stream())
 
-        bucket = self.ipg_buckets[get_autocast_dtype(param)]
+        bucket = self.ipg_buckets[self.get_param_comm_dtype(param)]
         if self.contiguous_gradients and bucket.elements + param.grad.numel() <= self.reduce_bucket_size:
             # move the gradient to a contiguous buffer
             with get_accelerator().stream(self.reduce_and_partition_stream):

@@ -463,7 +463,7 @@ class OptimizerSwapper(object):
         self._log_timers([UNSWAPPED_READ_GRADIENTS])
 
         # It should be safe to discard unswapped gradient partitions
-        # swap_info.release_unswapped_gradients()
+        swap_info.release_unswapped_gradients()
 
         if SWAPPER_DEBUG_MODE:
             logger.info(

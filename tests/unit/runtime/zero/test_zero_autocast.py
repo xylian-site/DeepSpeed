@@ -22,6 +22,24 @@ RTOL = 0.1
 ATOL = 0.0
 
 
+def cls_to_qualname(cls):
+    return f"{cls.__module__}.{cls.__name__}"
+
+
+class SimpleModelWithLayerNorm(torch.nn.Module):
+
+    def __init__(self, hidden_dim, nlayers=1):
+        super(SimpleModelWithLayerNorm, self).__init__()
+        self.linears = torch.nn.ModuleList([torch.nn.Linear(hidden_dim, hidden_dim) for i in range(nlayers)])
+        self.norm = torch.nn.LayerNorm(hidden_dim)
+        self.cross_entropy_loss = torch.nn.CrossEntropyLoss()
+
+    def forward(self, x, y):
+        x = self.linears[0](x)
+        x = self.norm(x)
+        return self.cross_entropy_loss(x, y)
+
+
 def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, baseline_scaler, x, y, rtol, atol):
     # Runs the forward pass with autocasting.
     with torch.autocast(device_type="cuda", dtype=dtype, enabled=enabled):
@@ -41,7 +59,7 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
 
 
 @enable_determinism(123)
-def compare_loss(enable, zero_stage, dtype, autocast_conf):
+def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules):
     iteration = 5
     hidden_dim = 10
     lr = 0.001
@@ -60,7 +78,6 @@ def compare_loss(enable, zero_stage, dtype, autocast_conf):
         "torch_autocast": autocast_conf,
     }
 
-    model_cls = SimpleModel
     model = model_cls(hidden_dim)
 
     deepspeed.init_distributed(dist_backend='nccl')
@@ -91,21 +108,41 @@ def compare_loss(enable, zero_stage, dtype, autocast_conf):
     for i, (x, y) in enumerate(zip(xs, ys)):
         step_amp(enable, baseline_model, baseline_optimizer, target_engine, dtype, baseline_scaler, x, y, RTOL, ATOL)
 
+    for module in target_engine.modules():
+        for p in module.parameters(recurse=False):
+            if module.__class__ in lower_precision_safe_modules:
+                assert hasattr(
+                    p, "autocast_dtype"
+                ), f"A module is in the lower precision safe list, but param does not have autocast_dtype: {module.__class__.__name__}"
+                assert p.autocast_dtype == dtype, f"dtype of a module in the lower precision safe list is not set to {dtype}: {module.__class__.__name__}"
+            else:
+                assert not hasattr(
+                    p, "autocast_dtype"
+                ), f"A module is not in the lower precision safe list, but param has autocast_dtype: {module.__class__.__name__}"
+                assert p.dtype == torch.float32, f"dtype of a module not in the lower precision safe list is not float32: {module.__class__.__name__}"
+
     target_engine.destroy()
 
 
 @pytest.mark.parametrize("enable", [True])
-@pytest.mark.parametrize("zero_stage", [3])
-@pytest.mark.parametrize("dtype", [torch.bfloat16])
+@pytest.mark.parametrize("zero_stage", [1, 2, 3])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 class TestZeroAutoCast(DistributedTest):
     world_size = 2
 
     def test(self, enable, zero_stage, dtype):
+        lower_precision_safe_modules = [torch.nn.Linear]
         autocast_conf = {"enabled": enable, "dtype": str(dtype)}
 
-        compare_loss(enable, zero_stage, dtype, autocast_conf)
+        compare_loss(SimpleModel, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules)
 
     def test_safe_modules_conf(self, enable, zero_stage, dtype):
-        autocast_conf = {"enabled": enable, "dtype": str(dtype), "lower_precision_safe_modules": ["torch.nn.Linear"]}
+        lower_precision_safe_modules = [torch.nn.Linear]
+        autocast_conf = {
+            "enabled": enable,
+            "dtype": str(dtype),
+            "lower_precision_safe_modules": [cls_to_qualname(cls) for cls in lower_precision_safe_modules]
+        }
 
-        compare_loss(enable, zero_stage, dtype, autocast_conf)
+        # The model has both lower precision safe and unsafe modules.
+        compare_loss(SimpleModelWithLayerNorm, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules)

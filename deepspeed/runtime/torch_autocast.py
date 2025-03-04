@@ -49,7 +49,7 @@ def init_autocast_params(engine, dtype: torch.dtype,
                 raise ValueError(f"Failed to import lower precision safe module {module_name}: {e}")
 
     for module in model.modules():
-        if module.__class__ in torch_autocast_lower_precision_safe_modules:
+        if module.__class__ in lower_precision_safe_module_classes:
             for p in module.parameters(recurse=False):
                 p.autocast_dtype = dtype
 

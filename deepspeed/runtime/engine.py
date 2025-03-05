@@ -2155,7 +2155,7 @@ class DeepSpeedEngine(Module):
     def no_sync(self):
         r"""
             Context manager to disable gradient reduction during backward pass.
-            This context manager has the following effects on other DeepSpeed features.
+            This context manager has the following effects on other DeepSpeed features:
             1. Incompatible with ZeRO stage 2/3 which rely on reduction for gradient partitioning.
             2. It is illegal to call engine.step() within the context manager.
             3. Tracking of gradient accumulation steps is disabled.

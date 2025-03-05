@@ -5,6 +5,7 @@
 
 import os
 import re
+from azurestoragetorch.io import BlobIO
 from typing import Dict
 import torch
 

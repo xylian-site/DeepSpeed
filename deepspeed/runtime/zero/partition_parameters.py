@@ -35,6 +35,7 @@ from deepspeed.utils.debug import (debug_param2name_id_shape, debug_param2name_i
 from deepspeed.accelerator import get_accelerator
 from ..swap_tensor.partitioned_param_swapper import AsyncPartitionedParameterSwapper, PartitionedParamStatus
 from deepspeed.inference.quantization.utils import _quantize_param, WEIGHT_QUANTIZATION_LAYERS, wrap_quantized_functional, wrap_load_from_state_dict
+from deepspeed.runtime.torch_autocast import sort_dtypes, get_autocast_dtype
 
 partitioned_param_data_shape = [0]
 zero_init_context = 0
@@ -1273,10 +1274,10 @@ class Init(InsertPostInitMethodToModuleSubClasses):
 
                 if quantize:
                     allgather_dtype = torch.int8
-                elif hasattr(param, "autocast_dtype"):
-                    allgather_dtype = param.autocast_dtype
                 else:
-                    allgather_dtype = param_ds_tensor.dtype
+                    # Assume param.dtype and param_ds_tensor.dtype are the same for non-quantized case
+                    assert param.dtype == param_ds_tensor.dtype, f"dtypes of param and param_ds_tensor are different. param.dtype={param.dtype}, param_ds_tensor.dtype={param_ds_tensor.dtype}"
+                    allgather_dtype = get_autocast_dtype(param)
 
                 param_buffer = torch.empty(
                     buffer_size,
@@ -1341,10 +1342,10 @@ class Init(InsertPostInitMethodToModuleSubClasses):
                     if not quantize:
                         dtype_params = defaultdict(list)
                         for p in params:
-                            allgather_dtype = p.autocast_dtype if hasattr(p, "autocast_dtype") else p.ds_tensor.dtype
+                            allgather_dtype = get_autocast_dtype(p)
                             dtype_params[allgather_dtype].append(p)
                         handles = []
-                        for dtype, params in dtype_params.items():
+                        for dtype in sort_dtypes(dtype_params.keys()):
                             handles.append(
                                 _all_gather_dtype(params,
                                                   world_size,

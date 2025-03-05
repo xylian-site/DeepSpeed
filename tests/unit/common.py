@@ -559,3 +559,13 @@ def enable_determinism(seed: int):
         return wrapper
 
     return decorator
+
+
+def reduce_boolean_flags(flag: bool, op=all) -> bool:
+    device = get_accelerator().current_device()
+    tensor_flag = torch.tensor(1 if flag else 0, dtype=torch.int, device=device)
+    world_size = dist.get_world_size()
+    tensor_flag_buf = torch.zeros(world_size, dtype=torch.int, device=device)
+    dist.all_gather_into_tensor(tensor_flag_buf, tensor_flag)
+    list_flags = [bool(f) for f in tensor_flag_buf.tolist()]
+    return op(list_flags)

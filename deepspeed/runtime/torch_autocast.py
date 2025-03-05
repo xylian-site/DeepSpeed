@@ -71,3 +71,7 @@ def get_autocast_dtype(param: torch.nn.Parameter) -> torch.dtype:
 
 def get_all_autocast_dtypes(params: Iterable) -> Set[torch.dtype]:
     return {get_autocast_dtype(p) for p in params}
+
+
+def sort_dtypes(dtypes: List[torch.dtype]) -> List[torch.dtype]:
+    return sorted(dtypes, key=str)

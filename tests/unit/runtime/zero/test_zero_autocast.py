@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from unit.common import DistributedTest, enable_determinism
+from unit.common import DistributedTest, enable_determinism, reduce_boolean_flags
 from unit.simple_model import SimpleModel
 from unit.util import bf16_required_version_check
 
@@ -52,7 +52,8 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
 
     target_loss = target_engine(x, y)
 
-    assert torch.allclose(baseline_loss.float(), target_loss.float(), rtol=rtol, atol=atol)
+    assert reduce_boolean_flags(torch.allclose(baseline_loss.float(), target_loss.float(), rtol=rtol, atol=atol),
+                                all), f"Losses do not match: baseline_loss={baseline_loss}, target_loss={target_loss}"
 
     target_engine.backward(target_loss)
     target_engine.step()

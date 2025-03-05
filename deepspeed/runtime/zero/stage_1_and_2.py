@@ -14,7 +14,7 @@ from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from deepspeed.runtime.base_optimizer import ZeROOptimizer
 from deepspeed.runtime.fp16.loss_scaler import CreateLossScaler
-from deepspeed.runtime.torch_autocast import get_all_autocast_dtypes, is_autocast_initialized
+from deepspeed.runtime.torch_autocast import get_all_autocast_dtypes, is_autocast_initialized, sort_dtypes
 from deepspeed.runtime.utils import (empty_cache, see_memory_usage, inf, is_model_parallel_parameter,
                                      align_dense_tensors, all_gather_dp_groups)
 from deepspeed.runtime.zero.config import ZeroStageEnum
@@ -1402,7 +1402,8 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
         self.grads_in_partition_offset += param.numel()
 
     def reduce_ipg_grads(self):
-        for comm_dtype, bucket in self.ipg_buckets.items():
+        for comm_dtype in sort_dtypes(self.ipg_buckets.keys()):
+            bucket = self.ipg_buckets[comm_dtype]
 
             if self.contiguous_gradients:
                 if comm_dtype in self.extra_large_param_to_reduce:
@@ -1429,7 +1430,9 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
             stream = get_accelerator().current_stream()
 
         with get_accelerator().stream(stream):
-            for comm_dtype, bucket in self.ipg_buckets.items():
+            for comm_dtype in sort_dtypes(self.ipg_buckets.keys()):
+                bucket = self.ipg_buckets[comm_dtype]
+
                 for group_idx, param_idx_in_group, param_id in bucket.params:
                     param = self.bit16_groups[group_idx][param_idx_in_group]
 

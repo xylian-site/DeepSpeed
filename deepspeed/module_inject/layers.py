@@ -48,7 +48,8 @@ def move(tensor, device):
     # to save host resources when DP > 1。
 
     if tensor.is_meta:
-        return torch.empty_like(tensor, device=device)
+        # Keep tensor in meta device if tensor is meta.
+        return tensor
     else:
         # Using new tensors help in freeing memory (after split for example) was done before by calling clone().
         # Using copy=True instead of clone() will help in case of cpu --> cpu.
@@ -228,7 +229,7 @@ class TensorParallel_Layer(nn.Module, ABC):
 
     def extra_repr(self):
         if self.weight is not None:
-            out_features, in_features = self.weight.shape if self.weight is not None else (None, None)
+            out_features, in_features = self.weight.shape[-2:] if self.weight is not None else (None, None)
             dtype = self.weight.dtype if self.weight is not None else None
             extra_repr_str = "in_features={}, out_features={}, bias={}, dtype={}".format(
                 in_features, out_features, self.bias is not None, dtype)

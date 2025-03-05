@@ -424,7 +424,7 @@ class DeepSpeedEngine(Module):
         # sanity check
         # currently, the compatibility between 'autotp' and 'zero > 1' has not been validated
         assert self.zero_optimization_stage(
-        ) <= 1, "Currently, the compatibility between 'autotp' and 'zero_stage > 1' has not been validated"
+        ) <= 2, "Currently, the compatibility between 'autotp' and 'zero_stage = 3' has not been validated"
 
         self.mpu = groups
         self.mpu._init_tp_mesh_device(tensor_model_parallel_size=self.autotp_size())
@@ -3790,7 +3790,7 @@ class DeepSpeedEngine(Module):
             else:
                 # the model will be bogus if not consolidated so don't confuse the user by saving it
                 logger.info(
-                    f"Did not save the model {path} because `stage3_gather_16bit_weights_on_model_save` is False")
+                    f"Did not save the model {path} because stage3_gather_16bit_weights_on_model_save is False")
                 return False
         else:
             state_dict = self.module_state_dict(exclude_frozen_parameters=exclude_frozen_parameters)

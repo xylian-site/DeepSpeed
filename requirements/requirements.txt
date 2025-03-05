@@ -1,3 +1,4 @@
+azstoragetorch
 einops
 hjson
 msgpack

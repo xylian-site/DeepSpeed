@@ -1,5 +1,5 @@
 Training API
-============
+############
 
 :func:`deepspeed.initialize` returns a *training engine* in its first argument
 of type :class:`DeepSpeedEngine`. This engine is used to progress training:

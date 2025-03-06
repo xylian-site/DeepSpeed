@@ -43,7 +43,7 @@ Additionally when a DeepSpeed checkpoint is created, a script ``zero_to_fp32.py`
 
 Training Multiple Models
 ------------------------
-DeepSpeed supports training multiple models, which is a useful feature in `scenarios <https://huggingface.co/docs/accelerate/en/usage_guides/deepspeed_multiple_model>` such as knowledge distillation and post-training RLHF.
+DeepSpeed supports training multiple models, which is a useful feature in `scenarios <https://huggingface.co/docs/accelerate/en/usage_guides/deepspeed_multiple_model>`_ such as knowledge distillation and post-training RLHF.
 The core approach is to create individual DeepSpeedEngines for each model.
 
 
@@ -53,6 +53,7 @@ Training Independent Models
 The following code snippet illustrates independently training multiple models on the same dataset.
 
 .. code-block:: python
+
     model_engines = [engine for engine, _, _, _ in [deepspeed.initialize(m, ...,) for m in models]]
     for batch in data_loader:
        losses = [engine(batch) for engine in model_engines]
@@ -69,6 +70,7 @@ Jointly Training Models With Shared Loss
 The following code snippet illustrates jointly training multiple models on a shared loss value.
 
 .. code-block:: python
+
     model_engines = [engine for engine, _, _, _ in [deepspeed.initialize(m, ...,) for m in models]]
     for batch in data_loader:
         losses = [engine(batch[0], batch[1]) for engine in model_engines]

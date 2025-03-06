@@ -35,11 +35,16 @@ from deepspeed.utils.debug import (debug_param2name_id_shape, debug_param2name_i
 from deepspeed.accelerator import get_accelerator
 from ..swap_tensor.partitioned_param_swapper import AsyncPartitionedParameterSwapper, PartitionedParamStatus
 from deepspeed.inference.quantization.utils import _quantize_param, WEIGHT_QUANTIZATION_LAYERS, wrap_quantized_functional, wrap_load_from_state_dict
-from deepspeed.runtime.torch_autocast import sort_dtypes, get_autocast_dtype
+from deepspeed.runtime.torch_autocast import sort_dtypes, get_autocast_dtype, has_autocast_dtype
 
 partitioned_param_data_shape = [0]
 zero_init_context = 0
 top_level_context = None
+
+
+def get_allgather_dtype(param, param_ds_tensor):
+    autocast = has_autocast_dtype(param)
+    return get_autocast_dtype(param) if autocast else param_ds_tensor.dtype
 
 
 class NoGatherHandle:
@@ -632,25 +637,23 @@ def restore_init_context():
 
 class AllGatherHandle:
 
-    def __init__(self, handle, param: Parameter, param_buffer=None, quantization=None) -> None:
+    def __init__(self, handle, param: Parameter, quantization=None, original_dtype=None) -> None:
         if param.ds_status != ZeroParamStatus.INFLIGHT:
             raise RuntimeError(f"expected param {param.ds_summary()} to be available")
 
-        # Only one of param_buffer or quantization is provided
-        assert (param_buffer is None) != (quantization is None)
+        # Only one of original_dtype or quantization is provided
+        assert (original_dtype is None) != (quantization is None)
 
         self.__handle = handle
         self.__param = param
-        self.__param_buffer = param_buffer
         self.__quantization = quantization
+        self.__original_dtype = original_dtype
 
     def wait(self, handle_dependency=True) -> None:
         instrument_w_nvtx(self.__handle.wait)()
 
-        if self.__param_buffer is not None:
-            param = self.__param
-            param.data = self.__param_buffer.narrow(0, 0, param.ds_numel).view(param.ds_shape).to(param.device).to(
-                param.dtype)
+        if self.__original_dtype:
+            self.__param.data = self.__param.data.to(self.__original_dtype)
         elif self.__quantization:
             instrument_w_nvtx(self.__quantization.quant_handle.wait)()
             self.__param.data = self.__quantization.backend.dequantize(
@@ -715,7 +718,7 @@ class AllGatherCoalescedHandle:
                                                                 min(param.ds_numel - param_start, ds_tensor_numel))
                     partitions.append(part_to_copy)
             # Note that dtypes of param and partitions can be different (currently for torch.autocast support)
-            param.data = instrument_w_nvtx(torch.cat)(partitions).view(param.ds_shape).to(param.dtype)
+            param.data = instrument_w_nvtx(torch.cat)(partitions).view(param.ds_shape).to(param.ds_tensor.dtype)
             param.ds_status = ZeroParamStatus.AVAILABLE
             if not get_accelerator().is_synchronized_device() and handle_dependency:
                 for part_to_copy in partitions:
@@ -1171,13 +1174,10 @@ class Init(InsertPostInitMethodToModuleSubClasses):
                 param_list = [cls]
             return self._all_gather(param_list, async_op=async_op, hierarchy=hierarchy)
 
-        def _all_gather_dtype(params, world_size, rank_in_group, ds_process_group, allgather_dtype=None):
+        def _all_gather_dtype(params, world_size, rank_in_group, ds_process_group, allgather_dtype):
             # make sure all params have the same dtype
             dtype = params[0].dtype  # we assume len(params) > 0
             assert all(p.dtype == dtype for p in params), "all params must have the same dtype"
-
-            if allgather_dtype is None:
-                allgather_dtype = dtype
 
             partition_sz = sum(p.ds_tensor.ds_numel for p in params)
 
@@ -1272,12 +1272,11 @@ class Init(InsertPostInitMethodToModuleSubClasses):
 
                 param_ds_tensor = param.ds_secondary_tensor if use_secondary_tensor else param.ds_tensor
 
+                original_dtype = param_ds_tensor.dtype
                 if quantize:
                     allgather_dtype = torch.int8
                 else:
-                    # Assume param.dtype and param_ds_tensor.dtype are the same for non-quantized case
-                    assert param.dtype == param_ds_tensor.dtype, f"dtypes of param and param_ds_tensor are different. param.dtype={param.dtype}, param_ds_tensor.dtype={param_ds_tensor.dtype}"
-                    allgather_dtype = get_autocast_dtype(param)
+                    allgather_dtype = get_allgather_dtype(param, param_ds_tensor)
 
                 param_buffer = torch.empty(
                     buffer_size,
@@ -1286,13 +1285,13 @@ class Init(InsertPostInitMethodToModuleSubClasses):
                     requires_grad=False,
                 )
                 if not quantize:
-                    # This allgather is async
                     handles = _dist_allgather_fn(
                         param_ds_tensor.to(get_accelerator().current_device_name()).to(allgather_dtype),
                         param_buffer,
                         ds_process_group,
                     )
-                    return AllGatherHandle(handles, param, param_buffer=param_buffer)
+                    param.data = param_buffer.narrow(0, 0, param.ds_numel).view(param.ds_shape).to(param.device)
+                    return AllGatherHandle(handles, param, original_dtype=original_dtype)
                 else:
                     if hasattr(param_ds_tensor, "ds_quant_scale"):
                         scales = param_ds_tensor.ds_quant_scale
@@ -1342,16 +1341,13 @@ class Init(InsertPostInitMethodToModuleSubClasses):
                     if not quantize:
                         dtype_params = defaultdict(list)
                         for p in params:
-                            allgather_dtype = get_autocast_dtype(p)
+                            allgather_dtype = get_allgather_dtype(p, p.ds_tensor)
                             dtype_params[allgather_dtype].append(p)
                         handles = []
                         for dtype in sort_dtypes(dtype_params.keys()):
                             handles.append(
-                                _all_gather_dtype(params,
-                                                  world_size,
-                                                  rank_in_group,
-                                                  ds_process_group,
-                                                  allgather_dtype=dtype))
+                                _all_gather_dtype(params, world_size, rank_in_group, ds_process_group,
+                                                  allgather_dtype))
 
                         return MultipleAllGatherHandles(handles)
 

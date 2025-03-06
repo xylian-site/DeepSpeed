@@ -69,6 +69,10 @@ def get_autocast_dtype(param: torch.nn.Parameter) -> torch.dtype:
     return param.autocast_dtype if hasattr(param, "autocast_dtype") else param.dtype
 
 
+def has_autocast_dtype(param: torch.nn.Parameter) -> bool:
+    return hasattr(param, "autocast_dtype")
+
+
 def get_all_autocast_dtypes(params: Iterable) -> Set[torch.dtype]:
     return {get_autocast_dtype(p) for p in params}
 

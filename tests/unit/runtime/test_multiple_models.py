@@ -18,7 +18,7 @@ def create_model(config_dict):
     return model
 
 
-def train_loop(num_models, config_dict, dtype):
+def train_shared_loss(num_models, config_dict, dtype):
     hidden_dim = 64
 
     models = [create_model(config_dict) for _ in range(num_models)]
@@ -43,16 +43,35 @@ def train_loop(num_models, config_dict, dtype):
             m.optimizer.zero_grad()
 
 
+def train_independent_loss(num_models, config_dict, dtype):
+    hidden_dim = 64
+
+    models = [create_model(config_dict) for _ in range(num_models)]
+    data_loader = random_dataloader(model=models[0],
+                                    total_samples=4,
+                                    hidden_dim=hidden_dim,
+                                    device=models[0].device,
+                                    dtype=dtype)
+    dist.barrier()
+    for _, batch in enumerate(data_loader):
+        losses = [m.module(batch[0], batch[1]) for m in models]
+        for m, loss in zip(models, losses):
+            m.backward(loss)
+            m.step()
+
+
 @pytest.mark.parametrize('num_models', [1, 2, 3])
 class TestMultipleModels(DistributedTest):
     world_size = 2
     reuse_dist_env = True
 
+    @pytest.mark.parametrize('shared_loss', [False, True])
     @pytest.mark.parametrize('zero_stage', [1, 2, 3])
     @pytest.mark.parametrize('fp32_grad_accum', [False, True])
     @pytest.mark.parametrize('contiguous_gradients', [False, True])
     @pytest.mark.parametrize('overlap_comm', [False, True])
-    def test_zero_optimizer(self, num_models, zero_stage, fp32_grad_accum, contiguous_gradients, overlap_comm):
+    def test_zero_optimizer(self, num_models, shared_loss, zero_stage, fp32_grad_accum, contiguous_gradients,
+                            overlap_comm):
         config_dict = {
             "train_micro_batch_size_per_gpu": 1,
             "optimizer": {
@@ -74,9 +93,12 @@ class TestMultipleModels(DistributedTest):
         if fp32_grad_accum:
             config_dict["data_types"] = {"grad_accum_dtype": "fp32"}
 
-        train_loop(num_models=num_models, config_dict=config_dict, dtype=torch.float16)
+        if shared_loss:
+            train_shared_loss(num_models=num_models, config_dict=config_dict, dtype=torch.float16)
+        else:
+            train_independent_loss(num_models=num_models, config_dict=config_dict, dtype=torch.float16)
 
-    def test_bf16_optimizer(self, num_models):
+    def test_bf16_optimizer(self, num_models, shared_loss):
         config_dict = {
             "train_micro_batch_size_per_gpu": 1,
             "optimizer": {
@@ -96,4 +118,7 @@ class TestMultipleModels(DistributedTest):
             }
         }
 
-        train_loop(num_models=num_models, config_dict=config_dict, dtype=torch.bfloat16)
+        if shared_loss:
+            train_shared_loss(num_models=num_models, config_dict=config_dict, dtype=torch.bfloat16)
+        else:
+            train_independent_loss(num_models=num_models, config_dict=config_dict, dtype=torch.bfloat16)

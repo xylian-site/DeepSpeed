@@ -98,6 +98,7 @@ class TestMultipleModels(DistributedTest):
         else:
             train_independent_loss(num_models=num_models, config_dict=config_dict, dtype=torch.float16)
 
+    @pytest.mark.parametrize('shared_loss', [False, True])
     def test_bf16_optimizer(self, num_models, shared_loss):
         config_dict = {
             "train_micro_batch_size_per_gpu": 1,

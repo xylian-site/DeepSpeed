@@ -966,7 +966,7 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
             self.report_ipg_memory_usage("In ipg_remove_grads before reduce_ipg_grads", param.numel(), param.dtype)
             self.reduce_ipg_grads()
             if self.contiguous_gradients and self.overlap_comm:
-                # Swap ipg_index between 0 and 1
+                # Swap index between 0 and 1
                 bucket.index = 1 - bucket.index
             self.report_ipg_memory_usage("In ipg_remove_grads after reduce_ipg_grads", param.numel(), param.dtype)
 
@@ -1415,7 +1415,7 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
                     self.average_tensor(extra_large_grad_reduc.view(-1), comm_dtype)
                     del self.extra_large_param_to_reduce[comm_dtype]
                 else:
-                    self.average_tensor(bucket.buffer[bucket.ipg_index].narrow(0, 0, bucket.elements), comm_dtype)
+                    self.average_tensor(bucket.buffer[bucket.index].narrow(0, 0, bucket.elements), comm_dtype)
             else:
                 self.buffered_reduce_fallback(None, bucket.grads, comm_dtype, elements_per_buffer=bucket.elements)
 
@@ -2127,7 +2127,7 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
                                     dtype=self.dtype,
                                     device=get_accelerator().current_device_name())
                 bucket.buffer.append(buf_0)
-                bucket.ipg_index = 0
+                bucket.index = 0
 
             # Use double buffers to avoid data access conflict when overlap_comm is enabled.
             if self.overlap_comm:

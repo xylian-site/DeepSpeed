@@ -418,10 +418,7 @@ class DeepSpeedEngine(Module):
                 else:
                     p.ds_offload = False
 
-<<<<<<< HEAD
-    def __del__(self):
-        self.destroy()
-=======
+
     def _configure_tensor_parallel_states(self, model):
         """
         Configures the tensor parallel states for the model.
@@ -486,7 +483,11 @@ class DeepSpeedEngine(Module):
         self.first_dataloader_check = self.module.register_forward_pre_hook(check_dataloader_inputs_same_across_ranks,
                                                                             prepend=True,
                                                                             with_kwargs=True)
->>>>>>> 729dfafca366961b82daddb6dea6294aecfa74bc
+
+
+    def __del__(self):
+        self.destroy()
+
 
     def destroy(self):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):

@@ -2939,7 +2939,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         # contiguous bucket
         if needs_offload(OffloadStateTypeEnum.contiguous_grad_buffer):
-            for _, bucket in self.offload_bucket_mapping.items():
+            for bucket in self.ipg_buckets.values():
                 if bucket.buffer is not None:
                     # Record properties like shape, strides, etc. as a meta tensor
                     bucket.buffer_meta = bucket.buffer.to("meta")
@@ -3001,7 +3001,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         # contiguous bucket
         if OffloadStateTypeEnum.contiguous_grad_buffer in self.offloaded_states:
-            for _, bucket in self.offload_bucket_mapping.items():
+            for bucket in self.ipg_buckets.values():
                 if bucket.buffer_meta is not None:
                     # We don't restore the data
                     bucket.buffer = torch.empty_like(bucket.buffer_meta, device=device)

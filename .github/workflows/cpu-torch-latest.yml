@@ -37,6 +37,15 @@ jobs:
           python -c "import torch; print('torch:', torch.__version__, torch)"
           python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
+      - name: Install transformers
+        run: |
+          git clone https://github.com/huggingface/transformers
+          cd transformers
+          # if needed switch to the last known good SHA until transformers@master is fixed
+          git checkout 981c276
+          git rev-parse --short HEAD
+          pip install .
+
       - name: Install deepspeed
         run: |
           pip install .[dev,autotuning]
@@ -51,5 +60,6 @@ jobs:
           TEST_LOG_FILE="/tmp/test_log_cpu_${GITHUB_RUN_ID}.log"
           unset TORCH_CUDA_ARCH_LIST # only jit compile for current arch
           cd tests
-          RUNNING_TEST_LOG_FILE=${TEST_LOG_FILE} DS_UNITTEST_FILE_STORE_DIR=/dev/shm HF_HOME=/tmp/hf_home/ pytest $PYTEST_OPTS -n 4 unit/ --torch_ver="2.5"
-          HF_HOME=/tmp/hf_home/ pytest $PYTEST_OPTS -m 'sequential' unit/ --torch_ver="2.5"
+          RUNNING_TEST_LOG_FILE=${TEST_LOG_FILE} DS_UNITTEST_FILE_STORE_DIR=/dev/shm HF_HOME=/tmp/hf_home/ pytest $PYTEST_OPTS -n 4 unit/ --torch_ver="2.6"
+          HF_HOME=/tmp/hf_home/ pytest $PYTEST_OPTS -m 'sequential' unit/ --torch_ver="2.6"
+

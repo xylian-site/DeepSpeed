@@ -133,7 +133,7 @@ BFLOAT16_CHECK_OVERFLOW_DEFAULT = False
 
 # BFLOAT16 optimizer immediate gradient update
 BFLOAT16_IMMEDIATE_GRAD_UPDATE = "immediate_grad_update"
-BFLOAT16_IMMEDIATE_GRAD_UPDATE_DEFAULT = False
+BFLOAT16_IMMEDIATE_GRAD_UPDATE_DEFAULT = True
 
 #########################################
 # FP16 support

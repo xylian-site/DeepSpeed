@@ -1602,8 +1602,8 @@ class DeepSpeedZeroOptimizer(ZeROOptimizer):
 
         with get_accelerator().stream(stream):
             allreduced = self.allreduce_bucket(
-                communication_data_type,
                 small_bucket,
+                communication_data_type,
                 rank=rank,
                 log=log,
                 divide=divide,

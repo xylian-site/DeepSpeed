@@ -1520,7 +1520,8 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
             # free the gradient
             if not get_accelerator().is_synchronized_device():
-                param.grad.record_stream(get_accelerator().current_stream())
+                if param.grad is not None:
+                    param.grad.record_stream(get_accelerator().current_stream())
             param.grad = None
 
         if self.offload_optimizer and self.swap_optimizer:
@@ -1924,7 +1925,16 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             self._optimizer_states_and_gradient_swap_in(sub_group_id, timer_names)
         elif not self.offload_optimizer:
             self._prepare_fp32_grad_for_sub_group(sub_group_id)
+        elif self.offload_optimizer and self.offload_param:
+            self._prepare_fp32_grad_for_offload_sub_group(sub_group_id)
         see_memory_usage(f'After prepare optimizer sub group {sub_group_id}', force=False)
+
+    def _prepare_fp32_grad_for_offload_sub_group(self, sub_group_id):
+        params = [param for param in self.fp16_groups[sub_group_id]]
+        grad_partitions = [self.__param_id_to_grad_partition[param.ds_id] for param in params]
+        self.partition_grads([param for param in self.fp16_groups[sub_group_id] if param.requires_grad],
+                                 grad_partitions)
+
 
     def _optimizer_states_and_gradient_swap_in(self, sub_group_id, timer_names):
         param_length = self.fp16_partitioned_groups_flat_numel[sub_group_id]

@@ -41,4 +41,8 @@ at::Tensor offload_tensor(at::Tensor tensor, long graph_id, long id);
 at::Tensor reload_tensor(at::Tensor tensor, long graph_id, long id);
 at::Tensor wait_offload(at::Tensor tensor, long graph_id, long id);
 at::Tensor wait_reload(at::Tensor tensor, long graph_id, long id);
+void reload_parameter(at::Tensor tensor, long graph_id, long id);
+void offload_parameter(at::Tensor tensor, long graph_id, long id);
+void reload_parameter_meta(at::Tensor tensor, long graph_id, long id);
+void offload_parameter_meta(at::Tensor tensor, long graph_id, long id);
 }  // namespace dc

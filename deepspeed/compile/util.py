@@ -14,7 +14,7 @@ from torch._subclasses.fake_tensor import unset_fake_temporarily
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from deepspeed.ops.op_builder import DeepCompileBuilder
+from op_builder.deepcompile import DeepCompileBuilder
 
 sym_size_ops = {
     operator.ge,

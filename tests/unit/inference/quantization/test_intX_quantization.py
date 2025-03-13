@@ -256,6 +256,7 @@ def quantization_bits(request):
 def group_dim(request):
     return request.param
 
+
 class TestQuantizedInt(DistributedTest):
 
     def test_model_quantization(self, quantization_bits):

@@ -47,7 +47,7 @@ jobs:
           unset TORCH_CUDA_ARCH_LIST # only jit compile for current arch
           git clone https://github.com/huggingface/accelerate
           cd accelerate
-          git checkout 71036329f7be4d4f97b13e8df245d064c539d8a2
+          git checkout f648feba9790613e2985380cd28716e0380274ca
           git rev-parse --short HEAD
           # installing dependencies
           pip install .[testing]

@@ -66,20 +66,18 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     if schedule is None:
         schedule = []
         schedule.append((0, [zero3_compile.add_z3_gather_release]))
-        # schedule.append(
-        #     (WARMUP,
-        #      [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
+        schedule.append(
+            (WARMUP,
+             [zero3_compile.add_z3_gather_release, prefetch.schedule_prefetch, selective_gather.selective_gather]))
 
     init_schedule(schedule)
 
     engine.launch_compile_passes = launch_compile_passes
 
-    # print(f"allgathering params")
-    # params = list(engine.module.parameters())
-    # params[0].all_gather(param_list=params)
-
     patch_fake_tensor()
     free_activation = compile_config.free_activation and not is_backend_inductor(backend)
+
+    torch._inductor.config.size_asserts = False
 
     return make_backend(backend,
                         compile_kwargs=compile_kwargs,

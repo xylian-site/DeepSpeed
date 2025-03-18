@@ -220,7 +220,7 @@ def make_backward_input_PT26(CompiledFunction, ctx, flat_args):
     # - updated inputs due to metadata-only mutations.
     # We need to return them in the forward, but ensure that they all do not get gradients in the backward,
     # and we filter them out here before passing the remaining grad_outputs into the compiled backward.
-    CompiledFunction._raise_if_functorch_active()
+    # CompiledFunction._raise_if_functorch_active()
 
     num_intermediate_bases = (CompiledFunction.metadata.num_intermediate_bases)
     num_mutated_runtime_inps = (CompiledFunction.metadata.num_mutated_inp_runtime_indices)

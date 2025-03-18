@@ -14,7 +14,7 @@ from torch._functorch._aot_autograd.schemas import (
     OutputType,
     SubclassCreationMeta,
 )
-from torch._functorch._aot_autograd.subclass_utils import (get_types_for_subclass, unwrap_tensor_subclasses)
+from torch._functorch._aot_autograd.subclass_utils import unwrap_tensor_subclasses
 from torch._functorch._aot_autograd.runtime_wrappers import AOTDispatchAutograd
 from torch._subclasses import FakeTensor
 
@@ -23,6 +23,8 @@ backward_inputs = []
 
 # Copied from torch._functorch._aot_autograd.runtime_wrappers
 def make_backward_input_PT25(CompiledFunction, ctx, flat_args):
+    from torch._functorch._aot_autograd.subclass_utils import get_types_for_subclass
+
     num_intermediate_bases = (CompiledFunction.metadata.num_intermediate_bases)
     num_mutated_runtime_inps = (CompiledFunction.metadata.num_mutated_inp_runtime_indices)
     expected_grad_outs = (CompiledFunction.metadata.num_outputs + num_mutated_runtime_inps + num_intermediate_bases)

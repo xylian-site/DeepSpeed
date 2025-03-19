@@ -21,7 +21,7 @@ except ImportError:
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 from deepspeed.utils.torch import required_torch_version
-from op_builder.dc import DeepCompileBuilder
+from deepspeed.ops.op_builder.dc import DeepCompileBuilder
 
 sym_size_ops = {
     operator.ge,

@@ -7,10 +7,14 @@ import torch
 import torch.utils._pytree as pytree
 
 from torch._functorch.aot_autograd import create_aot_dispatcher_function
-from torch._inductor.lowering import register_lowering, fallbacks, add_needs_realized_inputs
-from torch._inductor.ir import TensorBox, FallbackKernel, Layout, IRNode
-from torch._inductor.virtualized import V
-from torch._inductor.scheduler import Scheduler
+
+try:
+    from torch._inductor.lowering import register_lowering, fallbacks, add_needs_realized_inputs
+    from torch._inductor.ir import TensorBox, FallbackKernel, Layout, IRNode
+    from torch._inductor.virtualized import V
+    from torch._inductor.scheduler import Scheduler
+except ImportError:
+    pass
 
 from .util import get_input_nodes
 from .graph_param import DSGraphParamManager

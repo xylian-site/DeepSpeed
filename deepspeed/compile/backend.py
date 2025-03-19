@@ -7,12 +7,16 @@ from typing import Dict, List, Callable
 import time
 
 import torch
-import torch._inductor.scheduler
 from torch.fx import Graph, GraphModule
 from functorch.compile import make_boxed_func
 import torch.utils._pytree as pytree
 import torch._dynamo
 from torch._functorch.aot_autograd import aot_module_simplified
+
+try:
+    import torch._inductor.scheduler
+except ImportError:
+    pass
 
 from deepspeed.accelerator import get_accelerator
 

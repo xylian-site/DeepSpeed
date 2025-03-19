@@ -12,12 +12,11 @@ from torch.utils._pytree import tree_all, tree_leaves
 from torch.fx import GraphModule, Interpreter
 from torch.fx.node import map_aggregate
 
-from torch._subclasses.fake_tensor import is_fake
 try:
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
+    from torch._subclasses.fake_tensor import unset_fake_temporarily, is_fake
 except ImportError:
-    # torch < v2.5
-    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+    # Unsupported torch version
+    pass
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator

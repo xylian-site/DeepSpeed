@@ -15,8 +15,8 @@ from deepspeed.runtime.zero.offload_states import _make_offload_state_key
 try:
     from torch._subclasses.fake_tensor import unset_fake_temporarily
 except ImportError:
-    # torch < v2.5
-    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+    # Unsupported torch version
+    pass
 
 from ..profilers import ProfilingResult
 from ..graph_param import DSGraphParamManager

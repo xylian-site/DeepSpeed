@@ -12,8 +12,8 @@ import torch
 try:
     from torch._subclasses.fake_tensor import unset_fake_temporarily
 except ImportError:
-    # torch < v2.5
-    from torch.fx.experimental.proxy_tensor import maybe_disable_fake_tensor_mode as unset_fake_temporarily
+    # Unsupported torch version
+    pass
 
 import deepspeed
 import deepspeed.comm as dist

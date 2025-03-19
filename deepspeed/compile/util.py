@@ -11,7 +11,12 @@ from collections import defaultdict
 import torch
 from torch.fx import Node, Graph
 from torch.fx.node import map_aggregate, Argument, map_arg
-from torch._subclasses.fake_tensor import unset_fake_temporarily
+
+try:
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
+except ImportError:
+    # Unsupported torch version
+    pass
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator

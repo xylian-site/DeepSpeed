@@ -4,6 +4,7 @@
 # DeepSpeed Team
 
 import torch
+from deepspeed.utils.torch import required_torch_version
 
 backward_inputs = []
 
@@ -11,8 +12,33 @@ enabled_patched_func = False
 original_grad_fn = None
 base_meta = type(torch.autograd.Function)
 
-from deepspeed.utils.torch import required_torch_version
-if required_torch_version(min_version=2.6):
+if required_torch_version(min_version=2.7):
+
+    class FunctionMeta(base_meta):
+
+        def __new__(cls, name, bases, dct):
+            if name == "CompiledFunction":
+                original_backward_impl = dct.get("_backward_impl")
+
+                def wrapped_backward_impl(ctx, all_args):
+                    assert original_backward_impl is not None
+
+                    if enabled_patched_func:
+                        backward_inputs.append(all_args)
+                        wrapped_backward_impl.owner_class.compiled_bw = None
+
+                    return original_backward_impl(ctx, all_args)
+
+                wrapped_backward_impl.owner_class = None
+                dct["_backward_impl"] = staticmethod(wrapped_backward_impl)
+                new_class = super().__new__(cls, name, bases, dct)
+                wrapped_backward_impl.owner_class = new_class
+
+                return new_class
+
+            return super().__new__(cls, name, bases, dct)
+
+elif required_torch_version(min_version=2.6):
 
     class FunctionMeta(base_meta):
 

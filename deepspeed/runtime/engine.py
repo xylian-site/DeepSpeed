@@ -37,6 +37,7 @@ from deepspeed.runtime.fp16.unfused_optimizer import FP16_UnfusedOptimizer
 from deepspeed.runtime.bf16_optimizer import BF16_Optimizer
 
 from deepspeed.linear.optimized_linear import LoRAOptimizedLinear
+from deepspeed.module_inject.layers import GatherReplacedLayerParams
 
 from deepspeed.runtime.config import DEEPSPEED_OPTIMIZERS, \
     ADAGRAD_OPTIMIZER, ADAM_OPTIMIZER, ADAMW_OPTIMIZER, LAMB_OPTIMIZER, ONEBIT_ADAM_OPTIMIZER, ONEBIT_LAMB_OPTIMIZER, \
@@ -75,7 +76,7 @@ from deepspeed.utils.timer import NoopTimer, ThroughputTimer, SynchronizedWallCl
 from deepspeed.utils.debug import debug_extract_module_and_param_names, debug_clear_module_and_param_names
 from deepspeed.monitor.monitor import MonitorMaster
 from deepspeed.runtime.progressive_layer_drop import ProgressiveLayerDrop
-from deepspeed.runtime.utils import clip_grad_norm_
+from deepspeed.runtime.utils import clip_grad_norm_, compare_tensors_in_structures
 from deepspeed.runtime.eigenvalue import Eigenvalue
 from deepspeed.runtime.data_pipeline.constants import DATA_SAMPLING, \
     DATA_ROUTING, DATA_SAMPLING_ENABLED, CURRICULUM_LEARNING, \
@@ -107,7 +108,7 @@ from deepspeed.accelerator import get_accelerator
 
 from deepspeed.runtime.config import DtypeEnum
 
-from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, pre_backward
+from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, deepcompile_backward_prologue
 from deepspeed.compile.backend import register_compile_pass, opt_passes
 from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
 from deepspeed.compile.init_z1 import init_z1
@@ -236,7 +237,6 @@ class DeepSpeedEngine(Module):
         self._step_applied = False
         self._global_grad_norm = None
         self.use_ds_comm = False  # False --> Use torch.dist, True --> Use ds.comm backend.
-
         self.checkpoint_engine = None
 
         self._is_gradient_accumulation_boundary = None
@@ -253,6 +253,8 @@ class DeepSpeedEngine(Module):
         self._do_args_sanity_check(args)
         self._configure_with_arguments(args, mpu)
         self._do_sanity_check()
+        if self.autotp_size() > 1:
+            self._configure_tensor_parallel_states(model)
         see_memory_usage(f"DeepSpeed Engine: After args sanity test", force=self.memory_breakdown())
         if mpu is not None:
             if self.elasticity_enabled():
@@ -275,6 +277,10 @@ class DeepSpeedEngine(Module):
 
         # Configure distributed model
         self._configure_distributed_model(model)
+
+        if not self.is_deepcompile_enabled():
+            self.module_forward_pre_hook = self._create_module_forward_pre_hook()
+            self.module_forward_post_hook = self._create_module_forward_post_hook()
 
         # needed for zero_to_fp32 weights reconstruction to remap nameless data to state_dict
         self.param_names = {param: name for name, param in model.named_parameters()}
@@ -421,6 +427,71 @@ class DeepSpeedEngine(Module):
                     p.offload()
                 else:
                     p.ds_offload = False
+
+    def _configure_tensor_parallel_states(self, model):
+        """
+        Configures the tensor parallel states for the model.
+        This includes setting up the tensor parallel groups, initializing the TP mesh,
+        and registering a pre-hook to ensure that the Dataloader inputs are consistent across ranks.
+        """
+        self._set_client_model(model)
+
+        # sanity check
+        # currently, the compatibility between 'autotp' and 'zero > 1' has not been validated
+        assert self.zero_optimization_stage(
+        ) <= 2, "Currently, the compatibility between 'autotp' and 'zero_stage = 3' has not been validated"
+
+        self.mpu = groups
+        self.mpu._init_tp_mesh_device(tensor_model_parallel_size=self.autotp_size())
+
+        self.first_dataloader_check = None
+
+        def check_dataloader_inputs_same_across_ranks(module, args, kwargs):
+
+            def broadcast_and_check(args, bcast_rank, bcast_group):
+                if isinstance(args, tuple):
+                    args = list(args)
+                if len(args) > 0:
+                    if self.mpu.get_tensor_model_parallel_rank() == 0:
+                        _src_args = [args]
+                        dist.broadcast_object_list(object_list=_src_args,
+                                                   src=bcast_rank,
+                                                   group=bcast_group,
+                                                   device=get_accelerator().current_device())
+                        # Rank 0 does not need to compare with itself
+                        is_equal = True
+                    else:
+                        _src_args = [None]
+                        dist.broadcast_object_list(object_list=_src_args,
+                                                   src=bcast_rank,
+                                                   group=bcast_group,
+                                                   device=get_accelerator().current_device())
+
+                        is_equal = compare_tensors_in_structures(args, _src_args[0])
+
+                    equal_tensor = torch.tensor(is_equal,
+                                                dtype=self.communication_data_type,
+                                                device=get_accelerator().current_device())
+                    dist.all_reduce(equal_tensor, group=bcast_group)
+                    assert torch.equal(
+                        equal_tensor,
+                        torch.tensor(groups.get_tensor_model_parallel_world_size(),
+                                     dtype=self.communication_data_type,
+                                     device=get_accelerator().current_device())
+                    ), "Data inconsistency within the TP group. Please check the Dataloader implementation to ensure consistency."
+
+            bcast_rank = self.mpu.get_tensor_model_parallel_src_rank()
+            bcast_group = self.mpu.get_tensor_model_parallel_group()
+
+            broadcast_and_check(args, bcast_rank, bcast_group)
+            broadcast_and_check(kwargs, bcast_rank, bcast_group)
+
+            logger.info(f":The Dataloader has passed the TP group consistency check.")
+            self.first_dataloader_check.remove()
+
+        self.first_dataloader_check = self.module.register_forward_pre_hook(check_dataloader_inputs_same_across_ranks,
+                                                                            prepend=True,
+                                                                            with_kwargs=True)
 
     def destroy(self):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):
@@ -812,10 +883,8 @@ class DeepSpeedEngine(Module):
     def zero_elastic_checkpoint(self):
         return self._config.zero_config.elastic_checkpoint
 
-    def zero_has_nvme_offload(self):
-        if not hasattr(self.optimizer, "swap_optimizer"):
-            return False
-        return self.optimizer.swap_optimizer or self.optimizer.params_in_nvme_and_cpu
+    def zero_nvme_offload_optimizer(self):
+        return getattr(self.optimizer, "swap_optimizer", False)
 
     def zero_max_live_parameters(self):
         return self._config.zero_config.max_live_parameters
@@ -846,6 +915,9 @@ class DeepSpeedEngine(Module):
 
     def zero_ignore_unused_parameters(self):
         return self._config.zero_config.ignore_unused_parameters
+
+    def autotp_size(self):
+        return self._config.tensor_parallel_config.autotp_size
 
     def graph_harvesting(self):
         return self._config.graph_harvesting
@@ -927,6 +999,9 @@ class DeepSpeedEngine(Module):
 
     def zeropp_loco_param(self):
         return self._config.zero_config.zeropp_loco_param
+
+    def zero_log_trace_cache_warnings(self):
+        return self._config.zero_config.log_trace_cache_warnings
 
     def dump_state(self):
         return self._config.dump_state
@@ -1637,6 +1712,7 @@ class DeepSpeedEngine(Module):
                     zero_quantized_weights=self.zero_quantized_weights(),
                     zero_quantized_nontrainable_weights=self.zero_quantized_nontrainable_weights(),
                     zero_module_granularity_threshold=self.zero_module_granularity_threshold(),
+                    log_trace_cache_warnings=self.zero_log_trace_cache_warnings(),
                 )
             else:
                 log_dist(
@@ -1685,6 +1761,7 @@ class DeepSpeedEngine(Module):
                     zero_quantized_nontrainable_weights=self.zero_quantized_nontrainable_weights(),
                     zero_module_granularity_threshold=self.zero_module_granularity_threshold(),
                     zeropp_loco_param=self.zeropp_loco_param(),
+                    log_trace_cache_warnings=self.zero_log_trace_cache_warnings(),
                 )
 
         else:
@@ -1815,7 +1892,6 @@ class DeepSpeedEngine(Module):
                 GLOBAL_RANK: self.global_rank,
                 DATA_SAMPLING_NUM_WORKERS: self.data_sampling_config()[DATA_SAMPLING_NUM_WORKERS]
             }
-
         return DeepSpeedDataLoader(dataset=dataset,
                                    batch_size=batch_size,
                                    pin_memory=pin_memory,
@@ -1862,17 +1938,24 @@ class DeepSpeedEngine(Module):
 
         return scaled_loss
 
-    @instrument_w_nvtx
-    def forward(self, *inputs, **kwargs):
-        r"""Execute forward propagation
-        Arguments:
-            *inputs: Variable length input list
-            **kwargs: variable length keyword arguments
-        """
+    def _create_module_forward_pre_hook(self):
 
-        if self.autotuning_profile_model_info():
-            ma = get_ma_status()
-        else:
+        def _module_forward_pre_hook(module, inputs, kwargs):
+            return self._forward_prologue(inputs, kwargs)
+
+        return self.module.register_forward_pre_hook(_module_forward_pre_hook, prepend=False, with_kwargs=True)
+
+    def _create_module_forward_post_hook(self):
+
+        def _module_forward_post_hook(module, input, output):
+            self._forward_epilogue()
+
+        return self.module.register_forward_hook(_module_forward_post_hook)
+
+    def _forward_prologue(self, inputs, kwargs):
+        return_modified = False
+
+        if not self.autotuning_profile_model_info():
             see_memory_usage("Engine before forward", force=self.memory_breakdown())
 
         flops_profiler_active = (self.flops_profiler_enabled()
@@ -1891,61 +1974,85 @@ class DeepSpeedEngine(Module):
                         self.eigenvalue_enabled(),
                         None,
                     )
+                    return_modified = True
 
         if flops_profiler_active:
             self.flops_profiler.start_profile(ignore_list=None)
 
-        if self.module.training:
-            if self.progressive_layer_drop:
-                kwargs.update(self.progressive_layer_drop.get_state())
+        if kwargs is not None:
+            if self.module.training:
+                if self.progressive_layer_drop:
+                    kwargs.update(self.progressive_layer_drop.get_state())
 
-        if self.__class__.__name__ != "PipelineEngine":
-            # TODO: The above if condition is a HACK since for PipelineEngine
-            # it's difficult to inject argument in forward pass.
-            if self.module.training and self.curriculum_enabled_legacy():
-                self.curriculum_scheduler_legacy.update_difficulty(self.global_steps + 1)
-                if self.curriculum_params_legacy()["curriculum_type"] == "seqlen":
-                    kwargs.update({"curriculum_seqlen": self.curriculum_scheduler_legacy.get_current_difficulty()})
+            if self.__class__.__name__ != "PipelineEngine":
+                # TODO: The above if condition is a HACK since for PipelineEngine
+                # it's difficult to inject argument in forward pass.
+                if self.module.training and self.curriculum_enabled_legacy():
+                    self.curriculum_scheduler_legacy.update_difficulty(self.global_steps + 1)
+                    if self.curriculum_params_legacy()["curriculum_type"] == "seqlen":
+                        kwargs.update({"curriculum_seqlen": self.curriculum_scheduler_legacy.get_current_difficulty()})
+                        return_modified = True
 
         if self.module.training and self.random_ltd_enabled():
             self.random_ltd_scheduler.update_seq(self.global_steps)
 
-        if self.zero_optimization_partition_weights() and not self.is_compiled:
+        if self.training_dataloader is None:
+            self.tput_timer.start()
+
+        self._start_timers(self.engine_timers.forward_timers)
+
+        if self.zero_optimization_partition_weights():
             # Enable automated discovery of external parameters by indicating that
             # we are in a forward pass.
             for module in self.module.modules():
                 module._parameters._in_forward = True
 
-        self._start_timers(self.engine_timers.forward_timers)
-
-        if self.training_dataloader is None:
-            self.tput_timer.start()
-
         if self.fp16_auto_cast():
             inputs = self._cast_inputs_half(inputs)
+            return_modified = True
 
-        if self.is_deepcompile_enabled():
-            self.launch_compile_passes(self.global_steps)
+        if return_modified:
+            return inputs, kwargs
 
-        loss = self.module(*inputs, **kwargs)
-
-        if self.zero_optimization_partition_weights() and not self.is_compiled:
+    def _forward_epilogue(self):
+        if self.zero_optimization_partition_weights():
             # Disable automated discovery of external parameters
             for module in self.module.modules():
                 module._parameters._in_forward = False
 
         self._stop_timers(self.engine_timers.forward_timers)
 
+        flops_profiler_active = (self.flops_profiler_enabled()
+                                 and self.global_steps == self.flops_profiler_profile_step() and self.global_rank == 0)
+
         if flops_profiler_active:
             self.flops_profiler.stop_profile()
+
+        if not self.autotuning_profile_model_info():
+            see_memory_usage("Engine after forward", force=self.memory_breakdown())
+
+    @instrument_w_nvtx
+    def forward(self, *inputs, **kwargs):
+        r"""Execute forward propagation
+        Arguments:
+            *inputs: Variable length input list
+            **kwargs: variable length keyword arguments
+        """
+        if self.autotuning_profile_model_info():
+            ma = get_ma_status()
+
+        if self.is_deepcompile_enabled():
+            # We can't have this in forward prologue as the compiler compiles hooks including the forward prologue.
+            self.launch_compile_passes(self.global_steps)
+
+        loss = self.module(*inputs, **kwargs)
 
         if self.autotuning_profile_model_info():
             activation_mem = get_ma_status() - ma
             self.autotuning_model_info["activation_mem_per_gpu"] = activation_mem
             print_json_dist(self.autotuning_model_info, [0], path=self.autotuning_model_info_path())
             exit()
-        else:
-            see_memory_usage("Engine after forward", force=self.memory_breakdown())
+
         return loss
 
     def _cast_inputs_half(self, inputs):
@@ -2004,44 +2111,14 @@ class DeepSpeedEngine(Module):
                 grads = None
                 self.buffered_allreduce_fallback(grads=grads, elements_per_buffer=bucket_size)
 
-    @contextmanager
-    def no_sync(self):
-        r"""
-            Context manager to disable gradient reduction during backward pass.
-            This context manager has the following effects on other DeepSpeed features.
-            1. Incompatible with ZeRO stage 2/3 which rely on reduction for gradient partitioning.
-            2. It is illegal to  call engine.step() within the context manager.
-            3. Tracking of gradient accumulation steps is disabled.
-        """
-        assert not self.zero_optimization_partition_gradients(), \
-        f"no_sync context manager is incompatible with gradient partitioning logic of ZeRO stage {self.zero_optimization_stage()}"
-
-        assert not self.inside_no_sync_ctxt, f"no_sync context manager reentry is unsupported"
-
-        self.inside_no_sync_ctxt = True
-        try:
-            yield
-        finally:
-            self.inside_no_sync_ctxt = False
-
-    @instrument_w_nvtx
-    def backward(self, loss, release_loss=False, retain_graph=False, scale_wrt_gas=True):
-        r"""Execute backward pass on the loss
-        Arguments:
-            loss: Torch tensor on which to execute backward propagation
-            retain_graph: bool, default: false
-                forward on user defined choice of retain_graph
-        """
-
+    def _backward_prologue(self, loss, scale_wrt_gas=True):
         see_memory_usage("Engine before backward", force=self.memory_breakdown())
-
         if self.scale_wrt_gas is not None:
             scale_wrt_gas = self.scale_wrt_gas
 
+        # scale loss w.r.t. gradient accumulation if reduction is not disabled
         do_gradient_reduction = self.enable_backward_allreduce and not self.inside_no_sync_ctxt and not self.is_deepcompile_enabled(
         )
-
-        # scale loss w.r.t. gradient accumulation if reduction is not disabled
         if do_gradient_reduction and self.gradient_accumulation_steps() > 1 and scale_wrt_gas:
             loss = self._scale_loss_by_gas(loss.float())
 
@@ -2058,16 +2135,22 @@ class DeepSpeedEngine(Module):
                     )]
                     self.monitor.write_events(self.summary_events)
 
-        self._start_timers(self.engine_timers.backward_timers)
-
-        assert self.optimizer is not None and not isinstance(self.optimizer, DummyOptim), \
-            "must provide optimizer during init in order to use backward"
-
-        self._start_timers(self.engine_timers.backward_inner_timers)
-
         if self.is_deepcompile_enabled():
-            pre_backward(self.is_gradient_accumulation_boundary())
+            deepcompile_backward_prologue(self.is_gradient_accumulation_boundary())
 
+        return loss
+
+    def _backward_epilogue(self):
+        self._start_timers(self.engine_timers.backward_reduce_timers)
+        if self.enable_backward_allreduce and not self.inside_no_sync_ctxt:
+            # Traditional code path that allreduces the module parameter grads
+            self.allreduce_gradients()
+
+        self._stop_timers(self.engine_timers.backward_reduce_timers)
+        see_memory_usage("Engine after backward", force=self.memory_breakdown())
+
+    def _do_optimizer_backward(self, loss, retain_graph):
+        self._start_timers(self.engine_timers.backward_inner_timers)
         if self.zero_optimization():
             self.optimizer.is_gradient_accumulation_boundary = self.is_gradient_accumulation_boundary()
             self.optimizer.backward(loss, retain_graph=retain_graph)
@@ -2083,30 +2166,50 @@ class DeepSpeedEngine(Module):
             else:
                 self.optimizer.backward(loss, retain_graph=retain_graph)
         elif self.bfloat16_enabled():
-            self.optimizer.backward(loss)
+            self.optimizer.backward(loss, retain_graph=retain_graph)
         else:
             if self.eigenvalue_enabled():
                 loss.backward(create_graph=True, retain_graph=True)
             else:
                 loss.backward(retain_graph=retain_graph)
-
         self._stop_timers(self.engine_timers.backward_inner_timers)
 
-        self._start_timers(self.engine_timers.backward_reduce_timers)
+    @contextmanager
+    def no_sync(self):
+        r"""
+            Context manager to disable gradient reduction during backward pass.
+            This context manager has the following effects on other DeepSpeed features:
+            1. Incompatible with ZeRO stage 2/3 which rely on reduction for gradient partitioning.
+            2. It is illegal to call engine.step() within the context manager.
+            3. Tracking of gradient accumulation steps is disabled.
+        """
+        assert not self.zero_optimization_partition_gradients(), \
+        f"no_sync context manager is incompatible with gradient partitioning logic of ZeRO stage {self.zero_optimization_stage()}"
 
-        if do_gradient_reduction:
-            # Traditional code path that allreduces the module parameter grads
-            self.allreduce_gradients()
+        assert not self.inside_no_sync_ctxt, f"no_sync context manager reentry is unsupported"
 
-        self._stop_timers(self.engine_timers.backward_reduce_timers)
+        self.inside_no_sync_ctxt = True
+        try:
+            yield
+        finally:
+            self.inside_no_sync_ctxt = False
 
+    @instrument_w_nvtx
+    def backward(self, loss, retain_graph=False, scale_wrt_gas=True):
+        r"""Execute backward pass on the loss
+        Arguments:
+            loss: Torch tensor on which to execute backward propagation
+            retain_graph: bool, default: false
+                forward on user defined choice of retain_graph
+        """
+        assert self.optimizer is not None and not isinstance(self.optimizer, DummyOptim), \
+            "must provide optimizer during init in order to use backward"
+
+        self._start_timers(self.engine_timers.backward_timers)
+        loss = self._backward_prologue(loss, scale_wrt_gas)
+        self._do_optimizer_backward(loss, retain_graph)
+        self._backward_epilogue()
         self._stop_timers(self.engine_timers.backward_timers)
-
-        if release_loss:
-            # loss.data = None
-            pass
-
-        see_memory_usage("Engine after backward", force=self.memory_breakdown())
 
         return loss
 
@@ -2885,7 +2988,7 @@ class DeepSpeedEngine(Module):
             if not success:
                 self.optimizer._restore_from_bit16_weights()
 
-        if self.zero_has_nvme_offload():
+        if self.zero_nvme_offload_optimizer():
             from shutil import copytree, disk_usage
             offload_dir = self.optimizer.optimizer_swapper.swap_folder
             offload_ckpt_dir = os.path.join(load_dir, tag, "offloaded_tensors")
@@ -2961,7 +3064,7 @@ class DeepSpeedEngine(Module):
         optim_checkpoint = None
         if load_module_only:
             deepspeed_states = ['module']
-            if self.optimizer is not None:
+            if self.optimizer is not None and hasattr(self.optimizer, 'refresh_fp32_params'):
                 self.optimizer.refresh_fp32_params()
         else:
             has_zero_optimizer_state = self.zero_optimization() or self.bfloat16_enabled()
@@ -3225,7 +3328,7 @@ class DeepSpeedEngine(Module):
             self._create_zero_checkpoint_files(save_dir, tag)
             self._save_zero_checkpoint(save_dir, tag)
 
-        if self.zero_has_nvme_offload():
+        if self.zero_nvme_offload_optimizer():
             from shutil import copytree, disk_usage
             offload_dir = self.optimizer.optimizer_swapper.swap_folder
             offload_ckpt_dir = os.path.join(save_dir, tag, "offloaded_tensors")
@@ -3591,6 +3694,52 @@ class DeepSpeedEngine(Module):
         ckpt_type = 'zero' if self.zero_optimization() else 'bf16_zero'
         logger.info(f'{ckpt_type} checkpoint saved {zero_checkpoint_name}')
 
+    def _replace_module_consolidated_state_dict(self):
+        """
+        Get a full non-partitioned state_dict with fp16 weights on cpu.
+        Important: this function must be called on all ranks and not just rank 0.
+        This is similar to nn.Module.state_dict (modelled after _save_to_state_dict)
+        This method is used for tensor parallel training.
+
+        Returns:
+        OrderedDict: The consolidated state dictionary if the current process rank is 0, otherwise None.
+        """
+        #TODO: If we use both Zero3 and tensor parallel simultaneously
+        # we need to consolidate the gather mechanisms of both.
+        state_dict = OrderedDict() if dist.get_rank() == 0 else None
+
+        def get_layer_state_dict(module, prefix=""):
+            with GatherReplacedLayerParams(list(module.parameters(recurse=False)), module, enabled=True):
+                for name, param in module.named_parameters(recurse=False):
+                    if param is None:
+                        continue
+                    key = prefix + name
+                    if (dist.get_rank() == 0):
+                        state_dict[key] = param.detach().cpu()
+                        # print(key,module, param.detach().cpu().shape)
+
+            for name, child in module.named_children():
+                if child is not None:
+                    get_layer_state_dict(child, prefix + name + ".")
+
+        get_layer_state_dict(self.module, prefix="")
+
+        # ensure that all GPU communication tasks are completed before the process exits
+        get_accelerator().synchronize()
+        return state_dict
+
+    def _consolidated_16bit_state_dict(self, exclude_frozen_parameters=False):
+        """
+        Consolidate the 16-bit state dictionary.
+        """
+        if self.zero_optimization_stage() == ZeroStageEnum.weights:
+            return self._zero3_consolidated_16bit_state_dict(exclude_frozen_parameters)
+        elif self.autotp_size() > 1:
+            return self._replace_module_consolidated_state_dict()
+
+        raise ValueError("consolidated_16bit_state_dict is only applicable to cases where weights are partitioned, "
+                         "including Zero Stage 3 and tensor parallelism.")
+
     def _zero3_consolidated_16bit_state_dict(self, exclude_frozen_parameters=False):
         """
         Get a full non-partitioned state_dict with fp16 weights on cpu.
@@ -3691,7 +3840,7 @@ class DeepSpeedEngine(Module):
             else:
                 # the model will be bogus if not consolidated so don't confuse the user by saving it
                 logger.info(
-                    f"Did not save the model {path} because `stage3_gather_16bit_weights_on_model_save` is False")
+                    f"Did not save the model {path} because stage3_gather_16bit_weights_on_model_save is False")
                 return False
         else:
             state_dict = self.module_state_dict(exclude_frozen_parameters=exclude_frozen_parameters)

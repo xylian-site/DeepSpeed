@@ -55,7 +55,7 @@ def add_pre_backward_hook(hook):
     pre_backward_hooks.append(hook)
 
 
-def pre_backward(is_gradient_accumulation_boundary):
+def deepcompile_backward_prologue(is_gradient_accumulation_boundary):
 
     for hook in pre_backward_hooks:
         hook()

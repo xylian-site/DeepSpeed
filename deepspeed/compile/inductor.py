@@ -18,87 +18,107 @@ from .graph_param import DSGraphParamManager
 original_create_aot_dispatcher_function = create_aot_dispatcher_function
 
 
+def patch_compiler(original_compiler, dc_compiler, z3_partition: bool, graph_id, graph_param_manager, bwd: bool):
+
+    def wrapped_compiler(gm, fake_inputs):
+        mod_graph = dc_compiler(gm, fake_inputs)
+
+        # For symint case
+        if mod_graph is None:
+            return None
+
+        if z3_partition:
+            # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
+            # We need to patch the input tensors to avoid the validation error.
+            patched_inputs = []
+            if bwd:
+                param_nodes_bw, _ = graph_param_manager[graph_id].get_bwd_mapping(gm.graph)
+                param_names = [n.name for n in param_nodes_bw]
+            else:
+                param_names = graph_param_manager[graph_id].param_names
+            input_nodes = get_input_nodes(gm.graph)
+
+            for in_node, in_v in zip(input_nodes, fake_inputs):
+                ds_param = in_node.name in param_names
+                if ds_param:
+                    from torch._subclasses.fake_tensor import is_fake
+                    from torch._dynamo.utils import to_fake_tensor
+                    assert is_fake(in_v), f"Input {in_v} should be fake tensor"
+                    patched_inputs.append(
+                        to_fake_tensor(torch.empty([0], dtype=in_v.dtype, device=in_v.device), in_v.fake_mode))
+                else:
+                    patched_inputs.append(in_v)
+
+            patched_inputs = tuple(patched_inputs)
+        else:
+            patched_inputs = fake_inputs
+
+        return original_compiler(gm, patched_inputs)
+
+    return wrapped_compiler
+
+
+def wrap_partition_fn(partition_fn, real_inputs, param_indices):
+
+    def wrapped_partition_fn(*args, **kwargs):
+
+        fw_module, bw_module = partition_fn(*args, **kwargs)
+
+        # get parameter names
+        pm = DSGraphParamManager(fw_module.graph, real_inputs, param_indices)
+
+        def fix_placeholder_meta(graph):
+            for n in graph.nodes:
+                if n.op == "placeholder" and n.name in pm.param_names:
+                    n.meta["val"] = torch.empty([0], dtype=n.meta["val"].dtype, device=n.meta["val"].device)
+
+        fix_placeholder_meta(fw_module.graph)
+        fix_placeholder_meta(bw_module.graph)
+
+        return fw_module, bw_module
+
+    return wrapped_partition_fn
+
+
 def patch_create_aot_dispatcher_function(graph_id: int, z3_partition: bool, make_fw_graph, make_bw_graph, real_inputs,
                                          param_indices, param_manager):
 
-    def wrapper_create_aot_dispatcher_function(
-        flat_fn,
-        fake_flat_args,
-        aot_config,
-        fake_mode,
-        shape_env,
-    ):
+    from torch._dynamo.backends.common import AotAutograd
+    import functools
 
-        def patch_compiler(original_compiler, bwd):
+    def patch_aotautograd():
+        # Unpatch if it was already patched
+        if hasattr(AotAutograd, "__original_init"):
+            AotAutograd.__init__ = AotAutograd.__original_init
 
-            def wrapped_compiler(gm, fake_inputs):
-                dc_compiler = make_bw_graph if bwd else make_fw_graph
-                mod_graph = dc_compiler(gm, fake_inputs)
+        original_init = AotAutograd.__init__
 
-                # For symint case
-                if mod_graph is None:
-                    return None
+        @functools.wraps(original_init)
+        def patched_init(self, **kwargs):
+            print("AotAutograd.__init__ patched")
+            kwargs["fw_compiler"] = patch_compiler(kwargs["fw_compiler"],
+                                                   make_fw_graph,
+                                                   z3_partition,
+                                                   graph_id,
+                                                   param_manager,
+                                                   bwd=False)
+            kwargs["bw_compiler"] = patch_compiler(kwargs["bw_compiler"],
+                                                   make_bw_graph,
+                                                   z3_partition,
+                                                   graph_id,
+                                                   param_manager,
+                                                   bwd=True)
+            kwargs["inference_compiler"] = kwargs["fw_compiler"]
 
-                if z3_partition:
-                    # Inductor validates input size estimated by the first trace, where ds tensor is materialized.
-                    # We need to patch the input tensors to avoid the validation error.
-                    patched_inputs = []
-                    if bwd:
-                        param_nodes_bw, _ = param_manager[graph_id].get_bwd_mapping(gm.graph)
-                        param_names = [n.name for n in param_nodes_bw]
-                    else:
-                        param_names = param_manager[graph_id].param_names
-                    input_nodes = get_input_nodes(gm.graph)
+            if z3_partition:
+                kwargs["partition_fn"] = wrap_partition_fn(kwargs["partition_fn"], real_inputs, param_indices)
 
-                    for in_node, in_v in zip(input_nodes, fake_inputs):
-                        ds_param = in_node.name in param_names
-                        if ds_param:
-                            from torch._subclasses.fake_tensor import is_fake
-                            from torch._dynamo.utils import to_fake_tensor
-                            assert is_fake(in_v), f"Input {in_v} should be fake tensor"
-                            patched_inputs.append(
-                                to_fake_tensor(torch.empty([0], dtype=in_v.dtype, device=in_v.device), in_v.fake_mode))
-                        else:
-                            patched_inputs.append(in_v)
+            original_init(self, **kwargs)
 
-                    patched_inputs = tuple(patched_inputs)
-                else:
-                    patched_inputs = fake_inputs
+        AotAutograd.__original_init = original_init
+        AotAutograd.__init__ = patched_init
 
-                return original_compiler(gm, patched_inputs)
-
-            return wrapped_compiler
-
-        def wrap_partition_fn(partition_fn):
-
-            def wrapped_partition_fn(*args, **kwargs):
-                fw_module, bw_module = partition_fn(*args, **kwargs)
-
-                # get parameter names
-                pm = DSGraphParamManager(fw_module.graph, real_inputs, param_indices)
-
-                def fix_placeholder_meta(graph):
-                    for n in graph.nodes:
-                        if n.op == "placeholder" and n.name in pm.param_names:
-                            n.meta["val"] = torch.empty([0], dtype=n.meta["val"].dtype, device=n.meta["val"].device)
-
-                fix_placeholder_meta(fw_module.graph)
-                fix_placeholder_meta(bw_module.graph)
-
-                return fw_module, bw_module
-
-            return wrapped_partition_fn
-
-        if z3_partition:
-            aot_config.partition_fn = wrap_partition_fn(aot_config.partition_fn)
-
-        aot_config.fw_compiler = patch_compiler(aot_config.fw_compiler, False)
-        aot_config.bw_compiler = patch_compiler(aot_config.bw_compiler, True)
-        aot_config.inference_compiler = aot_config.fw_compiler
-
-        return original_create_aot_dispatcher_function(flat_fn, fake_flat_args, aot_config, fake_mode, shape_env)
-
-    torch._functorch.aot_autograd.create_aot_dispatcher_function = wrapper_create_aot_dispatcher_function
+    patch_aotautograd()
 
 
 def register_custom_ops():

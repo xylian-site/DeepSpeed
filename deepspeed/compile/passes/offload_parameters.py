@@ -1,7 +1,12 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+# DeepSpeed Team
+
 from typing import List
 
 import torch
-from torch.fx import Graph, Node, GraphModule
+from torch.fx import Node, GraphModule
 from deepspeed.compile.util import get_last_uses
 from ..graph_param import DSGraphParamManager
 

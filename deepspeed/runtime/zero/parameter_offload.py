@@ -231,6 +231,8 @@ class DeepSpeedZeRoOffload(object):
         for hook in self.backward_hooks:
             hook.remove()
 
+        self.fwd_pre_hook.remove()
+
         print_rank_0(f'Deleted module hooks: forward = {num_forward_hooks}, backward = {num_backward_hooks}',
                      force=False)
 
@@ -243,7 +245,7 @@ class DeepSpeedZeRoOffload(object):
 
             self.get_param_coordinator().reset_step()
 
-        self.module.register_forward_pre_hook(_start_of_forward_hook)
+        self.fwd_pre_hook = self.module.register_forward_pre_hook(_start_of_forward_hook)
 
         #likely one of them should be enough but just to be safe
         self._register_hooks_recursively(self.module)

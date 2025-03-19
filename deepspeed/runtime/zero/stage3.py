@@ -1933,8 +1933,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         params = [param for param in self.fp16_groups[sub_group_id]]
         grad_partitions = [self.__param_id_to_grad_partition[param.ds_id] for param in params]
         self.partition_grads([param for param in self.fp16_groups[sub_group_id] if param.requires_grad],
-                                 grad_partitions)
-
+                             grad_partitions)
 
     def _optimizer_states_and_gradient_swap_in(self, sub_group_id, timer_names):
         param_length = self.fp16_partitioned_groups_flat_numel[sub_group_id]

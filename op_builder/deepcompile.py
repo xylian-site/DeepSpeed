@@ -8,7 +8,7 @@ from .builder import TorchCPUOpBuilder
 
 class DeepCompileBuilder(TorchCPUOpBuilder):
     BUILD_VAR = "DS_BUILD_DEEP_COMPILE"
-    NAME = "dc"
+    NAME = "deepcompile"
 
     def __init__(self):
         super().__init__(name=self.NAME)

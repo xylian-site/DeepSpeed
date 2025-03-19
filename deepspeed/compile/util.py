@@ -23,23 +23,24 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.utils.torch import required_torch_version
 from deepspeed.ops.op_builder.dc import DeepCompileBuilder
 
-sym_size_ops = {
-    operator.ge,
-    operator.le,
-    operator.eq,
-    operator.ne,
-    operator.gt,
-    operator.lt,
-    torch.ops.aten.sym_size.int,
-    operator.getitem,
-}
-
 
 def is_deepcompile_supported() -> bool:
     return required_torch_version(min_version=2.6, max_version=2.7) and get_accelerator().device_name() == "cuda"
 
 
 dc_handle = None
+
+if is_deepcompile_supported():
+    sym_size_ops = {
+        operator.ge,
+        operator.le,
+        operator.eq,
+        operator.ne,
+        operator.gt,
+        operator.lt,
+        torch.ops.aten.sym_size.int,
+        operator.getitem,
+    }
 
 
 def get_deepcompile_handle():

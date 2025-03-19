@@ -20,7 +20,8 @@ except ImportError:
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
-from op_builder.deepcompile import DeepCompileBuilder
+from deepspeed.utils.torch import required_torch_version
+from op_builder.dc import DeepCompileBuilder
 
 sym_size_ops = {
     operator.ge,
@@ -35,7 +36,7 @@ sym_size_ops = {
 
 
 def is_deepcompile_supported() -> bool:
-    return torch.__version__.startswith("2.5.1") and get_accelerator().device_name() == "cuda"
+    return required_torch_version(min_version=2.6, max_version=2.7) and get_accelerator().device_name() == "cuda"
 
 
 dc_handle = None

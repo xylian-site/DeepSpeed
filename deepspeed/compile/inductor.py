@@ -12,13 +12,13 @@ try:
     from torch._inductor.ir import TensorBox, FallbackKernel, Layout, IRNode
     from torch._inductor.virtualized import V
     from torch._inductor.scheduler import Scheduler
+
+    original_create_aot_dispatcher_function = create_aot_dispatcher_function
 except ImportError:
     pass
 
 from .util import get_input_nodes
 from .graph_param import DSGraphParamManager
-
-original_create_aot_dispatcher_function = create_aot_dispatcher_function
 
 
 def patch_compiler(original_compiler, dc_compiler, z3_partition: bool, graph_id, graph_param_manager, bwd: bool):

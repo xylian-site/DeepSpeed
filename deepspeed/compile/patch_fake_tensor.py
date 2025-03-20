@@ -4,11 +4,11 @@
 # DeepSpeed Team
 
 import torch
-from torch._dynamo.variables.builder import wrap_to_fake_tensor_and_record
 
 try:
     from torch._subclasses import FakeTensorMode
     from torch._subclasses.fake_tensor import unset_fake_temporarily
+    from torch._dynamo.variables.builder import wrap_to_fake_tensor_and_record
 except ImportError:
     # Unsupported torch version
     pass

@@ -11,7 +11,11 @@ from dataclasses import dataclass
 import torch
 from torch.fx import Graph, Node
 from torch.fx.node import map_arg
-from torch.utils._pytree import tree_iter
+
+try:
+    from torch.utils._pytree import tree_iter
+except ImportError:
+    pass
 
 from .util import get_last_uses, is_release_node
 from .fx import get_output_node

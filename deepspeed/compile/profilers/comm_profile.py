@@ -4,9 +4,6 @@
 # DeepSpeed Team
 
 import os
-
-from scipy.interpolate import interp1d
-
 import torch
 
 try:
@@ -139,6 +136,11 @@ def create_predictor():
     # Extract size and avg_duration from results
     sizes = [result[0] for result in profile_results]
     durations = [result[1] for result in profile_results]
+
+    try:
+        from scipy.interpolate import interp1d
+    except ImportError:
+        raise RuntimeError("Please install scipy to use communication profiler in DeepCompile")
 
     predictor = interp1d(sizes, durations, kind='linear', fill_value="extrapolate")
 

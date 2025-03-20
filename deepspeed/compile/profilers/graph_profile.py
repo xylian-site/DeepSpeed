@@ -8,11 +8,11 @@ from typing import Any, Tuple, Dict
 import statistics
 
 import torch
-from torch.utils._pytree import tree_all, tree_leaves
 from torch.fx import GraphModule, Interpreter
 from torch.fx.node import map_aggregate
 
 try:
+    from torch.utils._pytree import tree_all, tree_leaves
     from torch._subclasses.fake_tensor import unset_fake_temporarily, is_fake
 except ImportError:
     # Unsupported torch version

@@ -8,9 +8,9 @@ import time
 
 import torch
 from torch.fx import Graph, GraphModule
-import torch.utils._pytree as pytree
 
 try:
+    import torch.utils._pytree as pytree
     import torch._dynamo
     import torch._inductor.scheduler
     from functorch.compile import make_boxed_func

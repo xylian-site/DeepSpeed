@@ -45,7 +45,6 @@ remaining_bwd_compile_count = 0
 
 
 def register_compile_pass(name: str, opt_pass_fn):
-    assert name not in opt_passes, f"Opt pass {name} already registered"
     opt_passes[name] = opt_pass_fn
 
 

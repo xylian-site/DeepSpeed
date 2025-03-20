@@ -84,9 +84,6 @@ def add_postprocess(graph: Graph,
     return new_node
 
 
-ops_no_wait = [torch.ops.aten.sym_size.int]
-
-
 def _make_node_meta(node: Node, ds_id: int, comm: bool):
     meta = {"param_name": node.name, "ds_id": ds_id, "comm": comm}
     if "tensor_meta" in node.meta:

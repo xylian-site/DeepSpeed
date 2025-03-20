@@ -2041,7 +2041,7 @@ class DeepSpeedEngine(Module):
         if self.autotuning_profile_model_info():
             ma = get_ma_status()
 
-        if self.is_deepcompile_enabled():
+        if self.is_deepcompile_enabled() and hasattr(self, "launch_compile_passes"):
             # We can't have this in forward prologue as the compiler compiles hooks including the forward prologue.
             self.launch_compile_passes(self.global_steps)
 

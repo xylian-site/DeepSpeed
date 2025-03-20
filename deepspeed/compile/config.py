@@ -9,7 +9,7 @@ from deepspeed.runtime.config_utils import DeepSpeedConfigModel
 class CompileConfig(DeepSpeedConfigModel):
     """ Configure compile settings """
 
-    deepcompile: bool = True
+    deepcompile: bool = False
     """ Turn on/off the DeepCompile mode """
 
     free_activation: bool = False

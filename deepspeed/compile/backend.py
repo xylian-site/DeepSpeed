@@ -156,13 +156,14 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
 
+            real_inputs_with_rng = real_inputs + sample_inputs[len(real_inputs):]
             run_opt_passes(
                 opt_passes=next_passes,
                 gm=gm,
                 graph_id=graph_id,
                 graph_order=graph_order,
                 profiling_results=profiling_results,
-                create_inputs_fn=lambda: real_inputs,
+                create_inputs_fn=lambda: real_inputs_with_rng,
                 mem_budget=.0,  # unused
                 param_manager=param_manager,
                 bwd=False,

@@ -5,7 +5,8 @@
 </div>
 
 # Introduction
-We introduced [DeepNVMe](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/deepnvme/08-2024/README.md) in summer 2024 as a suite of optimizations for tackling I/O bottlenecks in Deep Learning (DL). DeepNVMe delivers significant speedups for I/O bound DL workloads by leveraging storage innovations including local NVMe SSDs, NVIDIA Magnum IO<sup>TM</sup> GPUDirect® Storage (GDS), and Linux Asynchronous I/O (libaio). In this update, we are delighted to announce DeepNVMe improvements on multiple fronts: (i) expanding application coverage to FastPersist model checkpointing and SGLang inference, (ii) performance scaling on faster NVMe SSDs, and (iii) expanding usability to CPU-only environments and offset-based I/O operations. The results reported in this blog are available in DeepSpeed versions >= XXX. 
+We introduced [DeepNVMe](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/deepnvme/08-2024/README.md) in summer 2024 as a suite of optimizations for tackling I/O bottlenecks in Deep Learning (DL). DeepNVMe delivers significant speedups for I/O bound DL workloads by leveraging storage innovations including local NVMe SSDs, NVIDIA Magnum IO<sup>TM</sup> GPUDirect® Storage (GDS), and Linux Asynchronous I/O (libaio). 
+In this update, we are delighted to announce DeepNVMe improvements on multiple fronts: (i) expanding application coverage to FastPersist model checkpointing and SGLang inference, (ii) I/O performance scaling by switching from PCIe Gen4 NVMe SSDs to Gen5 NVMe SSDs, and (iii) expanding usability to CPU-only environments and offset-based I/O operations. The results reported in this blog are available in DeepSpeed versions >= XXX. 
 
 # Evaluation environments
 Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nd-h200-v5-series?tabs=sizebasic) and [ND-MI300X-v5](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/ndmi300xv5-series?tabs=sizebasic) SKUs. The key software configurations are summarized in the following table. 
@@ -21,7 +22,7 @@ Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://l
 We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O challenges in DL training and inference respectively. 
 
 ## FastPersist: Faster Model Checkpoint Creation
-Although model checkpointing to persistent storage is a critical task in model training, it is also a major performance bottleneck due to the inefficiencies of existing approaches. We have developed [FastPersist](https://arxiv.org/abs/2406.13768) to address the challenge of model checkpointing. FastPersist leverages DeepNVMe optimizations along with domain-specific techniques (e.g., data parallelism) to significantly reduce checkpoint writing costs and the associated model training slowdowns. We demonstrate FastPersist benefits using the popular PyTorch `torch.save()` functionality. 
+Although writing model checkpoints to persistent storage is a critical task in training, it is also a major performance bottleneck due to the inefficiencies of existing approaches. We have developed [FastPersist](https://arxiv.org/abs/2406.13768) to address the performance challenges of model checkpointing. FastPersist leverages DeepNVMe optimizations along with domain-specific techniques (e.g., data parallelism) to significantly reduce associated training slowdowns by accelerating checkpointing into local NVMes. We demonstrate FastPersist benefits using the popular PyTorch `torch.save()` functionality. 
 
 ### Faster Saving of PyTorch Tensors
 In Figure~XXX we compare the latency of serializing PyTorch tensors to local NVMes using `torch.save()` and FastPersist. We observed YYY speedups for tensor sizes ZZZ. 
@@ -40,7 +41,7 @@ We previously [evaluated](https://github.com/deepspeedai/DeepSpeed/blob/master/b
 
 <img src="./media/hf_zinf_llama_70b.png">
 <div align="center">
-Figure: ZeRO-Inference leverages available NVMe bandwidth to scale LLAMA-3-70B generation. 
+  ZeRO-Inference leverages available NVMe bandwidth to scale LLAMA-3-70B generation. 
 </div>
 
 
@@ -49,13 +50,16 @@ We used our `ds_io` benchmarking tool to demonstrate DeepNVMe proportionally sca
 
 <img src="./media/dnvme_scaling.png">
 <div align="center">
-Figure: Scaling I/O performance with available NVMe bandwidth
+  Microbenchmark shows DeepNVMe scales I/O performance with available NVMe bandwidth
 </div>
 
 
 
-# DeepNVMe in CPU-Only environments
-Previously, DeepNVMe was unusable in CPU-only environments because it relied on `torch.pin_memory()` for page-locked CPU tensors. However, `torch.pin_memory()` does not work in the CPU versions of `torch` as illustrated below. 
+# Broader usability
+We have also made DeepNVMe more broadly usable by removing existing restrictions concerning hardware environments and I/O operations, as explained below. 
+
+## CPU-Only environments
+Although GPUs (and similar accelerators) dominate DL, CPUs are still used in important machine learning (ML) workloads such as recommendation systems. However, DeepNVMe was previously unusable in CPU-only environments. This was because DeepNVMe relied on `torch.pin_memory()` for page-locked CPU tensors, whereas `torch.pin_memory()` does not work in the CPU versions of `torch` as illustrated below. 
 
 ```bash
 >>> import torch
@@ -68,7 +72,7 @@ RuntimeError: Cannot access accelerator device when none is available.
 >>> 
 ```
 
-We have extended DeepNVMe to usable in CPU environments by adding functionality for allocating (`new_cpu_locked_tensor()`)and releasing (`free_cpu_locked_tensor()`) page-locked CPU tensors. The snippet below illustrates using this functionality to obtain a pinned CPU tensor (`x`).
+We have made DeepNVMe usable in CPU environments by adding mechanisms for allocating (`new_cpu_locked_tensor()`) and releasing (`free_cpu_locked_tensor()`) page-locked CPU tensors. The snippet below illustrates allocating a pinned CPU tensor (`x`).
 
 ```bash
 >> import torch
@@ -84,4 +88,18 @@ torch.float32
 ```
 
 
+## Offset-based I/O operations
+Previously, DeepNVMe functionality was restricted to reading or writing the entire contents of a file. We have now improved DeepNVMe to read or write a user-specified portion of file content from a given offset. In particular, we have extended the existing read/write APIs to accept a user-specified `file offset` argument (with default value 0) such as below: 
 
+```bash
+>> from deepspeed.ops.op_builder import AsyncIOBuilder
+>>> help(AsyncIOBuilder().load().aio_handle().pread)
+Help on method pread in module async_io:
+
+pread(...) method of async_io.aio_handle instance
+    pread(self: async_io.aio_handle, buffer: torch.Tensor, filename: str, validate: bool, async: bool, file_offset: int = 0) -> int
+```
+
+
+# Summary
+This blog post has provided updates on our continued development of DeepNVMe, an I/O optimization technology for accelerating DL applications. We have announced DeepNVMe improvements on multiple aspects, including application coverage, I/O performance scaling, and usability. 

@@ -19,16 +19,28 @@ Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://l
 
 
 # Addressing I/O Bottlenecks of Deep Learning
-We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O challenges in DL training and inference respectively. 
+We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O bottlenecks in DL training and inference respectively. 
 
 ## FastPersist: Faster Model Checkpoint Creation
-Although writing model checkpoints to persistent storage is a critical task in training, it is also a major performance bottleneck due to the inefficiencies of existing approaches. We have developed [FastPersist](https://arxiv.org/abs/2406.13768) to address the performance challenges of model checkpointing. FastPersist leverages DeepNVMe optimizations along with domain-specific techniques (e.g., data parallelism) to significantly reduce associated training slowdowns by accelerating checkpointing into local NVMes. We demonstrate FastPersist benefits using the popular PyTorch `torch.save()` functionality. 
+Saving model checkpoints to persistent storage is critical in model training, however, it is also a major bottleneck due to the inefficiencies of existing approaches. We developed [FastPersist](https://arxiv.org/abs/2406.13768) to address the performance challenges of model checkpointing. FastPersist makes checkpointing overheads negligible during training through three key techniques: (i) DeepNVMe, (ii) data parallelism, and (iii) overlapping I/O and computation. Our goal here is to demonstrate the impact of DeepNVMe on FastPersist, and we do this using single-process micro-benchmarks (available [here](https://github.com/deepspeedai/DeepSpeedExamples/tree/master/deepnvme/fastpersist)) which serialize (i) a PyTorch tensor, and (ii) model checkpoint state from HBM to local NVMe. We use the popular PyTorch `torch.save()` as the baseline in our experiments. For easy comparisons and adoption, we have integrate FastPersist into `torch.save()`. We configure the local storage by combining four and eight Gen5 NVMe SSDs into a single RAID-0 volume to leverage the aggregate write bandwidths. 
 
-### Faster Saving of PyTorch Tensors
-In Figure~XXX we compare the latency of serializing PyTorch tensors to local NVMes using `torch.save()` and FastPersist. We observed YYY speedups for tensor sizes ZZZ. 
 
-### Faster Saving of PyTorch Models
-In Figure-XXX, we compare latency of saving model checkpoints using `torch.save()` and FastPersist. We observed YYY speedups for model examples, A, B, C, etc.
+### Faster Saving of PyTorch Tensors to local NVMe SSDs
+We measure the achieved throughput for writing 100MB, 1GB, and 10GB tensors from HBM to local NVMe storage. We summarize the results in the Figure below. We observe that FastPersist provides significant speedups over the baseline, achieving over 20X faster writes in the case of 10GB tensor on 8xGen5 NVMes. Moreover, we observe that FastPersist performance scales with available NVMe bandwidth, i.e., comparing 4xGen5 with 8xGen5.   
+
+<img src="./media/fastpersist_tensor.png">
+<div align="center">
+  FastPersist significantly accelerates writes of Pytorch Tensors to local NVMe from HBM. 
+</div>
+
+
+### Faster Saving of PyTorch Models to local NVMe SSDs
+We measure the throughput of serializing Phi-3-Mini checkpoint state from HBM to local NVMe storage. The results are summarized in the Figure below. We observe significantly faster checkpointing with FastPersist compared to the baseline. We see speedups of over 20X in the 8xGen5 NVMe settings. We also observe FastPersist scaling with increased NVMe bandwidth of 8xGen5 compared with 4xGen5. 
+
+<img src="./media/fastpersist_phi3_mini.png">
+<div align="center">
+  FastPersist provides significantly faster model checkpointing to local NVMe.
+</div>
 
 ## ZeRO-Inference: Democratizing Generative AI
 [ZeRO-Inference]() is a technique for democratizing access to state-of-the-art models by reducing the GPU costs of model inference. ZeRO-Inference enables inference computations of massive models (hundreds-of-billions of parameters) on as few as one GPU by offloading the model weights to DRAM and NVMe storage. ZeRO-Inference is designed for offline or throughput-oriented inference scenarios. In this blog, we share two updates on ZeRO-Inference. First, we have integrated ZeRO-Inference into SGLang, a state-of-the-art model serving framework. Second, we observed ZeRO-Inference performance scales with the faster NVMe SSDs in the latest Azure SKUs. 
@@ -56,7 +68,7 @@ We used our `ds_io` benchmarking tool to demonstrate DeepNVMe proportionally sca
 
 
 # Broader usability
-We have also made DeepNVMe more broadly usable by removing existing restrictions concerning hardware environments and I/O operations, as explained below. 
+We have increased the usage scenarios of DeepNVMe by removing restrictions regarding hardware environments and I/O operations, as explained below. 
 
 ## CPU-Only environments
 Although GPUs (and similar accelerators) dominate DL, CPUs are still used in important machine learning (ML) workloads such as recommendation systems. However, DeepNVMe was previously unusable in CPU-only environments. This was because DeepNVMe relied on `torch.pin_memory()` for page-locked CPU tensors, whereas `torch.pin_memory()` does not work in the CPU versions of `torch` as illustrated below. 

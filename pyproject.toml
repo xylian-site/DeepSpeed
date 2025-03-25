@@ -1,7 +1,7 @@
 [build-system]
 requires = [
     "build",
-    "setuptools>=64",
+    "setuptools==64",
     "wheel",
     "torch==2.4.1+cu118"
 ]

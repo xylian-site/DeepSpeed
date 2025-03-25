@@ -110,7 +110,7 @@ from deepspeed.runtime.config import DtypeEnum
 
 from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, deepcompile_backward_prologue
 from deepspeed.compile.backend import register_compile_pass, opt_passes
-from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather
+from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather, offload_adam_states
 from deepspeed.compile.init_z1 import init_z1
 from deepspeed.compile.init_z3 import init_z3
 
@@ -390,6 +390,7 @@ class DeepSpeedEngine(Module):
             self.register_compile_pass(zero3_compile.NAME, zero3_compile.add_z3_gather_release)
             self.register_compile_pass(prefetch.NAME, prefetch.schedule_prefetch)
             self.register_compile_pass(selective_gather.NAME, selective_gather.selective_gather)
+            self.register_compile_pass(offload_adam_states.NAME, offload_adam_states.move_opt_states)
 
     def _optimized_linear_offload_setup(self):
         self.optimized_linear_base_weight_sharding = False

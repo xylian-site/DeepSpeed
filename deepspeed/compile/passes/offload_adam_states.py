@@ -7,7 +7,7 @@ import copy
 from typing import List
 
 import torch
-from torch.fx import Graph
+from torch.fx import Graph, GraphModule
 
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.zero.offload_states import _make_offload_state_key
@@ -23,6 +23,8 @@ from ..graph_param import DSGraphParamManager
 from ..fx import move_primals_to_head
 
 import deepspeed.comm as dist
+
+NAME = "offload_adam_states"
 
 
 def print_r0(msg):
@@ -195,7 +197,7 @@ total_reload_mem = 0
 def offload_opt_states_inc(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
                            mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
 
-    print_r0(f"offload_opt_states_inc graph {graph_id} bwd={bwd} max_memory={max_memory}")
+    # print_r0(f"offload_opt_states_inc graph {graph_id} bwd={bwd} max_memory={max_memory}")
 
     to_remove = []
     for node in graph.nodes:
@@ -443,9 +445,9 @@ def insert_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int
     return graph
 
 
-def move_offload_opt_states(graph: Graph, graph_id: int, graph_order: List[int], profiling_results: ProfilingResult,
-                            mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> Graph:
-    return offload_opt_states_inc(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
+def move_opt_states(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
+                    mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
+    return offload_opt_states_inc(gm.graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
 
 
 def init_offload_opt_states(adam_optimizer, _nz3):

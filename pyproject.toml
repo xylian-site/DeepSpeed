@@ -3,7 +3,7 @@ requires = [
     "build",
     "setuptools>=64",
     "wheel",
-    "torch==2.6.0+cu118"
+    "torch==2.4.1+cu118"
 ]
 # Use legacy backend to import local packages in setup.py
 build-backend = "setuptools.build_meta:__legacy__"

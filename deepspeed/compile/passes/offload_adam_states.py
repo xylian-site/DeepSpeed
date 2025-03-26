@@ -450,6 +450,12 @@ def move_opt_states(gm: GraphModule, graph_id: int, graph_order: List[int], prof
     return offload_opt_states_inc(gm.graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd)
 
 
+def move_opt_states_sync(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
+                         mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
+    return insert_offload_opt_states(gm.graph, graph_id, graph_order, profiling_results, mem_budget, param_manager,
+                                     bwd)
+
+
 def init_offload_opt_states(adam_optimizer, _nz3):
     lazy_init()
 

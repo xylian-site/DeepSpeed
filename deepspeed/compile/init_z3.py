@@ -76,9 +76,9 @@ def init_z3(engine, backend, compile_config, compile_kwargs, schedule=None):
     init_schedule(schedule)
 
     # offloading opt states need additional setup
-    from .passes.offload_adam_states import move_opt_states, init_offload_opt_states
+    from .passes.offload_adam_states import move_opt_states, move_opt_states_sync, init_offload_opt_states
     for _, passes in schedule:
-        if move_opt_states in passes:
+        if move_opt_states in passes or move_opt_states_sync in passes:
             init_offload_opt_states(optimizer, dc)
 
     engine.launch_compile_passes = launch_compile_passes

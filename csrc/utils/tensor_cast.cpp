@@ -7,6 +7,8 @@
 
 at::Tensor cast_to_byte_tensor(at::Tensor& src_tensor)
 {
+    if (src_tensor.nbytes() <= 1) return src_tensor;
+
     auto options = torch::TensorOptions()
                        .dtype(torch::kUInt8)
                        .layout(src_tensor.layout())

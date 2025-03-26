@@ -418,7 +418,6 @@ class DeepSpeedEngine(Module):
                 else:
                     p.ds_offload = False
 
-
     def _configure_tensor_parallel_states(self, model):
         """
         Configures the tensor parallel states for the model.
@@ -484,10 +483,8 @@ class DeepSpeedEngine(Module):
                                                                             prepend=True,
                                                                             with_kwargs=True)
 
-
     def __del__(self):
         self.destroy()
-
 
     def destroy(self):
         if self.optimizer is not None and hasattr(self.optimizer, 'destroy'):

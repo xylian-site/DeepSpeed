@@ -1,6 +1,6 @@
 <div align="center">
 
-# DeepNVMe: Cost-effective I/O scaling for Deep Learning Applications.
+# DeepNVMe: Affordable I/O scaling for Deep Learning Applications.
 
 </div>
 
@@ -44,13 +44,13 @@ We measure the throughput of serializing Phi-3-Mini checkpoint state from HBM to
 </div>
 
 ## ZeRO-Inference: Democratizing Generative AI
-[ZeRO-Inference]() is a technique for democratizing access to state-of-the-art models by reducing the GPU costs of model inference. ZeRO-Inference enables inference computations of massive models (hundreds-of-billions of parameters) on as few as one GPU by offloading the model weights to DRAM and NVMe storage. ZeRO-Inference is designed for offline or throughput-oriented inference scenarios. In this blog, we share two updates on ZeRO-Inference. First, we have integrated ZeRO-Inference into SGLang, a state-of-the-art model serving framework. Second, we observed ZeRO-Inference performance scales with the faster NVMe SSDs in the latest Azure SKUs.
+[ZeRO-Inference](https://github.com/deepspeedai/DeepSpeedExamples/blob/master/inference/huggingface/zero_inference/README.md) is a technology that democratizes access to state-of-the-art models by reducing the GPU costs of model inference. ZeRO-Inference enables inference computations of massive models (hundreds-of-billions of parameters) on as few as one GPU by offloading the model weights to DRAM and NVMe storage. ZeRO-Inference is designed for offline or throughput-oriented inference scenarios. In this blog, we share two updates on ZeRO-Inference. First, we have integrated ZeRO-Inference into SGLang, a state-of-the-art model serving framework. Second, we observed ZeRO-Inference performance scales with the faster NVMe SSDs in the latest Azure SKUs.
 
 ### Democratizing SGLang through ZeRO-Inference integration
-[SGLang](https://docs.sglang.ai/) is a state-of-the-art serving framework for large language models (LLMs) and vision language models (VLMs). Our integration of ZeRO-Inference into SGLang makes SGLang available to budget-constrained users, and offers a cost-reduction option for existing SGLang users.
+[SGLang](https://docs.sglang.ai/) is a state-of-the-art serving framework for large language models (LLMs) and vision language models (VLMs). Our integration of ZeRO-Inference into SGLang makes SGLang available to budget-constrained users, and offers a cost-reduction option to existing SGLang users.
 
 ### Scaling HF Transformer Generation with Faster NVMe SSDs
-We previously [evaluated](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/deepspeed-gds/README.md#high-performance-offloading-via-nvme-scaling)  LLAMA-3-70B generation on single GPU using HF Transformer inference and NVMe offloading. That experiment measured the generation speed for a prompt of 512 tokens, output of 32 tokens, and batch size 96. We used an Azure [NC_A100_v4](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nca100v4-series?tabs=sizebasic) VM with four Gen4 NVMes. Since NVMe bandwidth was the main bottleneck, we now repeat the experiment on newer Azure SKUs with eight Gen5 NVMes(ND-MI300X-v5 and ND-H200-v5). The results summarized in the Figure below show that ZeRO-Inference effectively exploits the increased NVMe bandwidths to improve generation speeds. For example, with GDS, generation speed improves from 7 tokens per second with four Gen4 NVMes to 17 with four Gen5 NVMes, and further to 26 with eight Gen5 NVMes. We observe similar improvements without GDS. These results show that ZeRO-Inference performance can be improved in cost-effective manner by increasing NVMe bandwidths.
+ZeRO-Inference enhances HF Transformer inference with efficient model offloading to DRAM or NVMe. We previously [evaluated](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/deepspeed-gds/README.md#high-performance-offloading-via-nvme-scaling) LLAMA-3-70B generation performance with NVMe offloading on a single GPU and four Gen4 NVMes in an Azure [NC_A100_v4](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nca100v4-series?tabs=sizebasic) VM. We measured the generation speed for a prompt of 512 tokens, output of 32 tokens, and batch size 96. Since NVMe bandwidth was the main bottleneck, we repeat the experiments on Azure SKUs offering Gen5 NVMes(ND-MI300X-v5 and ND-H200-v5). The results summarized in the Figure below show that ZeRO-Inference uses the increased NVMe bandwidths to improve generation speeds. For example, with GDS, generation speed improves from 7 tokens/sec with four Gen4 NVMes to 17 tokens/sec with four Gen5 NVMes, and further to 26 tokens/sec with eight Gen5 NVMes. We observe similar improvements without GDS. These results show that ZeRO-Inference performance can be improved in cost-effective manner by increasing NVMe bandwidths.
 
 <img src="./media/hf_zinf_llama_70b.png">
 <div align="center">
@@ -67,8 +67,7 @@ We used our `ds_io` benchmarking tool to demonstrate DeepNVMe proportionally sca
 </div>
 
 
-
-# Broader usability
+# Broadening usability
 We have increased the usage scenarios of DeepNVMe by removing restrictions regarding hardware environments and I/O operations, as explained below.
 
 ## CPU-Only environments
@@ -116,3 +115,7 @@ pread(...) method of async_io.aio_handle instance
 
 # Summary
 This blog post has provided updates on our continued development of DeepNVMe, an I/O optimization technology for accelerating DL applications. We have announced DeepNVMe improvements on multiple aspects, including application coverage, I/O performance scaling, and usability.
+
+
+# Acknowledgements
+This blog describes work done by Joe Mayer and Olatunji Ruwase of the DeepSpeed team at Microsoft. 

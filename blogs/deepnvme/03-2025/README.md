@@ -117,4 +117,4 @@ pread(...) method of async_io.aio_handle instance
 This blog post has provided updates on our continued development of DeepNVMe, an I/O optimization technology for accelerating DL applications. We have announced DeepNVMe improvements on multiple aspects, including application coverage, I/O performance scaling, and usability.
 
 # Acknowledgements
-This blog describes work done by Joe Mayer and Olatunji Ruwase of the DeepSpeed team at Microsoft. 
+This blog describes work done by Joe Mayer, Logan Adams, and Olatunji Ruwase of the DeepSpeed team at Microsoft. 

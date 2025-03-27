@@ -118,4 +118,4 @@ This blog post has provided updates on our continued development of DeepNVMe, an
 
 
 # Acknowledgements
-This blog describes work done by Joe Mayer, Logan Adams, Guanhua Wang, and Olatunji Ruwase of the DeepSpeed team at Microsoft. 
+This blog describes work done by Joe Mayer and Olatunji Ruwase of the DeepSpeed team at Microsoft. 

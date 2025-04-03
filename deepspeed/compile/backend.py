@@ -41,6 +41,7 @@ opt_pass_times = []
 
 opt_passes = {}
 
+fwd_real_inputs = []
 remaining_bwd_compile_count = 0
 
 
@@ -141,6 +142,9 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
                        if isinstance(v, torch.nn.Parameter)), "All param inputs should have param_id"
             param_indices = [(i, input_val.param_id, input_val.shape) for i, input_val in enumerate(real_inputs)
                              if isinstance(input_val, torch.nn.Parameter)]
+            
+        global fwd_real_inputs
+        fwd_real_inputs.append(real_inputs)
 
         global profiling_results
         if graph_id not in profiling_results:
@@ -151,8 +155,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
         def make_fw_graph(gm, sample_inputs):
             time_start = time.time()
             graph_index = len(graph_order) - 1
-            log_rank0(f"Fwd start {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()}",
-                      enable=debug_log)
+            real_inputs = fwd_real_inputs.pop(0)
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
 

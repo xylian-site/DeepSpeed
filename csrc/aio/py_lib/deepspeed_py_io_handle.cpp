@@ -210,7 +210,7 @@ int deepspeed_io_handle_t::wait()
 
         completed_op->finish();
 
-        if (completed_op->_filename) { (completed_op->_fd); }
+        if (!completed_op->_filename.empty()) { (completed_op->_fd); }
 
         --_num_pending_ops;
         ++num_completed_ops;
@@ -314,14 +314,6 @@ int deepspeed_io_handle_t::pwrite(const torch::Tensor& buffer,
     if (fd == -1) { return -1; }
 
     return _pwrite(buffer, fd, filename, validate, async, file_offset);
-
-    auto scheduled_op = _create_io_op_desc(false, buffer, fd, filename, validate, file_offset);
-
-    _schedule_aio_work(scheduled_op);
-
-    if (async) { return 0; }
-
-    return wait();
 }
 
 int deepspeed_io_handle_t::sync_pread(torch::Tensor& buffer,

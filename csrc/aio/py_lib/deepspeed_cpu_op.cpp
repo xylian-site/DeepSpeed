@@ -59,7 +59,7 @@ void cpu_op_desc_t::finish()
 void cpu_op_desc_t::validate()
 {
     const auto num_io_bytes = static_cast<int64_t>(_contiguous_buffer.nbytes());
-    validate_aio_operation(_read_op, _filename, data_ptr(), num_io_bytes);
+    validate_aio_operation(_read_op, _filename.c_str(), data_ptr(), num_io_bytes);
 }
 
 void cpu_op_desc_t::run(const int tid,

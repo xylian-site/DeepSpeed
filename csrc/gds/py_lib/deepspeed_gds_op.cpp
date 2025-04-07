@@ -115,7 +115,8 @@ void gds_op_desc_t::validate()
     check_cudaruntimecall(cudaSetDevice(_buffer.get_device()));
     const auto cpu_buffer = _buffer.to(torch::kCPU);
     const auto num_io_bytes = static_cast<int64_t>(_contiguous_buffer.nbytes());
-    validate_aio_operation(_read_op, _filename, (char*)(cpu_buffer.data_ptr()), num_io_bytes);
+    validate_aio_operation(
+        _read_op, _filename.c_str(), (char*)(cpu_buffer.data_ptr()), num_io_bytes);
 }
 
 void gds_op_desc_t::run(const int tid,

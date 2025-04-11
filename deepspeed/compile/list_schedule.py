@@ -17,7 +17,7 @@ try:
 except ImportError:
     pass
 
-from .util import get_last_uses, is_release_node
+from .util import get_last_uses, is_release_node, tensor_meta_size
 from .fx import get_output_node
 
 
@@ -423,6 +423,70 @@ def fast_free_schedule(graph: Graph, available_mem: int, output_size: int, debug
             continue
         scheduled.append(node)
         unscheduled.remove(node)
+
+    assert len(unscheduled) == 0, f"There are unscheduled nodes: {unscheduled}"
+
+    ret_graph = make_graph_from_schedule(scheduled)
+    ret_graph.lint()
+    return ret_graph
+
+
+def geedy_no_comm_schedule(graph: Graph, profiled_graph: Graph, available_mem: int, output_size: int, bwd: bool,
+                           debug_log: bool) -> Graph:
+
+    # check tensor size
+    meta_map = {n.name: n.meta for n in profiled_graph.nodes}
+    for node in graph.nodes:
+        if node.name in meta_map:
+            node.meta = meta_map[node.name]
+
+    scheduled, unscheduled, edges, mem_table, remaining_users, user_to_producer = init_schedule_with_placeholders(
+        graph)
+
+    node_time = {node.name: node.meta["device_time"] if "device_time" in node.meta else 0 for node in graph.nodes}
+
+    node_mem = {}
+    for node in graph.nodes:
+        if "alloc_mem" in node.meta:
+            node_mem[node.name] = node.meta["alloc_mem"]
+        elif node.op == "placeholder" and "tensor_meta" in node.meta:
+            node_mem[node.name] = tensor_meta_size(node.meta["tensor_meta"])
+        else:
+            node_mem[node.name] = 0
+
+    node_mem_delta = {}
+    node_to_last_use, user_to_last_uses = get_last_uses(graph)
+    print(f"user_to_last_uses: {user_to_last_uses}")
+    for node in graph.nodes:
+        if bwd:
+            size_to_free = 0
+            if node in user_to_last_uses:
+                for last_use_node in user_to_last_uses[node]:
+                    size_to_free += last_use_node.meta["tensor_size"]
+                print(f"node {node.name} alloc {node_mem[node.name]} size_to_free {size_to_free}")
+                for last_use_node in user_to_last_uses[node]:
+                    print(f"  last_use_node {last_use_node.name} size {last_use_node.meta['tensor_size']}")
+            node_mem_delta[node.name] = node_mem[node.name] - size_to_free
+        else:
+            node_mem_delta[node.name] = node_mem[node.name]
+
+    print(f"node_time: {node_time} node_mem_delta: {node_mem_delta}")
+
+    while len(unscheduled) > 0:
+        runnables = get_runnable_nodes(scheduled, unscheduled)
+        runnables = sorted(runnables, key=lambda n: node_time[n.name] * node_mem_delta[n.name])
+
+        nodes_to_schedule = []
+        if not bwd:
+            for node in runnables:
+                if node_mem_delta[node.name] == 0:
+                    nodes_to_schedule.append(node)
+        if len(nodes_to_schedule) == 0:
+            nodes_to_schedule.append(runnables[0])
+
+        for n in nodes_to_schedule:
+            scheduled.append(n)
+            unscheduled.remove(n)
 
     assert len(unscheduled) == 0, f"There are unscheduled nodes: {unscheduled}"
 

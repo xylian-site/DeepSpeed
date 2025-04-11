@@ -12,6 +12,18 @@ from torch.fx import Node, Graph
 from .util import get_last_uses
 
 
+def clone_graph(graph: Graph) -> Graph:
+    # Clone the graph
+    new_graph = Graph()
+    env = {}
+    for node in graph.nodes:
+        new_node = new_graph.node_copy(node, lambda n: env[n.name])
+        env[node.name] = new_node
+    new_graph.lint()
+
+    return new_graph
+
+
 def get_output_node(graph: Graph):
     for v in graph.nodes:
         if v.target == "output":

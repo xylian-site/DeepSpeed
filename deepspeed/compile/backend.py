@@ -5,6 +5,7 @@
 
 from typing import Dict, List, Callable
 import time
+import gc
 
 import torch
 from torch.fx import Graph, GraphModule
@@ -15,6 +16,7 @@ try:
     import torch._inductor.scheduler
     from functorch.compile import make_boxed_func
     from torch._functorch.aot_autograd import aot_module_simplified
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
 except ImportError:
     pass
 
@@ -108,18 +110,31 @@ def run_opt_passes(opt_passes: List[Callable],
                    bwd: bool,
                    debug_log=False) -> None:
 
+    with unset_fake_temporarily():
+        get_accelerator().synchronize()
+        gc.collect()
+        get_accelerator().empty_cache()
+
     for i, opt_pass_fn in enumerate(opt_passes):
         log_rank0(f"Running opt pass {i} for graph {graph_id}. bwd={bwd}", enable=debug_log)
 
-        opt_pass_fn(gm, graph_id, graph_order, profiling_results, create_inputs_fn, mem_budget, param_manager, bwd)
-        gm.graph.lint()
-        gm.recompile()
+        gm_new = opt_pass_fn(gm, graph_id, graph_order, profiling_results, create_inputs_fn, mem_budget, param_manager,
+                             bwd)
+        if gm_new is not None:
+            gm = gm_new
+            gm.graph.lint()
+            gm.recompile()
 
-        mem_prof = MemoryProfilingInterpreter(gm, debug_log=debug_log)
-        mem_prof.run(*create_inputs_fn())
-        mem = [(name, current_alloc, delta, peak) for name, current_alloc, delta, peak in mem_prof.mem_record]
+            mem_prof = MemoryProfilingInterpreter(gm, debug_log=debug_log)
+            mem_prof.run(*create_inputs_fn())
+            mem = [(name, current_alloc, delta, peak) for name, current_alloc, delta, peak in mem_prof.mem_record]
 
-        set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
+            set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
+
+        with unset_fake_temporarily():
+            get_accelerator().synchronize()
+            gc.collect()
+            get_accelerator().empty_cache()
 
 
 def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):
@@ -142,7 +157,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
                        if isinstance(v, torch.nn.Parameter)), "All param inputs should have param_id"
             param_indices = [(i, input_val.param_id, input_val.shape) for i, input_val in enumerate(real_inputs)
                              if isinstance(input_val, torch.nn.Parameter)]
-            
+
         global fwd_real_inputs
         fwd_real_inputs.append(real_inputs)
 

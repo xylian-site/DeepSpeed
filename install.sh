@@ -156,7 +156,7 @@ python -m build $VERBOSE --wheel --no-isolation
 
 if [ "$local_only" == "1" ]; then
     echo "Installing deepspeed"
-    # $PIP_SUDO pip uninstall -y deepspeed
+#    $PIP_SUDO pip uninstall -y deepspeed
     $PIP_SUDO $PIP_INSTALL dist/deepspeed*.whl
     ds_report
 else

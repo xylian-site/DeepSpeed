@@ -99,12 +99,12 @@ def add_z3_gather_release_fw(gm: GraphModule,
                              debug_log=False) -> GraphModule:
 
     nz3 = get_deepcompile_handle()
-    graph = gm.graph
 
     real_inputs = create_inputs_fn()
     param_indices = profiling_results[graph_id].param_indices
 
-    graph = add_gather_and_release(graph_id, graph, param_manager[graph_id], get_param_nodes(graph, param_indices))
+    gm.graph = add_gather_and_release(graph_id, gm.graph, param_manager[graph_id],
+                                      get_param_nodes(gm.graph, param_indices))
 
     nz3.register_graph_z3(graph_id, [v[1] for v in param_indices])  # Need this before profiling
 
@@ -163,7 +163,7 @@ def add_z3_gather_release_bw(gm: GraphModule,
     if rank == 0 and debug_log:
         print(f"Bwd before scheduling graph {graph_index} graph_id={graph_id} {gm.graph}")
 
-    gm.graph = fast_free_schedule(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
+    # gm.graph = fast_free_schedule(gm.graph, get_accelerator().available_memory(), 0, debug_log=debug_log)
     return gm
 
 

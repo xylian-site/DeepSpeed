@@ -17,7 +17,7 @@ Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://l
 |PyTorch | 2.6.0|
 |CUDA | 12.6 |
 |ROCM | |
-SGLang | 0.4.4.post4 | 
+SGLang | 0.4.4.post4 |
 
 # Addressing I/O Bottlenecks of Deep Learning
 We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O bottlenecks in DL training and inference respectively. Our experiments are conducted using a single VM, in which we combine the available NVMe SSDs into a single RAID-0 volume to leverage aggregate read and write bandwidths.
@@ -108,7 +108,7 @@ torch.float32
 
 <img src="./media/dnvme_file_access.png">
 <div align="center">
-  DeepNVMe accelerates file operations in CPU-only environments. 
+  DeepNVMe accelerates file operations in CPU-only environments.
 </div>
 
 

@@ -140,9 +140,9 @@ else
 fi
 
 if [ "$pip_mirror" != "" ]; then
-    PIP_INSTALL="pip3 install $VERBOSE $PIP_VERBOSE -i $pip_mirror"
+    PIP_INSTALL="pip install $VERBOSE $PIP_VERBOSE -i $pip_mirror"
 else
-    PIP_INSTALL="pip3 install $VERBOSE $PIP_VERBOSE"
+    PIP_INSTALL="pip install $VERBOSE $PIP_VERBOSE"
 fi
 
 
@@ -156,7 +156,7 @@ python -m build $VERBOSE --wheel --no-isolation
 
 if [ "$local_only" == "1" ]; then
     echo "Installing deepspeed"
-    $PIP_SUDO pip3 uninstall -y deepspeed
+    # $PIP_SUDO pip uninstall -y deepspeed
     $PIP_SUDO $PIP_INSTALL dist/deepspeed*.whl
     ds_report
 else

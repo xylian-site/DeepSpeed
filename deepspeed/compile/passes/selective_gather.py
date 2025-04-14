@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import List
 
 import torch
-from torch.fx import GraphModule
+from torch.fx import GraphModule, Graph
 
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
@@ -17,12 +17,61 @@ from ..graph_param import DSGraphParamManager
 
 NAME = "selective_gather"
 
+SIZE_THRESHOLD = 64e6
+
 max_alloc_mem = 0
 last_optimize_step = 0
+idle_times = defaultdict(float)
+
+
+def _is_comm_node(node):
+    if not isinstance(node, torch.fx.Node):
+        return False
+    return node.target == torch.ops.dc.allgather_param.default or node.target == torch.ops.dc.reduce_grad.default
+
+
+def _is_allgather_node(node):
+    if not isinstance(node, torch.fx.Node):
+        return False
+    return node.target == torch.ops.dc.allgather_param.default
+
+
+def simulate_time(graph: Graph):
+    global idle_times
+
+    t_comp = 0
+    t_comm = 0
+
+    last_comm_node = None
+
+    for n in graph.nodes:
+        if "device_time" not in n.meta:
+            continue
+
+        ready_time = 0
+        for arg in n.args:
+            if _is_comm_node(arg):
+                ready_time = max(ready_time, t_comm)
+            else:
+                ready_time = max(ready_time, t_comp)
+
+        device_time = n.meta["device_time"] if "device_time" in n.meta else 0
+        if _is_comm_node(n):
+            t_comm = device_time + ready_time
+            last_comm_node = n
+        else:
+            # Waiting for communication to finish
+            if ready_time > t_comp and _is_allgather_node(last_comm_node):
+                ds_id = last_comm_node.args[2]
+                idle_times[ds_id] = ready_time - t_comp
+                print(f"setting idle time for {last_comm_node.name} (ds_id={ds_id}) to {idle_times[ds_id]}")
+            t_comp = device_time + ready_time
 
 
 def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], profiling_results, create_inputs_fn,
                      mem_budget: float, param_manager: DSGraphParamManager, bwd: bool) -> GraphModule:
+
+    simulate_time(gm.graph)
 
     if not bwd:
         return gm
@@ -85,21 +134,21 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
                     ds_id_to_time[n.args[2]] += n.meta["device_time"]
 
     ds_ids = [ds_id for ds_id in ds_id_to_size if ds_id not in persistent_ds_ids]
-    ds_ids.sort(key=lambda ds_id: ds_id_to_time[ds_id] / ds_id_to_size[ds_id], reverse=True)
+    ds_ids.sort(key=lambda ds_id: ds_id_to_size[ds_id])
 
-    # print(f"ds_id_to_size={ds_id_to_size}")
-    # print(f"ds_id_to_time={ds_id_to_time}")
+    # 1. Put params smaller than SIZE_THRESHOLD
+    target_ds_ids = []
+    for ds_id in ds_ids:
+        size = ds_id_to_size[ds_id]
+        if size < SIZE_THRESHOLD:
+            target_ds_ids.append(ds_id)
 
-    # if dist.get_rank() == 0:
-    #     for ds_id in ds_ids:
-    #         dtime_in_sec = ds_id_to_prof_dtime[ds_id]
-    #         wtime_in_sec = ds_id_to_prof_wtime[ds_id]
-    #         size_in_mb = ds_id_to_size[ds_id] / 1024 / 1024
-    #         print(
-    #             f"ds_id={ds_id} time_per_size={ds_id_to_time[ds_id] / ds_id_to_size[ds_id]:.5f} dtime={dtime_in_sec:.3f} wtime={wtime_in_sec:.3f} size={size_in_mb:.2f}MB bw={size_in_mb/dtime_in_sec:.2f}MB/s"
-    #         )
-
-    sorted_ds_ids = {ds_id: ds_id_to_size[ds_id] for ds_id in ds_ids}
+    # 2. Put params that cause long idle time
+    sorted_idle_times = sorted(idle_times.items(), key=lambda x: x[1], reverse=True)
+    for ds_id, idle_time in sorted_idle_times:
+        if ds_id in target_ds_ids:
+            continue
+        target_ds_ids.append(ds_id)
 
     accelerator = get_accelerator()
     total_mem = accelerator.total_memory()
@@ -122,7 +171,8 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
 
     persistent_mem = 0
     nz3 = get_deepcompile_handle()
-    for ds_id, size in sorted_ds_ids.items():
+    for ds_id in target_ds_ids:
+        size = ds_id_to_size[ds_id]
         if persistent_mem + size > available_mem:
             break
         persistent_mem += size
@@ -134,13 +184,3 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
             print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.ds_shape}")
 
     return gm
-
-
-# def make_selective_gather(z3_optimizer, nz3):
-
-#     def selective_gather_wrapper(graph: Graph, graph_id: int, graph_order: List[int], profiling_results,
-#                                  mem_budget: float, param_manager, bwd: bool) -> Graph:
-#         return selective_gather(graph, graph_id, graph_order, profiling_results, mem_budget, param_manager, bwd,
-#                                 z3_optimizer, nz3)
-
-#     return selective_gather_wrapper

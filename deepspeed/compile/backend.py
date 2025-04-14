@@ -110,10 +110,13 @@ def run_opt_passes(opt_passes: List[Callable],
                    bwd: bool,
                    debug_log=False) -> None:
 
-    with unset_fake_temporarily():
-        get_accelerator().synchronize()
-        gc.collect()
-        get_accelerator().empty_cache()
+    def _free_memory():
+        with unset_fake_temporarily():
+            get_accelerator().empty_cache()
+            get_accelerator().synchronize()
+            gc.collect()
+
+    _free_memory()
 
     for i, opt_pass_fn in enumerate(opt_passes):
         log_rank0(f"Running opt pass {i} for graph {graph_id}. bwd={bwd}", enable=debug_log)
@@ -131,10 +134,7 @@ def run_opt_passes(opt_passes: List[Callable],
 
             set_time_and_tensor_size(graph_id, gm.graph, mem, bwd, profiling_results)
 
-        with unset_fake_temporarily():
-            get_accelerator().synchronize()
-            gc.collect()
-            get_accelerator().empty_cache()
+        _free_memory()
 
 
 def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):

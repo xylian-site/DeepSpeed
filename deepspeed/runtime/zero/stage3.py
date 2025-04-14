@@ -21,7 +21,7 @@ from deepspeed.utils.torch import register_grad_hook
 from deepspeed.runtime.fp16.loss_scaler import CreateLossScaler
 from deepspeed.runtime.torch_autocast import get_all_autocast_dtypes, is_autocast_initialized, sort_dtypes
 from deepspeed.runtime.comm.coalesced_collectives import reduce_scatter_coalesced, all_to_all_quant_reduce, all_to_all_loco_quant_reduce
-from deepspeed.runtime.utils import inf, is_model_parallel_parameter, get_only_unique_item
+from deepspeed.runtime.utils import inf, is_model_parallel_parameter, get_only_unique_item, mask_nan_or_inf_with_val_inplace
 from deepspeed.runtime.zero.partition_parameters import *
 from deepspeed.runtime.zero.config import ZeroStageEnum
 from deepspeed.runtime.zero.offload_config import OffloadDeviceEnum, OffloadStateTypeEnum
@@ -402,7 +402,6 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         self.ipg_buckets: Dict[torch.dtype, IPGBucketZ3] = {dtype: IPGBucketZ3() for dtype in comm_dtypes}
 
         self.params_already_reduced = {}
-        self._release_ipg_buffers()
         self.previous_reduced_grads = None
 
         # model parameter traversal-based param id that's stable across runs
@@ -983,11 +982,6 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         return sub_groups
 
-    def _release_ipg_buffers(self):
-        if self.contiguous_gradients:
-            for bucket in self.ipg_buckets.values():
-                bucket.clear()
-
     def _optimizer_step(self, sub_group_id):
         param_group_id = self.sub_group_to_group_id[sub_group_id]
         fp32_param = self.fp32_partitioned_groups_flat[sub_group_id]
@@ -1473,12 +1467,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         total_norm = total_norm_cuda[0]**(1. / norm_type)
 
-        norm_is_inf = total_norm.isinf()
-        norm_is_nan = total_norm.isnan()
-        inf_or_nan = norm_is_nan.logical_or(norm_is_inf)
-
-        err = torch.tensor(-1.0, device=inf_or_nan.device, dtype=torch.float)
-        total_norm = inf_or_nan * err + inf_or_nan.logical_not() * total_norm
+        mask_nan_or_inf_with_val_inplace(total_norm, device=total_norm.device)
 
         return total_norm.cpu()
 
@@ -1835,7 +1824,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         inf_or_nan = norm_is_nan.logical_or(norm_is_inf)
 
         err = torch.tensor(-1.0, device=self.device, dtype=torch.float)
-        total_norm = inf_or_nan * err + inf_or_nan.logical_not() * total_norm
+        total_norm = torch.where(inf_or_nan, err, total_norm)
 
         return total_norm
 

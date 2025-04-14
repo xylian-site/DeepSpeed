@@ -17,7 +17,7 @@ from ..graph_param import DSGraphParamManager
 
 NAME = "selective_gather"
 
-SIZE_THRESHOLD = 64e6
+SIZE_THRESHOLD = 16e6
 
 max_alloc_mem = 0
 last_optimize_step = 0
@@ -64,7 +64,6 @@ def simulate_time(graph: Graph):
             if ready_time > t_comp and _is_allgather_node(last_comm_node):
                 ds_id = last_comm_node.args[2]
                 idle_times[ds_id] = ready_time - t_comp
-                print(f"setting idle time for {last_comm_node.name} (ds_id={ds_id}) to {idle_times[ds_id]}")
             t_comp = device_time + ready_time
 
 
@@ -92,10 +91,6 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
         fwd_max_mem = max(m[3] for m in prof.fwd_mem)
         bwd_max_mem = max(m[3] for m in prof.bwd_mem) if len(prof.bwd_mem) > 0 else 0
         peak_mem = max(peak_mem, fwd_max_mem, bwd_max_mem)
-        if dist.get_rank() == 0:
-            print(
-                f"selective_gather graph_id={graph_id} max_mem={peak_mem} fwd_max_mem={fwd_max_mem} bwd_max_mem={bwd_max_mem}"
-            )
 
     persistent_ds_ids = set()
     for graph_id, pm in param_manager.items():
@@ -159,11 +154,6 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
     MEM_MARGIN = 0.1
     available_mem = total_mem * (1 - MEM_MARGIN) - peak_mem
 
-    if dist.get_rank() == 0:
-        print(
-            f"selective_gather max_mem={peak_mem} total_mem={total_mem} MEM_MARGIN={MEM_MARGIN} available_mem={available_mem}"
-        )
-
     ds_id_to_param = {}
     for g_id, g_pm in param_manager.items():
         for name, ds_param in g_pm.params.items():
@@ -180,7 +170,7 @@ def selective_gather(gm: GraphModule, graph_id: int, graph_order: List[int], pro
         param_obj = ds_id_to_param[ds_id]
 
         nz3.set_persistent(ds_id)
-        if dist.get_rank() == 0:
-            print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.ds_shape}")
+        # if dist.get_rank() == 0:
+        #     print(f"Set persistent: {ds_id} size: {size} persistent_mem: {persistent_mem} shape: {param_obj.ds_shape}")
 
     return gm

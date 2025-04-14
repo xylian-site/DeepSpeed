@@ -9,6 +9,9 @@ from deepspeed.ops.op_builder import UtilsBuilder
 from deepspeed.accelerator import get_accelerator
 from unit.common import DistributedTest
 
+if get_accelerator().device_name() == 'cpu':
+    pytest.skip(f"fp16 not supported, valid dtype: {get_accelerator().supported_dtypes()}", allow_module_level=True)
+
 
 def _validate_tensor_cast_properties(typed_tensor, byte_tensor):
     assert byte_tensor.dtype == torch.uint8

@@ -301,15 +301,15 @@ def _create_expert_and_data_parallel(expert_parallel_size_, use_data_before_expe
                     if rank in ranks:
                         _EXPERT_PARALLEL_GROUP[group_name] = group
                         _EXPERT_PARALLEL_GROUP_RANKS[group_name] = ranks
-    else:
-        for i in range(world_size // expert_parallel_size_):
-            ranks = range(i * expert_parallel_size_, (i + 1) * expert_parallel_size_)
-            group = dist.new_group(ranks)
-            log_dist(f'creating expert parallel process group named {group_name} '
-                     f'with ranks: {list(ranks)}', [0])
-            if rank in ranks:
-                _EXPERT_PARALLEL_GROUP[group_name] = group
-                _EXPERT_PARALLEL_GROUP_RANKS[group_name] = ranks
+        else:
+            for i in range(world_size // expert_parallel_size_):
+                ranks = range(i * expert_parallel_size_, (i + 1) * expert_parallel_size_)
+                group = dist.new_group(ranks)
+                log_dist(f'creating expert parallel process group named {group_name} '
+                         f'with ranks: {list(ranks)}', [0])
+                if rank in ranks:
+                    _EXPERT_PARALLEL_GROUP[group_name] = group
+                    _EXPERT_PARALLEL_GROUP_RANKS[group_name] = ranks
 
 
 def _get_expert_parallel_ranks(world_size,

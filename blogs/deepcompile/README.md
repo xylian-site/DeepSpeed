@@ -17,7 +17,7 @@ Existing distributed training frameworks such as DeepSpeed and FSDP have made la
 
 DeepCompile addresses this gap by enabling compiler-level optimizations for distributed training. It takes a standard single-GPU model implementation and transforms it into an optimized multi-GPU training graph without requiring changes to the model code. Unlike existing approaches, DeepCompile automatically applies parameter sharding, communication scheduling, and memory-aware execution at the compiler IR level, enabling global analysis and optimization that are difficult to express in traditional frameworks. Furthermore, during training, DeepCompile employs profile-guided optimization techniques to dynamically tune these parallelization strategies and improve training performance.
 
-Our evaluation demonstrates that DeepCompile improves training performance over ZeRO-3 baselines, achieving up to 1.5x speedup when sufficient GPU resources are available, and up to 7x speedup in GPU-constrained settings that require offloading. DeepCompile is available in DeepSpeed versions >= [0.16.6](https://github.com/deepspeedai/DeepSpeed/releases/tag/v0.16.6).
+Our evaluation demonstrates that DeepCompile improves training performance over ZeRO-3 baselines, achieving up to 1.5x speedup when sufficient GPU resources are available, and up to 7x speedup in GPU-constrained settings that require offloading. DeepCompile is available in DeepSpeed versions >= [0.16.6](https://github.com/deepspeedai/DeepSpeed/releases/tag/v0.16.6). As it is under active development, we recommend using the latest version of DeepSpeed or installing from source to access the most recent updates and bug fixes.
 
 # Design Overview
 
@@ -140,6 +140,12 @@ DeepCompile brings the power of compiler-based optimizations to distributed deep
 This release is just the beginning. We’re actively working on expanding the set of optimization passes and improving integration with a broader range of distributed training strategies. Future directions include automated parallelization (sequence/tensor parallelisms), smarter memory management, and dynamic adaptation to runtime behavior.
 
 We invite the community to try DeepCompile, explore its capabilities, and contribute to its evolution. Let’s build the next generation of scalable deep learning together.
+
+# Acknowledgments
+
+We would like to thank everyone who supported this project.
+
+This project would not have been possible without the PyTorch Compiler—a platform that is not only powerful and flexible, but also a pleasure to work with. We are especially grateful to the developers and researchers behind PyTorch Compiler for making such an excellent foundation available to the community.
 
 # Contributors
 

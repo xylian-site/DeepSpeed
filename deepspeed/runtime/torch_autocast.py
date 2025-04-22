@@ -7,6 +7,7 @@ from typing import Iterable, Set, List, Union
 import importlib
 
 import torch
+from deepspeed.utils import logger
 
 LOWER_PRECISION_SAFE_MODULES = [
     torch.nn.Linear,
@@ -16,6 +17,7 @@ LOWER_PRECISION_SAFE_MODULES = [
 ]
 
 TORCH_AUTOCAST_INITIALIZED = False
+_WARNED_NESTED_AUTOCAST = False
 
 
 def _validate_auto_cast_settings(engine):
@@ -79,3 +81,20 @@ def get_all_autocast_dtypes(params: Iterable) -> Set[torch.dtype]:
 
 def sort_dtypes(dtypes: List[torch.dtype]) -> List[torch.dtype]:
     return sorted(dtypes, key=str)
+
+
+def validate_nested_autocast(engine):
+    global _WARNED_NESTED_AUTOCAST
+
+    if torch.is_autocast_enabled():
+        if engine.torch_autocast_enabled():
+            if not _WARNED_NESTED_AUTOCAST:
+                logger.warning(
+                    "DeepSpeed detected torch.autocast context outside the engine. "
+                    "This is unnecessary when torch.autocast is already enabled through the DeepSpeed config.")
+                _WARNED_NESTED_AUTOCAST = True
+        else:
+            raise RuntimeError(
+                "torch.autocast is enabled outside DeepSpeed, but not in the DeepSpeed config. "
+                "Please enable torch.autocast through the DeepSpeed config to ensure the correct communication dtype is used."
+            )

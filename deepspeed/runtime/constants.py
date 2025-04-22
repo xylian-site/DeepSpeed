@@ -210,6 +210,10 @@ PyTorch autocast config should be of the format:
 "torch_autocast": {
   "enabled": true,
   "dtype": "bfloat16",
+  "lower_precision_safe_modules": [
+    "torch.nn.modules.linear.Linear",
+    "torch.nn.modules.conv.Conv2d"
+  ]
 }
 '''
 TORCH_AUTOCAST = "torch_autocast"

@@ -41,7 +41,7 @@ class SimpleModelWithLayerNorm(torch.nn.Module):
 
 
 def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, enable_autocast_outside,
-             baseline_scaler, x, y, rtol, atol):
+             baseline_scaler, step, x, y, rtol, atol):
     device_type = get_accelerator().device_name()
 
     # Runs the forward pass with autocasting.
@@ -53,11 +53,15 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
     baseline_scaler.step(baseline_optimizer)
     baseline_scaler.update()
 
+    # We don't need torch.autocast here in real applications, but want to test the behavior of nested autocast.
     with torch.autocast(device_type=device_type, dtype=dtype, enabled=enable_autocast_outside):
         target_loss = target_engine(x, y)
 
-    assert reduce_boolean_flags(torch.allclose(baseline_loss.float(), target_loss.float(), rtol=rtol, atol=atol),
-                                all), f"Losses do not match: baseline_loss={baseline_loss}, target_loss={target_loss}"
+    # reduce-scatter in `dtype` makes a difference in the loss.
+    if step <= 1:
+        assert reduce_boolean_flags(
+            torch.allclose(baseline_loss.float(), target_loss.float(), rtol=rtol, atol=atol),
+            all), f"Losses do not match: baseline_loss={baseline_loss}, target_loss={target_loss}"
 
     target_engine.backward(target_loss)
     target_engine.step()
@@ -113,7 +117,7 @@ def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, enable_aut
 
     for i, (x, y) in enumerate(zip(xs, ys)):
         step_amp(enable, baseline_model, baseline_optimizer, target_engine, dtype, enable_autocast_outside,
-                 baseline_scaler, x, y, RTOL, ATOL)
+                 baseline_scaler, i, x, y, RTOL, ATOL)
 
     for module in target_engine.modules():
         for p in module.parameters(recurse=False):

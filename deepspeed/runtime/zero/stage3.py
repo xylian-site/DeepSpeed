@@ -2928,9 +2928,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             self.offloaded_states.add(OffloadStateTypeEnum.lp_grads)
 
         # contiguous bucket
-        if needs_offload(OffloadStateTypeEnum.contiguous_grad_buffer) \
-            and hasattr(self, "_DeepSpeedZeroOptimizer_Stage3__ipg_bucket_flat_buffer") \
-            and self.__ipg_bucket_flat_buffer is not None:
+        if needs_offload(OffloadStateTypeEnum.contiguous_grad_buffer):
             for bucket in self.ipg_buckets.values():
                 if bucket.buffer is not None:
                     # Record properties like shape, strides, etc. as a meta tensor

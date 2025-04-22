@@ -94,7 +94,7 @@ def validate_nested_autocast(engine):
                     "This is unnecessary when torch.autocast is already enabled through the DeepSpeed config.")
                 _WARNED_NESTED_AUTOCAST = True
         else:
-            raise RuntimeError(
+            raise AssertionError(
                 "torch.autocast is enabled outside DeepSpeed, but not in the DeepSpeed config. "
                 "Please enable torch.autocast through the DeepSpeed config to ensure the correct communication dtype is used."
             )

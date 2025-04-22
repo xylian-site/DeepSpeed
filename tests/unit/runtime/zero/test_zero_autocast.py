@@ -40,9 +40,12 @@ class SimpleModelWithLayerNorm(torch.nn.Module):
         return self.cross_entropy_loss(x, y)
 
 
-def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, baseline_scaler, x, y, rtol, atol):
+def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, enable_autocast_outside,
+             baseline_scaler, x, y, rtol, atol):
+    device_type = get_accelerator().device_name()
+
     # Runs the forward pass with autocasting.
-    with torch.autocast(device_type="cuda", dtype=dtype, enabled=enabled):
+    with torch.autocast(device_type=device_type, dtype=dtype, enabled=enabled):
         baseline_optimizer.zero_grad()
         baseline_loss = baseline_model(x, y)
 
@@ -50,7 +53,8 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
     baseline_scaler.step(baseline_optimizer)
     baseline_scaler.update()
 
-    target_loss = target_engine(x, y)
+    with torch.autocast(device_type=device_type, dtype=dtype, enabled=enable_autocast_outside):
+        target_loss = target_engine(x, y)
 
     assert reduce_boolean_flags(torch.allclose(baseline_loss.float(), target_loss.float(), rtol=rtol, atol=atol),
                                 all), f"Losses do not match: baseline_loss={baseline_loss}, target_loss={target_loss}"
@@ -60,7 +64,8 @@ def step_amp(enabled, baseline_model, baseline_optimizer, target_engine, dtype, 
 
 
 @enable_determinism(123)
-def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules):
+def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, enable_autocast_outside,
+                 lower_precision_safe_modules):
     iteration = 5
     hidden_dim = 10
     lr = 0.001
@@ -107,7 +112,8 @@ def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, lower_prec
     ys = [torch.randn_like(x) for x in xs]
 
     for i, (x, y) in enumerate(zip(xs, ys)):
-        step_amp(enable, baseline_model, baseline_optimizer, target_engine, dtype, baseline_scaler, x, y, RTOL, ATOL)
+        step_amp(enable, baseline_model, baseline_optimizer, target_engine, dtype, enable_autocast_outside,
+                 baseline_scaler, x, y, RTOL, ATOL)
 
     for module in target_engine.modules():
         for p in module.parameters(recurse=False):
@@ -126,17 +132,19 @@ def compare_loss(model_cls, enable, zero_stage, dtype, autocast_conf, lower_prec
 
 
 @pytest.mark.parametrize("enable", [True])
-@pytest.mark.parametrize("zero_stage", [1, 2, 3])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 class TestZeroAutoCast(DistributedTest):
     world_size = 2
 
+    @pytest.mark.parametrize("zero_stage", [1, 2, 3])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test(self, enable, zero_stage, dtype):
         lower_precision_safe_modules = [torch.nn.Linear]
         autocast_conf = {"enabled": enable, "dtype": str(dtype)}
 
-        compare_loss(SimpleModel, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules)
+        compare_loss(SimpleModel, enable, zero_stage, dtype, autocast_conf, False, lower_precision_safe_modules)
 
+    @pytest.mark.parametrize("zero_stage", [1, 2, 3])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test_safe_modules_conf(self, enable, zero_stage, dtype):
         lower_precision_safe_modules = [torch.nn.Linear]
         autocast_conf = {
@@ -146,4 +154,24 @@ class TestZeroAutoCast(DistributedTest):
         }
 
         # The model has both lower precision safe and unsafe modules.
-        compare_loss(SimpleModelWithLayerNorm, enable, zero_stage, dtype, autocast_conf, lower_precision_safe_modules)
+        compare_loss(SimpleModelWithLayerNorm, enable, zero_stage, dtype, autocast_conf, False,
+                     lower_precision_safe_modules)
+
+    @pytest.mark.parametrize("zero_stage", [1])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16])
+    def test_error_autocast_outside_ds(self, enable, zero_stage, dtype):
+        """Throw an error when torch.autocast is enabled outside deepspeed engine but disabled in config."""
+
+        lower_precision_safe_modules = [torch.nn.Linear]
+        autocast_conf = {
+            "enabled": False,
+            "dtype": str(dtype),
+        }
+
+        try:
+            compare_loss(SimpleModelWithLayerNorm, enable, zero_stage, dtype, autocast_conf, True,
+                         lower_precision_safe_modules)
+            pytest.fail(
+                "Expected an error when torch.autocast is enabled outside deepspeed engine but disabled in config.")
+        except AssertionError as e:
+            pass

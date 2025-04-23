@@ -91,31 +91,18 @@ for sub in  ${SUBMIT}; do
     else
         sub_opt=""
     fi
-<<<<<<< HEAD
     for ov in ${OVERLAP}; do
-=======
-    for ov in overlap sequential; do
->>>>>>> 05eaf3d1cab0f42f130a153802c7b94d86ecc872
         if [[ $ov == "sequential" ]]; then
             ov_opt="--sequential_requests"
         else
             ov_opt=""
         fi
-<<<<<<< HEAD
         for p in 1;  do
             for t in ${IO_PARALLEL}; do
                 for d in ${QUEUE_DEPTH}; do
                     for bs in ${BLOCK_SIZE}; do
                         SCHED_OPTS="${sub_opt} ${ov_opt} --engine ${IO_ENGINE} --io_parallel ${t} ${ENGINE_OPTS}"
                         OPTS="--multi_process ${p} --queue_depth ${d} --block_size ${bs}"
-=======
-        for p in 1 2 4 8; do
-            for t in 1 2 4 8; do
-                for d in 32 64 128; do
-                    for bs in 256K 512K 1M; do
-                        SCHED_OPTS="${sub_opt} ${ov_opt} --handle ${gpu_opt} ${gds_opt} --folder ${MAP_DIR}"
-                        OPTS="--queue_depth ${d} --block_size ${bs} --io_size ${IO_SIZE} --multi_process ${p} --io_parallel ${t}"
->>>>>>> 05eaf3d1cab0f42f130a153802c7b94d86ecc872
                         LOG="${LOG_DIR}/write_${sub}_${ov}_t${t}_p${p}_d${d}_bs${bs}.txt"
                         cmd="python ${RUN_SCRIPT} ${OPTS} ${SCHED_OPTS} &> ${LOG}"
                         echo ${DISABLE_CACHE}

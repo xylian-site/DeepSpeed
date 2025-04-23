@@ -28,9 +28,9 @@ class TorchCheckpointEngine(CheckpointEngine):
         pass
 
     def save(self, state_dict, path: str, data_parallel_state: bool = False):
-        #logger.info(f"[Torch] Saving {path}...")
+        # log_dist(f"[Torch] Saving [begin] {path}... {self.zipfile_serialization=}", ranks=[0])
         torch.save(state_dict, path, _use_new_zipfile_serialization=self.zipfile_serialization)
-        #logger.info(f"[Torch] Saved {path}.")
+        # log_dist(f"[Torch] Saving [end] {path}... {self.zipfile_serialization=}", ranks=[0])
 
     def load(self, path: str, map_location=None):
         log_dist(f"[Torch] Begin Load checkpoint from {path}...", ranks=[0])

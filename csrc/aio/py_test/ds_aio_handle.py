@@ -39,10 +39,6 @@ class AIOHandle_Engine(object):
         self.ctxt[ELAPSED_SEC].append(end_time - start_time)
 
     def write(self, args, tid, loop_id):
-        # Avoid overwriting existing files as it could be artificially faster
-        # if os.path.isfile(self.ctxt[FILE]):
-        #     os.remove(self.ctxt[FILE])
-
         handle = self.ctxt[HANDLE]
         start_time = time.time()
         if self.ctxt[BOUNCE_BUFFER] is not None:
@@ -81,11 +77,6 @@ class AIOHandle_Engine(object):
         io_string = "Read" if read_op else "Write"
         device_id, folder = args.mapping_list[tid]
         filenames = self._create_files(args, folder, tid)
-        # filename = create_filename(folder, args.read, args.io_size, tid)
-        # if args.read and not (os.path.isfile(filename)
-        #                       and os.path.getsize(filename) == args.io_size):
-        #     create_file(filename, args.io_size)
-
         io_parallel = args.io_parallel if args.io_parallel else 1
         handle = AsyncIOBuilder().load().aio_handle(args.block_size, args.queue_depth, args.single_submit,
                                                     not args.sequential_requests, io_parallel)

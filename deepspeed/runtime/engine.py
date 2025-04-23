@@ -3471,7 +3471,6 @@ class DeepSpeedEngine(Module):
         # In the case of E + D parallelism, only the
         # first expert parallel group should save the expert weights
         # since each expert parallel group is a copy of the model's experts
-        # if exp_dp_rank != 0:
         if not self.checkpoint_engine.is_data_parallel_writer(exp_dp_rank):
             return
 
@@ -3894,7 +3893,8 @@ class DeepSpeedEngine(Module):
 
         tag = f"global_step{self.global_steps}"
         tag = str(tag)
-        self.checkpoint_engine.create(tag)
+        commit_info = CheckpointCommitInfo(tag=tag, save_dir=save_dir, save_latest=False)
+        self.checkpoint_engine.create(commit_info)
 
         if dist.get_rank() == 0:
             self.checkpoint_engine.makedirs(save_dir, exist_ok=True)

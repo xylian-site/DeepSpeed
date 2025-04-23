@@ -76,9 +76,9 @@ class DataParallelWriterFactory(object):
             assert ep_num_resources % slices_per_resource == 0, f'{resource_name}: Expected ep_num_resources={ep_num_resources} to multiple of slices_per_resource={slices_per_resource} for ep_world_size={ep_world_size}'
 
             slice_partitions = partition_data(expert_resources, slices_per_resource)
-            print(
-                f'edp_resource_partition: self._uni_parallel_info.global_rank={self._uni_parallel_info.global_rank} expert_resources={expert_resources} slices_per_resource={slices_per_resource} ep_world_size={ep_world_size} slice_partitions={slice_partitions}'
-            )
+            # print(
+            #     f'edp_resource_partition: self._uni_parallel_info.global_rank={self._uni_parallel_info.global_rank} expert_resources={expert_resources} slices_per_resource={slices_per_resource} ep_world_size={ep_world_size} slice_partitions={slice_partitions}'
+            # )
             resource_index = ep_info.ep_rank % slice_resources
             return slice_partitions[resource_index]
 

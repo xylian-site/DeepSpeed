@@ -13,7 +13,6 @@ from .base_file_writer import BaseFileWriter
 from .single_io_buffer import Single_IO_Buffer
 from .double_io_buffer import Double_IO_Buffer
 from deepspeed.ops.op_builder import UtilsBuilder
-from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 
 from .utils import (tensor_to_bytes, bytes_to_tensor, obj_serialization_details)
@@ -89,7 +88,7 @@ class FastFileWriter(BaseFileWriter):
 
     def save_torch_storage_object_list(self, storage_obj_list, save_size):
         assert self._file_offset % self._dnvme_handle.get_alignment() == 0
-        num_bytes_written = self._save_storage_list_v2(storage_obj_list, save_size)
+        num_bytes_written = self._save_storage_list(storage_obj_list, save_size)
         return num_bytes_written
 
     def close(self):
@@ -193,51 +192,7 @@ class FastFileWriter(BaseFileWriter):
 
         return buffer_offset
 
-    def _save_torch_storage_object_list_v1(self, storage_obj_list, save_size):
-        cur_rank = dist.get_rank()
-        num_nodes = int(dist.get_world_size() / get_accelerator().device_count())
-        if num_nodes == 0:
-            num_nodes = 1  # launch with python (single node case) not deepspeed (multi node case)
-        cur_save_rank = int(cur_rank / get_accelerator().device_count())
-
-        split_list = self.split_index_list(storage_obj_list, num_nodes)
-        start_layer = 0
-        if cur_save_rank > 0:
-            start_layer = split_list[cur_save_rank - 1]
-        end_layer = split_list[cur_save_rank]
-
-        num_bytes_written = self._save_storage_list(storage_obj_list[start_layer:end_layer], save_size)
-        return num_bytes_written
-
     def _save_storage_list(self, obj_list, save_size):
-        # tensor_list = [
-        #     torch.empty(0,
-        #                 dtype=dtype,
-        #                 device=obj.device).set_(obj) for obj, dtype in obj_list
-        # ]
-        tensor_list = []
-        for storage_obj in obj_list:
-            details = self._get_serialization_details(storage_obj)
-            tensor_list.append(torch.empty(0, dtype=details.dtype, device=obj.device).set_(details.obj))
-
-        byte_tensor_list = self._cast_to_byte_tensor(tensor_list)
-
-        num_size_bytes_written = 0
-        num_object_bytes_written = 0
-        for byte_tensor, storage_obj in zip(byte_tensor_list, obj_list):
-            if save_size:
-                details = self._get_serialization_details(storage_obj)
-                size_tensor = torch.tensor(details.size, dtype=torch.int64, device='cpu')
-                num_size_bytes_written += self._write_from_tensor(self._cast_to_byte_tensor(size_tensor))
-            obj_bytes_written = self._write_from_tensor(byte_tensor)
-            num_object_bytes_written += obj_bytes_written
-            #print(f'{dist.get_rank()=} {details.size=} {obj_bytes_written=}')
-
-        self._incr_stats(SAVE_STORAGE_KEY, len(obj_list))
-        self._incr_stats(SAVE_STORAGE_BYTES_KEY, num_object_bytes_written)
-        return num_object_bytes_written + num_size_bytes_written
-
-    def _save_storage_list_v2(self, obj_list, save_size):
         byte_tensor_list, byte_tensor_nbytes = self._convert_to_byte_tensors(obj_list, save_size)
         if self._num_parallel_writers > 1:
             my_byte_tensor_list = self._partition_byte_tensors(byte_tensor_list, byte_tensor_nbytes,
@@ -245,18 +200,12 @@ class FastFileWriter(BaseFileWriter):
         else:
             my_byte_tensor_list = byte_tensor_list
 
-        # obj_sizes = [
-        #     t.numel() for t in my_byte_tensor_list if t.numel() > STORAGE_OBJ_SIZE
-        # ]
-        # print(f'{dist.get_rank()} = {obj_sizes=}')
-
         num_object_bytes_written = 0
         for byte_tensor in my_byte_tensor_list:
             num_object_bytes_written += self._write_from_tensor(byte_tensor)
 
         self._incr_stats(SAVE_STORAGE_KEY, len(obj_list))
         self._incr_stats(SAVE_STORAGE_BYTES_KEY, num_object_bytes_written)
-        # print(f'{dist.get_rank()} {byte_tensor_nbytes=} split into {num_object_bytes_written=}')
         return num_object_bytes_written
 
     # Convert list of storage objects into list of byte tensors of object and size bytes

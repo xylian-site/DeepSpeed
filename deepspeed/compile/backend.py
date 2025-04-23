@@ -99,6 +99,17 @@ def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results
         profiling_results[graph_id].fwd_mem = mem
 
 
+def set_example_values_to_symints(sample_inputs, real_inputs):
+    sym_v_map = {}
+    for fv, rv in zip(sample_inputs, real_inputs):
+        if isinstance(fv, torch.Tensor) and isinstance(rv, torch.Tensor):
+            for fs, rs in zip(fv.shape, rv.shape):
+                if isinstance(fs, torch.SymInt) and isinstance(rs, int):
+                    sym_v_map[str(fs)] = rs
+
+    return [sym_v_map[str(v)] if str(v) in sym_v_map else v for v in real_inputs]
+
+
 def run_opt_passes(opt_passes: List[Callable],
                    gm: GraphModule,
                    graph_id: int,
@@ -171,6 +182,7 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
             time_start = time.time()
             graph_index = len(graph_order) - 1
             real_inputs = fwd_real_inputs.pop(0)
+            real_inputs = set_example_values_to_symints(sample_inputs, real_inputs)
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
 
@@ -241,6 +253,9 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
             remaining_bwd_compile_count -= 1
             if remaining_bwd_compile_count == 0:
                 unpatch_compiled_func()
+                graph_order.clear()
+                profiling_results.clear()
+                param_manager.clear()
 
             log_rank0(
                 f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",

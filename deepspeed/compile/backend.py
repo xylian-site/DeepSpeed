@@ -13,10 +13,10 @@ from torch.fx import Graph, GraphModule
 try:
     import torch.utils._pytree as pytree
     import torch._dynamo
-    import torch._inductor.scheduler
     from functorch.compile import make_boxed_func
     from torch._functorch.aot_autograd import aot_module_simplified
     from torch._subclasses.fake_tensor import unset_fake_temporarily
+    from torch._subclasses.fake_tensor import is_fake
 except ImportError:
     pass
 
@@ -99,15 +99,36 @@ def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results
         profiling_results[graph_id].fwd_mem = mem
 
 
-def set_example_values_to_symints(sample_inputs, real_inputs):
-    sym_v_map = {}
-    for fv, rv in zip(sample_inputs, real_inputs):
-        if isinstance(fv, torch.Tensor) and isinstance(rv, torch.Tensor):
-            for fs, rs in zip(fv.shape, rv.shape):
-                if isinstance(fs, torch.SymInt) and isinstance(rs, int):
-                    sym_v_map[str(fs)] = rs
+def evaluate_symint_from_shape_env(sym_int_v):
+    assert isinstance(sym_int_v, torch.SymInt)
+    shape_env = sym_int_v.node.shape_env
+    rv = shape_env.evaluate_symexpr(str(sym_int_v))
+    return int(rv)
 
-    return [sym_v_map[str(v)] if str(v) in sym_v_map else v for v in real_inputs]
+
+def set_example_values_to_symints(real_inputs):
+    real_inputs_ret = []
+    for v in real_inputs:
+        if isinstance(v, torch.Tensor):
+            if is_fake(v):
+                shape = []
+                for fs in v.shape:
+                    if isinstance(fs, torch.SymInt):
+                        shape.append(evaluate_symint_from_shape_env(fs))
+                    else:
+                        shape.append(fs)
+                with unset_fake_temporarily():
+                    real_inputs_ret.append(
+                        torch.ones(shape, dtype=v.dtype, device=v.device, requires_grad=v.requires_grad))
+            else:
+                real_inputs_ret.append(v)
+        else:
+            if isinstance(v, torch.SymInt):
+                real_inputs_ret.append(evaluate_symint_from_shape_env(v))
+            else:
+                real_inputs_ret.append(v)
+
+    return tuple(real_inputs_ret)
 
 
 def run_opt_passes(opt_passes: List[Callable],
@@ -182,11 +203,11 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
             time_start = time.time()
             graph_index = len(graph_order) - 1
             real_inputs = fwd_real_inputs.pop(0)
-            real_inputs = set_example_values_to_symints(sample_inputs, real_inputs)
+            real_inputs = set_example_values_to_symints(real_inputs)
 
             param_manager[graph_id] = DSGraphParamManager(gm.graph, real_inputs, param_indices)
 
-            real_inputs_with_rng = real_inputs + sample_inputs[len(real_inputs):]
+            real_inputs_with_rng = real_inputs + tuple(sample_inputs[len(real_inputs):])
             run_opt_passes(
                 opt_passes=next_passes,
                 gm=gm,
@@ -223,11 +244,11 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
 
             if len(bwd_inputs_stack) == 0:
                 # dynamo calls bw compiler ahead of time when symints are saved for backward. See the details for aot_dispatch_autograd in jit_compile_runtime_wrappers.
-                # As we currently use actually bwd input values in bw compiler, we return None to skip the compilation there.
-                # This would need be handled properly in the future.
-                return None
+                # As we currently use actually bwd input values in bw compiler, we make dummy data for profiling.
+                bwd_real_inputs = set_example_values_to_symints(sample_inputs)
+            else:
+                bwd_real_inputs = bwd_inputs_stack.pop()
 
-            bwd_real_inputs = bwd_inputs_stack.pop()
             run_opt_passes(
                 opt_passes=next_passes,
                 gm=gm,

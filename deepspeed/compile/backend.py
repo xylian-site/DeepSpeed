@@ -336,7 +336,6 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
                 unpatch_compiled_func()
                 graph_order.clear()
                 profiling_results.clear()
-                param_manager.clear()
 
             log_rank0(
                 f"Bwd end {graph_index} graph_id={graph_id} alloc_mem={get_accelerator().memory_allocated()} graph={gm.graph}",

@@ -21,6 +21,7 @@ except ImportError:
     pass
 
 from deepspeed.accelerator import get_accelerator
+import deepspeed.comm as dist
 
 from .fx import add_free_activations
 from .graph_param import DSGraphParamManager
@@ -30,6 +31,12 @@ from .patch_compiled_func import patch_compiled_func, unpatch_compiled_func, get
 from .util import get_input_nodes, get_activation_node_names, get_index_by_graph_id, get_deepcompile_handle, log_rank0
 from .partitioner import get_wrapped_partitioner
 from .inductor import register_custom_ops, patch_create_aot_dispatcher_function
+
+ID_TO_DTYPE = [
+    torch.float32, torch.float64, torch.complex64, torch.complex128, torch.float16, torch.bfloat16, torch.uint8,
+    torch.int8, torch.int16, torch.int32, torch.int64, torch.bool
+]
+DTYPE_TO_ID = {dtype: id_ for id_, dtype in enumerate(ID_TO_DTYPE)}
 
 remaining_schedule = None
 next_pass_step = -1
@@ -77,7 +84,7 @@ def launch_compile_passes(global_steps: int):
         profiling_results.clear()
         param_manager.clear()
 
-
+    
 def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results):
     node_time = []
     tensor_sizes = []
@@ -169,12 +176,65 @@ def run_opt_passes(opt_passes: List[Callable],
             get_accelerator().empty_cache()
 
 
+def broadcast_inputs(real_inputs, src_rank):
+    device = get_accelerator().current_device()
+
+    def broadcast_if_shapes_different(t):
+        if isinstance(t, torch.Tensor) and not isinstance(t, torch.nn.Parameter):
+            # put shape as a tensor and broadcast
+            assert t.dtype in DTYPE_TO_ID, f"Unsupported dtype {t.dtype} for broadcasting input"
+
+            dim_size_dtype_ten = torch.tensor([len(t.shape), DTYPE_TO_ID[t.dtype]], dtype=torch.int64, device=device)
+            dist.broadcast(dim_size_dtype_ten, src_rank)
+            assert dim_size_dtype_ten[0].item() == len(t.shape), f"Inputs have different dimension sizes. {dim_size_dtype_ten[0].item()} vs {len(t.shape)}"
+            assert dim_size_dtype_ten[1].item() == DTYPE_TO_ID[t.dtype], f"Inputs have different dtypes. {dim_size_dtype_ten[1].item()} vs {DTYPE_TO_ID[t.dtype]}"
+
+            shape_ten = torch.tensor(t.shape if dist.get_rank() == src_rank else [0] * len(t.shape), dtype=torch.int64, device=device)
+            dist.broadcast(shape_ten, src_rank)
+
+            bcast_buf = t if dist.get_rank() == src_rank else torch.empty(shape_ten.tolist(), dtype=t.dtype, device=device, requires_grad=t.requires_grad)
+            dist.broadcast(bcast_buf, src_rank)
+
+            print(f"[r{dist.get_rank()}] Broadcasting input: src {t.shape} -> {bcast_buf.shape} dtype {t.dtype} -> {bcast_buf.dtype} device {t.device} -> {bcast_buf.device}", flush=True)
+
+            return bcast_buf
+        else:
+            return t
+
+    return pytree.tree_map(broadcast_if_shapes_different, real_inputs)
+
+
+def warmup_with_differnt_inputs(engine, args, kwargs):
+
+    for rank in range(dist.get_world_size()):
+
+        print(f"[r{dist.get_rank()}] Warmup rank {rank} inputs {args}", flush=True)
+
+        # test_inputs = broadcast_inputs(real_inputs, rank)
+
+        for i, input_val in enumerate(args):
+            if torch.is_tensor(input_val):
+                print(f"[r{dist.get_rank()}] Warmup input {i}: {input_val.shape} dtype {input_val.dtype} device {input_val.device}", flush=True)
+            else:
+                print(f"[r{dist.get_rank()}] Warmup input {i}: {input_val}", flush=True)
+        test_inputs = broadcast_inputs(args, rank)
+
+        for i, (k, input_val) in enumerate(kwargs.items()):
+            if torch.is_tensor(input_val):
+                print(f"[r{dist.get_rank()}] Warmup kwarg {k}: {input_val.shape} dtype {input_val.dtype} device {input_val.device}", flush=True)
+            else:
+                print(f"[r{dist.get_rank()}] Warmup kwarg {k}: {input_val}", flush=True)
+        test_kwargs = {k: broadcast_inputs(v, rank) for k, v in kwargs.items()}
+
+
 def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):
 
     register_custom_ops()
 
     def backend_fn(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
+
+        # real_inputs = broadcast_inputs(real_inputs)
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
         global graph_order

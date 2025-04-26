@@ -84,7 +84,7 @@ def launch_compile_passes(global_steps: int):
         profiling_results.clear()
         param_manager.clear()
 
-    
+
 def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results):
     node_time = []
     tensor_sizes = []
@@ -108,9 +108,9 @@ def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results
 
 def evaluate_symint_from_shape_env(sym_int_v):
     assert isinstance(sym_int_v, torch.SymInt)
-    shape_env = sym_int_v.node.shape_env
-    rv = shape_env.evaluate_symexpr(str(sym_int_v))
-    return int(rv)
+    # shape_env = sym_int_v.node.shape_env
+    # v = shape_env.evaluate_sym_node(sym_int_v.node)
+    return sym_int_v.node.hint
 
 
 def set_example_values_to_symints(real_inputs):
@@ -124,9 +124,19 @@ def set_example_values_to_symints(real_inputs):
                         shape.append(evaluate_symint_from_shape_env(fs))
                     else:
                         shape.append(fs)
+                stride = []
+                for fs in v.stride():
+                    if isinstance(fs, torch.SymInt):
+                        stride.append(evaluate_symint_from_shape_env(fs))
+                    else:
+                        stride.append(fs)
                 with unset_fake_temporarily():
-                    real_inputs_ret.append(
-                        torch.ones(shape, dtype=v.dtype, device=v.device, requires_grad=v.requires_grad))
+                    dummy_v = torch.ones(shape,
+                                         dtype=v.dtype,
+                                         layout=v.layout,
+                                         device=v.device,
+                                         requires_grad=v.requires_grad).as_strided(shape, stride)
+                    real_inputs_ret.append(dummy_v)
             else:
                 real_inputs_ret.append(v)
         else:
@@ -177,34 +187,53 @@ def run_opt_passes(opt_passes: List[Callable],
 
 
 def broadcast_inputs(real_inputs, src_rank):
-    device = get_accelerator().current_device()
+    if real_inputs is None:
+        return None
 
-    def broadcast_if_shapes_different(t):
-        if isinstance(t, torch.Tensor) and not isinstance(t, torch.nn.Parameter):
-            # put shape as a tensor and broadcast
-            assert t.dtype in DTYPE_TO_ID, f"Unsupported dtype {t.dtype} for broadcasting input"
+    with unset_fake_temporarily():
 
-            dim_size_dtype_ten = torch.tensor([len(t.shape), DTYPE_TO_ID[t.dtype]], dtype=torch.int64, device=device)
-            dist.broadcast(dim_size_dtype_ten, src_rank)
-            assert dim_size_dtype_ten[0].item() == len(t.shape), f"Inputs have different dimension sizes. {dim_size_dtype_ten[0].item()} vs {len(t.shape)}"
-            assert dim_size_dtype_ten[1].item() == DTYPE_TO_ID[t.dtype], f"Inputs have different dtypes. {dim_size_dtype_ten[1].item()} vs {DTYPE_TO_ID[t.dtype]}"
+        device = get_accelerator().current_device()
 
-            shape_ten = torch.tensor(t.shape if dist.get_rank() == src_rank else [0] * len(t.shape), dtype=torch.int64, device=device)
-            dist.broadcast(shape_ten, src_rank)
+        def broadcast_if_shapes_different(t):
+            if isinstance(t, torch.Tensor) and not isinstance(t, torch.nn.Parameter):
+                # put shape as a tensor and broadcast
+                assert t.dtype in DTYPE_TO_ID, f"Unsupported dtype {t.dtype} for broadcasting input"
 
-            bcast_buf = t if dist.get_rank() == src_rank else torch.empty(shape_ten.tolist(), dtype=t.dtype, device=device, requires_grad=t.requires_grad)
-            dist.broadcast(bcast_buf, src_rank)
+                dim_size_dtype_ten = torch.tensor([len(t.shape), DTYPE_TO_ID[t.dtype]],
+                                                  dtype=torch.int64,
+                                                  device=device)
+                dist.broadcast(dim_size_dtype_ten, src_rank)
+                assert dim_size_dtype_ten[0].item() == len(
+                    t.shape
+                ), f"Inputs have different dimension sizes. {dim_size_dtype_ten[0].item()} vs {len(t.shape)}"
+                assert dim_size_dtype_ten[1].item() == DTYPE_TO_ID[
+                    t.dtype], f"Inputs have different dtypes. {dim_size_dtype_ten[1].item()} vs {DTYPE_TO_ID[t.dtype]}"
 
-            print(f"[r{dist.get_rank()}] Broadcasting input: src {t.shape} -> {bcast_buf.shape} dtype {t.dtype} -> {bcast_buf.dtype} device {t.device} -> {bcast_buf.device}", flush=True)
+                shape_ten = torch.tensor(t.shape if dist.get_rank() == src_rank else [0] * len(t.shape),
+                                         dtype=torch.int64,
+                                         device=device)
+                dist.broadcast(shape_ten, src_rank)
 
-            return bcast_buf
-        else:
-            return t
+                bcast_buf = torch.empty(shape_ten.tolist(),
+                                        dtype=t.dtype,
+                                        device=device,
+                                        requires_grad=t.requires_grad)
+                if dist.get_rank() == src_rank:
+                    bcast_buf.copy_(t)
 
-    return pytree.tree_map(broadcast_if_shapes_different, real_inputs)
+                # if dist.get_rank() == src_rank:
+                #     dist.broadcast(t, src_rank)
+                # else:
+                dist.broadcast(bcast_buf, src_rank)
+
+                return bcast_buf
+            else:
+                return t
+
+        return pytree.tree_map(broadcast_if_shapes_different, real_inputs)
 
 
-def warmup_with_differnt_inputs(engine, args, kwargs):
+def warmup_with_different_inputs(engine, *args, **kwargs):
 
     for rank in range(dist.get_world_size()):
 
@@ -212,19 +241,9 @@ def warmup_with_differnt_inputs(engine, args, kwargs):
 
         # test_inputs = broadcast_inputs(real_inputs, rank)
 
-        for i, input_val in enumerate(args):
-            if torch.is_tensor(input_val):
-                print(f"[r{dist.get_rank()}] Warmup input {i}: {input_val.shape} dtype {input_val.dtype} device {input_val.device}", flush=True)
-            else:
-                print(f"[r{dist.get_rank()}] Warmup input {i}: {input_val}", flush=True)
         test_inputs = broadcast_inputs(args, rank)
-
-        for i, (k, input_val) in enumerate(kwargs.items()):
-            if torch.is_tensor(input_val):
-                print(f"[r{dist.get_rank()}] Warmup kwarg {k}: {input_val.shape} dtype {input_val.dtype} device {input_val.device}", flush=True)
-            else:
-                print(f"[r{dist.get_rank()}] Warmup kwarg {k}: {input_val}", flush=True)
-        test_kwargs = {k: broadcast_inputs(v, rank) for k, v in kwargs.items()}
+        test_kwargs = broadcast_inputs(kwargs, rank)
+        engine(*test_inputs, **test_kwargs)
 
 
 def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=False):

@@ -101,9 +101,9 @@ def set_time_and_tensor_size(graph_id, graph: Graph, mem, bwd, profiling_results
 
 def evaluate_symint_from_shape_env(sym_int_v):
     assert isinstance(sym_int_v, torch.SymInt)
-    shape_env = sym_int_v.node.shape_env
-    rv = shape_env.evaluate_symexpr(str(sym_int_v))
-    return int(rv)
+    # shape_env = sym_int_v.node.shape_env
+    # v = shape_env.evaluate_sym_node(sym_int_v.node)
+    return sym_int_v.node.hint
 
 
 def set_example_values_to_symints(real_inputs):
@@ -117,9 +117,19 @@ def set_example_values_to_symints(real_inputs):
                         shape.append(evaluate_symint_from_shape_env(fs))
                     else:
                         shape.append(fs)
+                stride = []
+                for fs in v.stride():
+                    if isinstance(fs, torch.SymInt):
+                        stride.append(evaluate_symint_from_shape_env(fs))
+                    else:
+                        stride.append(fs)
                 with unset_fake_temporarily():
-                    real_inputs_ret.append(
-                        torch.ones(shape, dtype=v.dtype, device=v.device, requires_grad=v.requires_grad))
+                    dummy_v = torch.ones(shape,
+                                         dtype=v.dtype,
+                                         layout=v.layout,
+                                         device=v.device,
+                                         requires_grad=v.requires_grad).as_strided(shape, stride)
+                    real_inputs_ret.append(dummy_v)
             else:
                 real_inputs_ret.append(v)
         else:

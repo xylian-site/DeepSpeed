@@ -213,11 +213,17 @@ def broadcast_inputs(real_inputs, src_rank):
                                          dtype=torch.int64,
                                          device=device)
                 dist.broadcast(shape_ten, src_rank)
+                stride_ten = torch.tensor(t.stride() if dist.get_rank() == src_rank else [0] * len(t.stride()),
+                                          dtype=torch.int64,
+                                          device=device)
+                dist.broadcast(stride_ten, src_rank)
 
                 bcast_buf = torch.empty(shape_ten.tolist(),
                                         dtype=t.dtype,
                                         device=device,
-                                        requires_grad=t.requires_grad)
+                                        layout=t.layout,
+                                        requires_grad=t.requires_grad).as_strided(shape_ten.tolist(),
+                                                                                  stride_ten.tolist())
                 if dist.get_rank() == src_rank:
                     bcast_buf.copy_(t)
 
@@ -236,11 +242,6 @@ def broadcast_inputs(real_inputs, src_rank):
 def warmup_with_different_inputs(engine, *args, **kwargs):
 
     for rank in range(dist.get_world_size()):
-
-        print(f"[r{dist.get_rank()}] Warmup rank {rank} inputs {args}", flush=True)
-
-        # test_inputs = broadcast_inputs(real_inputs, rank)
-
         test_inputs = broadcast_inputs(args, rank)
         test_kwargs = broadcast_inputs(kwargs, rank)
         engine(*test_inputs, **test_kwargs)
@@ -252,8 +253,6 @@ def make_backend(backend, compile_kwargs={}, free_activation=False, debug_log=Fa
 
     def backend_fn(gm: GraphModule, real_inputs):
         graph_id = id(gm.graph)
-
-        # real_inputs = broadcast_inputs(real_inputs)
         needs_backward = pytree.tree_any(lambda x: x.requires_grad if torch.is_tensor(x) else False, real_inputs)
 
         global graph_order

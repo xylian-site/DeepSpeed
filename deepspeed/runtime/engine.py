@@ -108,7 +108,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime.config import DtypeEnum
 
 from deepspeed.compile.util import is_deepcompile_supported, get_deepcompile_handle, deepcompile_backward_prologue
-from deepspeed.compile.backend import register_compile_pass, opt_passes, warmup_with_differnt_inputs
+from deepspeed.compile.backend import register_compile_pass, opt_passes, warmup_with_different_inputs
 from deepspeed.compile.passes import zero3_compile, prefetch, selective_gather, offload_adam_states
 from deepspeed.compile.init_z1 import init_z1
 from deepspeed.compile.init_z3 import init_z3
@@ -2051,8 +2051,7 @@ class DeepSpeedEngine(Module):
             # We can't have this in forward prologue as the compiler compiles hooks including the forward prologue.
             self.launch_compile_passes(self.global_steps)
             print(f"running warmup")
-            warmup_with_differnt_inputs(self, inputs, kwargs)
-
+            warmup_with_different_inputs(self, inputs, kwargs)
 
         loss = self.module(*inputs, **kwargs)
 
@@ -3925,7 +3924,7 @@ class DeepSpeedEngine(Module):
                 backend = init_z3(self, backend, compile_config, compile_kwargs, schedule)
 
         # create new dict to avoid modifying original dict
-        self.module.compile(**{**compile_kwargs, 'backend': backend})
+        self.module.compile(**{**compile_kwargs, 'backend': backend, 'dynamic': True})
 
         self._is_compiled = True
 

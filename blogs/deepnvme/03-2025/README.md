@@ -20,21 +20,12 @@ Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://l
 SGLang | 0.4.4.post4 |
 
 # Addressing I/O Bottlenecks of Deep Learning
-We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O bottlenecks in DL training and inference respectively. Our experiments are conducted using a single VM, in which we combine the available NVMe SSDs into a single RAID-0 volume to leverage aggregate read and write bandwidths.
+We used DeepNVMe to develop FastPersist and ZeRO-Inference to target I/O bottlenecks in DL training and inference respectively. Our experiments are conducted using a single VM, in which we combine the available NVMe SSDs into a single RAID-0 (i.e., disk striping) volume to leverage aggregate read and write bandwidths.
 
 ## FastPersist: Faster Model Checkpoint Creation
 Saving model checkpoints to persistent storage is critical in model training, however, it is also a major bottleneck due to the inefficiencies of existing approaches. We developed [FastPersist](https://arxiv.org/abs/2406.13768) to address the performance challenges of checkpointing. FastPersist makes checkpointing overheads negligible during training through three key techniques: (i) DeepNVMe, (ii) data parallelism, and (iii) overlapping I/O and computation.
 
-Our goal here is to demonstrate the impact of DeepNVMe in FastPersist using single-process micro-benchmarks (available [here](https://github.com/deepspeedai/DeepSpeedExamples/tree/master/deepnvme/fastpersist)) which serialize (i) a PyTorch tensor, and (ii) model checkpoint state from HBM to local NVMe. We use the popular PyTorch `torch.save()` as the baseline in our experiments, and integrate FastPersist into `torch.save()` to simplify adoption and performance comparisons.
-
-### Faster Saving of PyTorch Tensors to local NVMe Storage
-We measure the achieved throughput for writing 100MB, 1GB, and 10GB tensors from HBM to local NVMe storage. We summarize the results in the Figure below. We observe that FastPersist provides significant speedups over the baseline, achieving over 20X faster writes in the case of 10GB tensor on 8xGen5 NVMes. Moreover, we observe that FastPersist performance scales with available NVMe bandwidth, i.e., comparing 4xGen5 with 8xGen5.
-
-<img src="./media/fastpersist_tensor.png">
-<div align="center">
-  FastPersist significantly accelerates writes of Pytorch Tensors to local NVMe from HBM.
-</div>
-
+Our goal here is to demonstrate the impact of DeepNVMe in FastPersist using single-process micro-benchmarks (available [here](https://github.com/deepspeedai/DeepSpeedExamples/tree/master/deepnvme/fastpersist)) which serialize a model checkpoint state from HBM to local NVMe. We use the popular PyTorch `torch.save()` as the baseline in our experiments, and integrate FastPersist into `torch.save()` to simplify adoption and performance comparisons.
 
 ### Faster Saving of PyTorch Models to local NVMe Storage
 We measure the throughput of serializing Phi-3-Mini checkpoint state from HBM to local NVMe storage. The results are summarized in the Figure below. We observe significantly faster checkpointing with FastPersist compared to the baseline. We see speedups of over 20X in the 8xGen5 NVMe settings. We also observe FastPersist scaling with increased NVMe bandwidth of 8xGen5 compared with 4xGen5.
@@ -66,7 +57,7 @@ ZeRO-Inference enhances HF Transformer inference with efficient model offloading
 
 
 # I/O performance scaling
-We used our `ds_io` benchmarking tool to demonstrate DeepNVMe proportionally scaling I/O performance with available NVMe bandwidths. This empowers users to accelerate I/O bound DL applications at modest cost using more or faster NVMe SSDs. In our experiments, we measure the achieved read and write bandwidths of 1GB data transfers between HBM and NVMes. We evaluate scaling up NVMes from PCIe Gen4 to Gen5, and scaling out from 4 to 8 SSDs. The SSDs are combined into a single RAID-0 volume. We summarize the results in the Figure below which show that DeepNVMe scales I/O performance on both dimensions. Scaling up from 4xGen4 SSDs to 4xGen5 SSDs improves reads from 10GB/sec to 27GB/sec, and writes from 5GB/sec to 11GB/sec. Scaling out from 4xGen5 to 8xGen5 further improves reads to 48GB/sec, and writes to 26GB/sec.
+We used our `ds_io` benchmarking tool to demonstrate DeepNVMe proportionally scaling I/O performance with available NVMe bandwidths. This empowers users to accelerate I/O bound DL applications at modest cost using more or faster NVMe SSDs. In our experiments, we measure the achieved read and write bandwidths of 1GB data transfers between HBM and NVMes. We evaluate scaling up NVMes from PCIe Gen4 to Gen5, and scaling out from 4 to 8 SSDs. The SSDs are combined into a single RAID-0 (disk striping) volume. We summarize the results in the Figure below which show that DeepNVMe scales I/O performance on both dimensions. Scaling up from 4xGen4 SSDs to 4xGen5 SSDs improves reads from 10GB/sec to 27GB/sec, and writes from 5GB/sec to 11GB/sec. Scaling out from 4xGen5 to 8xGen5 further improves reads to 48GB/sec, and writes to 26GB/sec.
 
 <img src="./media/dnvme_scaling.png">
 <div align="center">
@@ -105,12 +96,6 @@ torch.Size([1024])
 >>> x.dtype
 torch.float32
 ```
-
-<img src="./media/dnvme_file_access.png">
-<div align="center">
-  DeepNVMe accelerates file operations in CPU-only environments.
-</div>
-
 
 ## Offset-based I/O operations
 Previously, DeepNVMe functionality was restricted to reading or writing the entire contents of a file. We have now improved DeepNVMe to read or write a user-specified portion of file content from a given offset. In particular, we have extended the existing read/write APIs to accept a user-specified `file offset` argument (with default value 0) such as below:

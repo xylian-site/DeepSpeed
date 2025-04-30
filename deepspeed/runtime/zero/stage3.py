@@ -1268,7 +1268,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
             self.__reduce_and_partition_ipg_grads()
 
-        self.__add_grad_to_ipg_bucket(param)
+        # deal with a use-case of transient grads that will be generated in a loop for the same computation involving some model params - e.g. when performing a tiled memory calculation that shards the normal single sub-module call into a loop over a shards.
+        if getattr(param, "ds_grad_is_ready", True):
+            self.__add_grad_to_ipg_bucket(param)
 
     @instrument_w_nvtx
     @torch.no_grad()

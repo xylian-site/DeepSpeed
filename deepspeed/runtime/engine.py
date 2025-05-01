@@ -1288,6 +1288,15 @@ class DeepSpeedEngine(Module):
             self.communication_data_type = self._config.seq_parallel_communication_data_type
             self.seq_parallel_group = groups._get_sequence_parallel_group()
 
+        if dist.get_rank() == 0:
+            summary = "********** distributed groups summary **********\n"
+            summary += f"\t {self.dp_world_size=}\n"
+            summary += f"\t {self.mp_world_size=}\n"
+            summary += f"\t {self.seq_dp_world_size=}\n"
+            summary += f"\t {self.sequence_parallel_size=}\n"
+            summary += "********** distributed groups summary **********"
+            print(summary)
+
         if not (self.amp_enabled() or is_zero_init_model):
             self._broadcast_model()
 
@@ -2309,6 +2318,7 @@ class DeepSpeedEngine(Module):
 
         self.losses = None
         self.global_steps += 1
+        #print(f"{self.global_steps=}")
         self.global_samples += self.train_batch_size()
 
     def step(self, lr_kwargs=None):
@@ -2334,8 +2344,10 @@ class DeepSpeedEngine(Module):
 
         self._step_applied = False  # assume False, will flip to True
 
+        #print("before is_gradient_accumulation_boundary")
         # Update the model when we reach gradient accumulation boundaries
         if self.is_gradient_accumulation_boundary():
+            #print("inside is_gradient_accumulation_boundary")
             self.gas_boundary_ctr += 1
 
             if (self.eigenvalue_enabled() and (self.gas_boundary_ctr % self.eigenvalue_gas_boundary_resolution() == 0)

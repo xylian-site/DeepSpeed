@@ -23,7 +23,7 @@ import os
 import shutil
 import sys
 import subprocess
-from setuptools import setup, find_packages
+from setuptools import setup
 from setuptools.command import egg_info
 import time
 import typing
@@ -318,7 +318,6 @@ setup(name='deepspeed',
       },
       install_requires=install_requires,
       extras_require=extras_require,
-      packages=find_packages(include=['deepspeed', 'deepspeed.*']),
       include_package_data=True,
       scripts=scripts,
       classifiers=[

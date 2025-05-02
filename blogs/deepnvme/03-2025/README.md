@@ -13,7 +13,7 @@ Our experiments are conducted on Azure using VMs from the [ND-H200-v5](https://l
 
 |Software | Version
 |---|--|
-|Ubuntu | 24.0.2|
+|Ubuntu | 24.04.2|
 |PyTorch | 2.6.0|
 |CUDA | 12.6 |
 |ROCM | 6.3 |

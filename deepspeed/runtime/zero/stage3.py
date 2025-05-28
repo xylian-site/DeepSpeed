@@ -579,7 +579,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         cpu_buffer = torch.empty(sum(p.numel() for p in tensors),
                                  dtype=get_only_unique_item(t.dtype for t in tensors),
-                                 device="cpu")
+                                 device="cpu", pin_memory=True)
         tensor_infos: List[Tuple[Tensor, int, int]] = get_mapping_to_flat_buffer(tensors)
         orig_device = get_only_unique_item(t.device for t in tensors)
 
@@ -899,8 +899,13 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     self.fp32_partitioned_groups_flat.append(unpinned_fp32_buffer)
                 else:
                     if self.offload_optimizer:
-                        self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
-                            self.subgroup_to_device[i]).clone().float().detach())
+                        # self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
+                            # self.subgroup_to_device[i]).clone().float().detach())
+                        fp32_gpu_tensor = self.fp16_partitioned_groups_flat[i].float().detach()
+                        fp32_cpu_pinned_tensor = (
+                            fp32_gpu_tensor.to("cpu", non_blocking=True).pin_memory()
+                        )
+                        self.fp32_partitioned_groups_flat.append(fp32_cpu_pinned_tensor)
                     else:
                         self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
                             self.device).clone().float().detach())

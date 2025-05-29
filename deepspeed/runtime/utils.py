@@ -785,8 +785,9 @@ def see_memory_usage(message, force=False):
         Max_CA {round(torch_max_memory_reserved() / (1024 * 1024 * 1024))} GB ")
 
     vm_stats = psutil.virtual_memory()
+    vm_stats_cur_process = psutil.Process().memory_info()
     used_GB = round(((vm_stats.total - vm_stats.available) / (1024**3)), 2)
-    logger.info(f'CPU Virtual Memory:  used = {used_GB} GB, percent = {vm_stats.percent}%')
+    logger.info(f'CPU Virtual Memory:  used = {used_GB} GB, percent = {vm_stats.percent}%, current process used = {round(vm_stats_cur_process.rss / (1024**3), 2)} GB')
 
     # get the peak memory to report correct data, so reset the counter for the next call
     get_accelerator().reset_peak_memory_stats()

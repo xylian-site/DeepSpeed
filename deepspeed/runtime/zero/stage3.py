@@ -579,7 +579,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         cpu_buffer = torch.empty(sum(p.numel() for p in tensors),
                                  dtype=get_only_unique_item(t.dtype for t in tensors),
-                                 device="cpu", pin_memory=True)
+                                 device="cpu", pin_memory=False)
         tensor_infos: List[Tuple[Tensor, int, int]] = get_mapping_to_flat_buffer(tensors)
         orig_device = get_only_unique_item(t.device for t in tensors)
 
@@ -599,6 +599,11 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         for tensor, offset, tensor_numel in tensor_infos:
             tensor.data = device_buffer.narrow(0, offset, tensor_numel)
 
+        # Free up cpu_buffer memory explicitly
+        del cpu_buffer
+        gc.collect()
+        get_accelerator().empty_cache()
+        
         return device_buffer
 
     def _get_param_coordinator(self):
@@ -845,7 +850,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         nvme_fp16_partitions_info = []
         nvme_fp16_num_elems = []
         nvme_fp32_dest_tensors = []
-        fp32_element_size = torch.tensor([], dtype=torch.float32).element_size()
+        fp32_element_size = torch.tensor([], dtype=torch.bfloat16).element_size()
 
         # Assign portion of subgroup to cpu, the other to gpu.
         if self.offload_optimizer:
@@ -901,11 +906,11 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     if self.offload_optimizer:
                         # self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
                             # self.subgroup_to_device[i]).clone().float().detach())
-                        fp32_gpu_tensor = self.fp16_partitioned_groups_flat[i].float().detach()
-                        fp32_cpu_pinned_tensor = (
-                            fp32_gpu_tensor.to("cpu", non_blocking=True).pin_memory()
+                        fp32_bf16_gpu_tensor = self.fp16_partitioned_groups_flat[i].to(torch.bfloat16).detach()
+                        fp32_bf16_cpu_pinned_tensor = (
+                            fp32_bf16_gpu_tensor.to("cpu", non_blocking=True).pin_memory()
                         )
-                        self.fp32_partitioned_groups_flat.append(fp32_cpu_pinned_tensor)
+                        self.fp32_partitioned_groups_flat.append(fp32_bf16_cpu_pinned_tensor)
                     else:
                         self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
                             self.device).clone().float().detach())

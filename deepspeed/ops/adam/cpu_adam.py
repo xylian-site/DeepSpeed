@@ -22,7 +22,7 @@ class DeepSpeedCPUAdam(torch.optim.Optimizer):
                  weight_decay=0,
                  amsgrad=False,
                  adamw_mode=True,
-                 fp32_optimizer_states=True):
+                 fp32_optimizer_states=False):
         """Fast vectorized implementation of two variations of Adam optimizer on CPU:
 
         * Adam: A Method for Stochastic Optimization: (https://arxiv.org/abs/1412.6980);

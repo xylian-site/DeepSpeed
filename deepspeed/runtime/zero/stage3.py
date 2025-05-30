@@ -517,16 +517,16 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
     def _setup_for_real_optimizer(self):
         see_memory_usage("Before creating fp32 partitions", force=True)
-        self._create_fp32_partitions()
+        # self._create_fp32_partitions()
         see_memory_usage("After creating fp32 partitions", force=True)
         dist.barrier()
 
         # To support pipelined optimizer swapping
-        self._create_next_swappable_fp32_groups()
+        # self._create_next_swappable_fp32_groups()
 
         see_memory_usage("Before initializing optimizer states", force=True)
 
-        self.initialize_optimizer_states()
+        # self.initialize_optimizer_states()
         see_memory_usage("After initializing optimizer states", force=True)
         dist.barrier()
 
@@ -976,19 +976,21 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
     def _optimizer_step(self, sub_group_id):
         param_group_id = self.sub_group_to_group_id[sub_group_id]
-        fp32_param = self.fp32_partitioned_groups_flat[sub_group_id]
+
+        bf16_param = self.fp16_partitioned_groups_flat[sub_group_id]
+        # fp32_param = self.fp32_partitioned_groups_flat[sub_group_id]
         if self.offload_optimizer:
             cur_device = self.subgroup_to_device[sub_group_id]
             if cur_device == 'cpu':
-                self.optimizer.param_groups[param_group_id]['params'] = [fp32_param]
+                self.optimizer.param_groups[param_group_id]['params'] = [bf16_param]
                 cpu_loss = self.optimizer.step()
                 self.optimizer.param_groups[param_group_id]['params'] = []
             else:
-                self.backup_optimizer.param_groups[param_group_id]['params'] = [fp32_param]
+                self.backup_optimizer.param_groups[param_group_id]['params'] = [bf16_param]
                 gpu_loss = self.backup_optimizer.step()
                 self.backup_optimizer.param_groups[param_group_id]['params'] = []
         else:
-            self.optimizer.param_groups[param_group_id]['params'] = [fp32_param]
+            self.optimizer.param_groups[param_group_id]['params'] = [bf16_param]
             self.optimizer.step()
             self.optimizer.param_groups[param_group_id]['params'] = []
 
@@ -1920,7 +1922,11 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         if self._swappable_optimizer_subgroup(sub_group_id):
             self._optimizer_states_and_gradient_swap_in(sub_group_id, timer_names)
         elif not self.offload_optimizer:
-            self._prepare_fp32_grad_for_sub_group(sub_group_id)
+            # NOTE: prepare the bf16 gradients 
+            bf16_param = self.fp16_partitioned_groups_flat[sub_group_id]
+            bf16_grad = self.flatten(self.averaged_gradients[sub_group_id])
+            bf16_param.grad = bf16_grad 
+            # self._prepare_fp32_grad_for_sub_group(sub_group_id)
         see_memory_usage(f'After prepare optimizer sub group {sub_group_id}', force=False)
 
     def _optimizer_states_and_gradient_swap_in(self, sub_group_id, timer_names):
@@ -2069,8 +2075,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
     @instrument_w_nvtx
     def _reassign_or_swap_out_partitioned_parameters(self, sub_group_id):
         if self.fp16_partitioned_groups_flat[sub_group_id] is not None:
-            self.fp16_partitioned_groups_flat[sub_group_id].data.copy_(
-                self.fp32_partitioned_groups_flat[sub_group_id].data)
+            # NOTE: for BF16 optimizer, we do not need to swap out fp32 parameters
+            # self.fp16_partitioned_groups_flat[sub_group_id].data.copy_(
+                # self.fp32_partitioned_groups_flat[sub_group_id].data)
 
             #unflatten fp16 parameter subgroup
             self._unflatten_partitioned_parameters(sub_group_id)
@@ -2088,6 +2095,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         """
             Not supporting closure.
         """
+        see_memory_usage('Before step', force=True)
         self._pre_step()
         self._partition_all_parameters()
 
@@ -2112,6 +2120,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         for sub_group_id, group in enumerate(self.fp16_groups):
 
             #prepare optimizer states, gradients and fp32 parameters for update
+            # NOTE: for BF16 optimizer: no need to prepare the FP32 parameter and gradient
             self._prepare_sub_group(sub_group_id, timer_names)
 
             #scale the fp32 gradients
@@ -2124,7 +2133,8 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             self._reassign_or_swap_out_partitioned_parameters(sub_group_id)
 
             #release memory or swap out optimizer states of fp32 parameters
-            self._release_sub_group(sub_group_id, timer_names)
+            # NOTE: for BF16 optimizer: no need to release the FP32 parameter and gradient
+            # self._release_sub_group(sub_group_id, timer_names)
 
         self.timers(OPTIMIZER_STEP_TIMER).stop()
 
@@ -2185,7 +2195,8 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             clip = torch.clamp(clip, min=1.0)
             combined_scale = clip * self.loss_scale
 
-        self.fp32_partitioned_groups_flat[sub_group_id].grad.mul_(1. / combined_scale)
+        # NOTE: clip the fp16 gradients
+        self.fp16_partitioned_groups_flat[sub_group_id].grad.mul_(1. / combined_scale)
 
     def _check_overflow(self, partition_gradients=True):
         self.overflow = self.has_overflow(partition_gradients)

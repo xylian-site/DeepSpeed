@@ -517,7 +517,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
     def _setup_for_real_optimizer(self):
         see_memory_usage("Before creating fp32 partitions", force=True)
-        # self._create_fp32_partitions()
+        # NOTE: need to allocate the bf16 parameter on CPU for optimizer offloading
+        if self.offload_optimizer:
+            self._create_fp32_partitions()
         see_memory_usage("After creating fp32 partitions", force=True)
         dist.barrier()
 
@@ -526,7 +528,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         see_memory_usage("Before initializing optimizer states", force=True)
 
-        # self.initialize_optimizer_states()
+        # NOTE: need to allocate the bf16 gradient on CPU for optimizer offloading
+        if self.offload_optimizer:
+            self.initialize_optimizer_states()
         see_memory_usage("After initializing optimizer states", force=True)
         dist.barrier()
 
@@ -579,7 +583,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         cpu_buffer = torch.empty(sum(p.numel() for p in tensors),
                                  dtype=get_only_unique_item(t.dtype for t in tensors),
-                                 device="cpu", pin_memory=True)
+                                 device="cpu", pin_memory=False)
         tensor_infos: List[Tuple[Tensor, int, int]] = get_mapping_to_flat_buffer(tensors)
         orig_device = get_only_unique_item(t.device for t in tensors)
 
@@ -598,6 +602,10 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         # restore device tensors
         for tensor, offset, tensor_numel in tensor_infos:
             tensor.data = device_buffer.narrow(0, offset, tensor_numel)
+
+        del cpu_buffer
+        gc.collect()
+        get_accelerator().empty_cache()
 
         return device_buffer
 
@@ -845,7 +853,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         nvme_fp16_partitions_info = []
         nvme_fp16_num_elems = []
         nvme_fp32_dest_tensors = []
-        fp32_element_size = torch.tensor([], dtype=torch.float32).element_size()
+        fp32_element_size = torch.tensor([], dtype=torch.bfloat16).element_size()
 
         # Assign portion of subgroup to cpu, the other to gpu.
         if self.offload_optimizer:
@@ -901,11 +909,11 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     if self.offload_optimizer:
                         # self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
                             # self.subgroup_to_device[i]).clone().float().detach())
-                        fp32_gpu_tensor = self.fp16_partitioned_groups_flat[i].float().detach()
-                        fp32_cpu_pinned_tensor = (
-                            fp32_gpu_tensor.to("cpu", non_blocking=True).pin_memory()
+                        fp32_bf16_gpu_tensor = self.fp16_partitioned_groups_flat[i].to(torch.bfloat16).detach()
+                        fp32_bf16_cpu_pinned_tensor = (
+                            fp32_bf16_gpu_tensor.to("cpu", non_blocking=True).pin_memory()
                         )
-                        self.fp32_partitioned_groups_flat.append(fp32_cpu_pinned_tensor)
+                        self.fp32_partitioned_groups_flat.append(fp32_bf16_cpu_pinned_tensor)
                     else:
                         self.fp32_partitioned_groups_flat.append(self.fp16_partitioned_groups_flat[i].to(
                             self.device).clone().float().detach())
@@ -977,19 +985,19 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
     def _optimizer_step(self, sub_group_id):
         param_group_id = self.sub_group_to_group_id[sub_group_id]
 
-        bf16_param = self.fp16_partitioned_groups_flat[sub_group_id]
-        # fp32_param = self.fp32_partitioned_groups_flat[sub_group_id]
         if self.offload_optimizer:
+            fp32_param = self.fp32_partitioned_groups_flat[sub_group_id]
             cur_device = self.subgroup_to_device[sub_group_id]
             if cur_device == 'cpu':
-                self.optimizer.param_groups[param_group_id]['params'] = [bf16_param]
+                self.optimizer.param_groups[param_group_id]['params'] = [fp32_param]
                 cpu_loss = self.optimizer.step()
                 self.optimizer.param_groups[param_group_id]['params'] = []
             else:
-                self.backup_optimizer.param_groups[param_group_id]['params'] = [bf16_param]
+                self.backup_optimizer.param_groups[param_group_id]['params'] = [fp32_param]
                 gpu_loss = self.backup_optimizer.step()
                 self.backup_optimizer.param_groups[param_group_id]['params'] = []
         else:
+            bf16_param = self.fp16_partitioned_groups_flat[sub_group_id]
             self.optimizer.param_groups[param_group_id]['params'] = [bf16_param]
             self.optimizer.step()
             self.optimizer.param_groups[param_group_id]['params'] = []
@@ -2076,8 +2084,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
     def _reassign_or_swap_out_partitioned_parameters(self, sub_group_id):
         if self.fp16_partitioned_groups_flat[sub_group_id] is not None:
             # NOTE: for BF16 optimizer, we do not need to swap out fp32 parameters
-            # self.fp16_partitioned_groups_flat[sub_group_id].data.copy_(
-                # self.fp32_partitioned_groups_flat[sub_group_id].data)
+            if self.offload_optimizer:
+                self.fp16_partitioned_groups_flat[sub_group_id].data.copy_(
+                    self.fp32_partitioned_groups_flat[sub_group_id].data)
 
             #unflatten fp16 parameter subgroup
             self._unflatten_partitioned_parameters(sub_group_id)
@@ -2195,8 +2204,12 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             clip = torch.clamp(clip, min=1.0)
             combined_scale = clip * self.loss_scale
 
-        # NOTE: clip the fp16 gradients
-        self.fp16_partitioned_groups_flat[sub_group_id].grad.mul_(1. / combined_scale)
+        if not self.offload_optimizer:
+            # NOTE: clip the bf16 gradients on the GPU
+            self.fp16_partitioned_groups_flat[sub_group_id].grad.mul_(1. / combined_scale)
+        else:
+            # NOTE: clip the bf16 gradients on the CPU
+            self.fp32_partitioned_groups_flat[sub_group_id].grad.mul_(1. / combined_scale)
 
     def _check_overflow(self, partition_gradients=True):
         self.overflow = self.has_overflow(partition_gradients)

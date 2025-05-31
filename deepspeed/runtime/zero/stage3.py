@@ -165,6 +165,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         see_memory_usage("Stage 3 initialize beginning", force=True)
 
         print_rank_0(f"initialized {__class__.__name__} with args: {locals()}", force=False)
+        from deepspeed.utils import set_z3_leaf_modules
+        from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MoE
+        set_z3_leaf_modules(module, [DeepseekV3MoE])
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
@@ -2166,6 +2169,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     "that all ranks flush their caches at the same time",
                     alloc_retries - self.n_caching_allocator_flushes)
             self.n_caching_allocator_flushes = alloc_retries
+        see_memory_usage('After step', force=True)
 
     def dump_pre_step_gradients(self, debug_fp32_grads):
         # Dump gradient norms for debugging

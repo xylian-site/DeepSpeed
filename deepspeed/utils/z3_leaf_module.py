@@ -56,6 +56,9 @@ def _do_set_z3_leaf_modules(model: torch.nn.Module, leaf_module_classes: Union[L
         for module in leaf_module_classes:
             if (isinstance(module, type) and model.__class__ == module) or \
             (isinstance(module, str) and model.__class__.__name__ == module):
+                import deepspeed.comm as dist
+                if dist.get_rank() == 0:
+                    print(f'Setting z3 leaf module flag for {model.__class__.__name__}')
                 model._z3_leaf = flag
                 leaf_modules.append(model)
 

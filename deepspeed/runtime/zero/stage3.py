@@ -165,9 +165,9 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         see_memory_usage("Stage 3 initialize beginning", force=True)
 
         print_rank_0(f"initialized {__class__.__name__} with args: {locals()}", force=False)
-        from deepspeed.utils import set_z3_leaf_modules
-        from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MoE
-        set_z3_leaf_modules(module, [DeepseekV3MoE])
+        # from deepspeed.utils import set_z3_leaf_modules
+        # from transformers.models.deepseek_v3.modeling_deepseek_v3 import DeepseekV3MoE
+        # set_z3_leaf_modules(module, [DeepseekV3MoE])
 
         if dist.get_rank() == 0:
             logger.info(f"Reduce bucket size {reduce_bucket_size}")
@@ -2107,7 +2107,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         """
             Not supporting closure.
         """
-        see_memory_usage('Before step', force=True)
+        # see_memory_usage('Before step', force=True)
         self._pre_step()
         self._partition_all_parameters()
 
@@ -2169,7 +2169,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                     "that all ranks flush their caches at the same time",
                     alloc_retries - self.n_caching_allocator_flushes)
             self.n_caching_allocator_flushes = alloc_retries
-        see_memory_usage('After step', force=True)
+        # see_memory_usage('After step', force=True)
 
     def dump_pre_step_gradients(self, debug_fp32_grads):
         # Dump gradient norms for debugging
@@ -2364,8 +2364,8 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         if not param.requires_grad:
             return
 
-        if not get_accelerator().resolves_data_dependency():
-            self.reduce_and_partition_stream.synchronize()
+        # if not get_accelerator().resolves_data_dependency():
+        #     self.reduce_and_partition_stream.synchronize()
 
         if self.offload_optimizer:
             group_idx, dest_offset, num_elements = self.grad_position[self.get_param_id(param)]
